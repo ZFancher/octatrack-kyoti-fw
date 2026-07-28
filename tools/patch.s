@@ -48,7 +48,21 @@ rs0:
     lea 0x80006c20, %a0
     move.b (0,%a0,%d1:l), %d0
     beq.b rs_next
-    | restaura buffer de voz del track
+    | [NUEVO] snapshot de los params de DESTINO antes de pisarlos:
+    | en este instante el buffer de voz todavia tiene lo que escribio apply_part.
+    | enc_stub los consume cuando el usuario mueve un encoder del track.
+    move.l %d1, %d0
+    lsl.l #6, %d0
+    lea 0x80000a50, %a0
+    add.l %d0, %a0
+    lea 0x80006e00, %a1
+    add.l %d0, %a1
+    moveq #16, %d0
+rs_snap:
+    move.l (%a0)+, (%a1)+
+    subq.l #1, %d0
+    bne.b rs_snap
+    | restaura buffer de voz del track (params de ORIGEN)
     move.l %d1, %d0
     lsl.l #6, %d0
     lea 0x80006a00, %a0

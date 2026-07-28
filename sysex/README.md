@@ -1,6 +1,6 @@
 # sysex/ — building the patched firmware
 
-This folder does **not** contain a firmware image. It contains the patch — the ~1,269
+This folder does **not** contain a firmware image. It contains the patch — the ~1,083
 bytes of ColdFire code authored in this repository — plus a script that applies it to
 **your own** copy of the official Elektron OS.
 
@@ -11,8 +11,14 @@ script produces a `.syx` byte-identical to the reference build.
 
 - The **official OS 1.40C for Octatrack MKII** (`OCTATRACK_OS1.40C.syx`), from
   elektron.se. `./fetch-os.sh` in the repo root downloads and extracts it.
-- **`elektron-firmware-tool`** — `./setup.sh` clones and builds it into `vendor/`.
+- **`elektron-firmware-tool`** — `./setup.sh` clones it into `vendor/`, applies
+  `tools/elektron-firmware-tool.patch` and builds it.
   Upstream: <https://github.com/mischa85/elektron-firmware-tool>
+
+  The patch is two small local changes, both required to reproduce this build:
+  `set_version()` writes the full 10-character ELEK display field from offset `0x08`
+  (upstream only writes from `0x0D`, which fits 5 characters), and `EFT_EMIT_CONTAINER`
+  dumps the rebuilt container so `tools/make_bin.py` can wrap it.
 - Python 3.8+
 
 ## Usage
@@ -29,7 +35,7 @@ python3 sysex/apply_patch.py \
 ```
 [1/5] stock .syx checksum ok
 [2/5] extracted section_3_MAIN_OS.bin (1,112,560 bytes)
-[3/5] applied 20 hunks (1269 bytes)
+[3/5] applied 18 hunks (1083 bytes)
 [4/5] repacked -> OCTATRACK_MAXOLYDIAN.syx
 [5/5] output checksum ok — byte-identical to the reference build
 ```
@@ -41,17 +47,13 @@ per-hunk byte verification always holds.
 
 ## What the patch changes
 
-1,269 bytes out of 1,112,560 (0.11%) of the MAIN OS section.
+1,083 bytes out of 1,112,560 (0.10%) of the MAIN OS section.
 
 | id | source | effect |
 |---|---|---|
-| `lazy-part-apply` | `tools/patch.s` | Sounding tracks keep their params on pattern change; they apply the destination Part on their first trig — no volume jump. |
-| `gui-in-transition` | `tools/patch_gui2.s` | While a track is in transition, the encoders edit the **source** Part and update the sound live. |
-| `sticky-scenes-v2` | `tools/patch_scene2.s` | Scene A/B selection is kept across pattern/Part changes; manual assignment always wins. |
-| `dirty-track-leds` | `tools/patch_led.s` | A track still sounding with the source Part's params is lit dimmer (`0xF` → `0x5`) until it is re-trigged. |
-| `dirty-scene-trig` | `tools/patch_trig.s` | The selected scene trig goes amber (both dies of the bi-colour LED) while any track is in transition. |
-| `no-bank-ptn-countdown` | in-place: `FUN_40056ab8` → `rts` | The SELECT BANK / SELECT PATTERN windows no longer expire after four seconds; press the same key again to abort. |
-| `personalize-options` | `tools/patch_menu.s` | Adds NO BANK/PTN TIMER and LAZY TRANSITIONS to the PERSONALIZE menu. **Both unchecked by default**, so an unconfigured unit behaves exactly like stock. |
+| `lazy-transitions` | `tools/patch.s`, `patch_enc.s`, `patch_led.s`, `patch_scene2.s` | Sounding tracks keep the previous Part's definition on a pattern change (track LED dimmed) until a trig, a manual trig or an encoder move; A/B scene pointers stay on the same slots. |
+| `no-bank-ptn-countdown` | `tools/patch_notimer.s` | SELECT BANK / SELECT PATTERN windows stop expiring. |
+| `personalize-options` | `tools/patch_notimer.s` | Both of the above are PERSONALIZE entries, **unchecked by default**, so an unconfigured unit behaves exactly like stock. |
 | `boot-branding` | ELEK header (`-V`) | Boot splash and SYSTEM STATUS show `MAXOLYDIAN` instead of `1.40C`. |
 
 The code patches live in a free code cave at `0x400d64e0`–`0x400d697c`, reached by
@@ -60,14 +62,24 @@ detours at `0x40009094` (part apply), `0x40052e98` (encoder editor), `0x4003f1b4
 addresses and reverse-engineering notes are in [`../NOTES.md`](../NOTES.md) and
 [`../ARCHITECTURE.md`](../ARCHITECTURE.md).
 
-`patches/maxolydian-6.0.json` holds each hunk with its load address, the original bytes
+`patches/maxolydian-r2.json` holds each hunk with its load address, the original bytes
 and the replacement bytes, so the change is auditable without running anything.
 
-> Only the current revision is published. Earlier ones (1.0–3.0) carried a reentrancy
-> bug in the GUI patch that could crash the unit — holding `[SCENE B]` while turning an
-> encoder on a track in transition made a nested call clobber the single saved return
-> address, and the unit jumped to a dead address (`EXCEPTION VEC:0B`). Fixed in 4.0 by
-> a guard that makes a nested entry behave like stock. See `../NOTES.md`.
+> Only the current revision is published. Earlier ones carried a GUI-in-transition patch
+> that crashed the unit; it is gone — the current spec wants an encoder move to *end* the
+> transition, the opposite of what that patch did. See `../NOTES.md`.
+
+## Flashing from the CF card
+
+`tools/make_bin.py` wraps the container into an ELUP `.bin` for the OS UPGRADE menu, which
+is much faster than MIDI. Its correctness is not assumed: it regenerates Elektron's own
+official `.bin` byte-for-byte from that file's container.
+
+```sh
+EFT_EMIT_CONTAINER=elek.bin elektron-firmware-tool -i stock.syx -c 3 out/mainos.bin \
+    -V MAXOLYDIAN -o out.syx
+python3 tools/make_bin.py elek.bin -o OCTATRACK_MAXOLYDIAN.bin
+```
 
 ## Before you flash
 

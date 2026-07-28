@@ -865,3 +865,60 @@ Three layers now cover a build: per-stub logic (the `emu_*.py` harnesses), image
 composition (this), and reproducibility (`sysex/apply_patch.py`). Both hardware bugs in
 this project — the reentrancy crash and this freeze — escaped through gaps between layers,
 not through a layer.
+
+## Feature set redefined (R2) — what was dropped and why
+
+After instability on hardware, the spec was rewritten and the build restarted from stock:
+
+- **GUI-in-transition: removed.** It did the *opposite* of the new spec — it wrote encoder
+  edits into the SOURCE Part and deliberately kept the track dirty, whereas an encoder move
+  must now *end* the transition. It was also the patch that crashed (`VEC:0B`, and a second
+  `VEC:04` with `ADDR:00000000` consistent with its `cleanup` jumping through a null
+  `SAVE_RET`) and the only one that overrode shared globals.
+- **Amber scene-trig indicator: removed.** It scanned all 8 tracks and OR-ed the result,
+  forcing a per-track property into one global light — so it latched on permanently and
+  conveyed nothing. The scan was the symptom, not the cause: the track LED needs no scan
+  because the painter already iterates tracks and each pass checks its own.
+- **Track LED: fixed.** It was missing the `&& sounding` half of the condition that the
+  original design (`HANDOFF.md`) specified — an idle track with a stale `per_track_part`
+  read as dirty forever. Voice-active byte at `0x800049d8 + track*0xa8`.
+- **New — encoder ends the transition** (`tools/patch_enc.s`, same hook site the removed GUI
+  patch used). The destination Part's parameters no longer exist by then: `apply_part`
+  computed them and `restore_stub` overwrote them, which is exactly how the track stays
+  protected. So `restore_stub` now snapshots them on the way past — at that instant the
+  voice buffer still holds the destination values — into `0x80006e00 + track*0x40`, and
+  `enc_stub` copies them back when an encoder moves on a dirty track.
+
+`tools/build.py` replaces the ad-hoc packing: it starts from the stock image, derives every
+detour from the linker symbol tables, and aborts if any assumption about the stock bytes
+fails.
+
+## CF-card flashing — `tools/make_bin.py`
+
+MIDI SysEx takes minutes at 31250 baud. The manual's §8.5.2 OS UPGRADE path reads a `.bin`
+from the root of the CF card instead. Decoding the official `.bin` showed the ELUP payload
+is simply:
+
+    [4-byte BE length][ELEK container]
+
+— exactly the container `elektron-firmware-tool` already builds, so no new format work was
+needed, only the forward direction of the obfuscation `tools/bin_decode.py` already
+reverses. `rot16` and `bswap` are involutions, so inverting is direct:
+
+    encode: x = k ^ mixer ^ p ;  c = rot16(x) ^ XOR_A   (variant 0, k & 0x800000 == 0)
+                                 c = bswap(x) ^ XOR_B   (variant 1)
+
+with the feedback `k` being the previous **cipher** word.
+
+Getting the patched container out: the `.syx` is 7460 SysEx messages each with its own
+framing, so rather than reverse that transport, `EFT_EMIT_CONTAINER=<path>` was added to the
+vendored tool (5 lines) to dump the container it already builds internally.
+
+**Validation**: `make_bin.py` regenerates Elektron's official `.bin` **byte-for-byte** from
+that file's own container. Nothing about the format is inferred. Confirmed working on
+hardware.
+
+One caveat: a container whose size is not a multiple of 4 needs the payload padded to a word
+boundary (ours needed 2 bytes; the official happened to align). The device reads the declared
+length and ignores the tail. `FUN_4007f748` validates the checksum and returns an error code
+*before* touching flash, so a malformed `.bin` is rejected rather than half-applied.

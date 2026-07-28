@@ -25,6 +25,20 @@ else
   git -C vendor/elektron-firmware-tool pull --ff-only || true
 fi
 
+# Dos cambios locales son necesarios para reproducir este build:
+#   - set_version() escribe el campo de version ELEK completo (10 chars) desde 0x08;
+#     upstream solo escribe desde 0x0D, donde entran 5.
+#   - EFT_EMIT_CONTAINER vuelca el contenedor reconstruido, que tools/make_bin.py
+#     envuelve para generar el .bin de la CF.
+PATCH=$(pwd)/tools/elektron-firmware-tool.patch
+if [ -f "$PATCH" ]; then
+  if git -C vendor/elektron-firmware-tool apply --check "$PATCH" 2>/dev/null; then
+    git -C vendor/elektron-firmware-tool apply "$PATCH" && echo "   parche local aplicado"
+  else
+    echo "   parche local ya aplicado (o el upstream cambio: revisar $PATCH)"
+  fi
+fi
+
 echo "   intentando compilar ..."
 if [ -f vendor/elektron-firmware-tool/Makefile ]; then
   make -C vendor/elektron-firmware-tool || echo "   [!] make fallo — revisa vendor/elektron-firmware-tool/README"

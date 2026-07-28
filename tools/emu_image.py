@@ -28,20 +28,18 @@ IMG = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "out/mainos_v6.bin").re
 
 # detour site -> (elf, entry symbol, where control should end up)
 DETOURS = [
-    (0x40009094, "out/patch_scene2.elf", "scene_stub",   0x4000909c, "apply_part entry"),
-    (0x40009664, "out/patch.elf",        "restore_stub", 0x40000c3c, "apply_part exit"),
-    (0x40052e98, "out/patch_gui2.elf",   "setup",        0x40052ea0, "encoder editor"),
-    (0x4003f1b4, "out/patch_scene2.elf", "xf_stub",      0x4003f1bc, "crossfader"),
-    (0x40083fb4, "out/patch_led.elf",    "led_stub",     0x40083fc4, "track LED painter"),
-    (0x40034b5e, "out/patch_trig.elf",   "trig_stub",    0x40034b64, "trig painter"),
-    (0x40056ab8, "out/patch_flags.elf",  "cd_stub",      0x40056abe, "BANK/PTN countdown"),
+    (0x40009094, "out/patch_scene2.elf",  "scene_stub",   0x4000909c, "apply_part entry"),
+    (0x40009664, "out/patch.elf",         "restore_stub", 0x40000c3c, "apply_part exit"),
+    (0x40052e98, "out/patch_enc.elf",     "enc_stub",     0x40052ea0, "encoder editor"),
+    (0x4003f1b4, "out/patch_scene2.elf",  "xf_stub",      0x4003f1bc, "crossfader"),
+    (0x40083fb4, "out/patch_led.elf",     "led_stub",     0x40083fc4, "track LED painter"),
+    (0x40056ab8, "out/patch_notimer.elf", "cd_stub",      0x40056abe, "BANK/PTN countdown"),
 ]
 
 # every byte of the cave that legitimately belongs to a stub
-STUB_SPANS = [("out/patch.elf", 0x400d64e0), ("out/patch_gui2.elf", 0x400d6600),
+STUB_SPANS = [("out/patch.elf", 0x400d64e0), ("out/patch_enc.elf", 0x400d6600),
               ("out/patch_scene2.elf", 0x400d6700), ("out/patch_led.elf", 0x400d6800),
-              ("out/patch_trig.elf", 0x400d6900), ("out/patch_flags.elf", 0x400d6a00),
-              ("out/patch_menu.elf", 0x400d6b00)]
+              ("out/patch_notimer.elf", 0x400d6900)]
 
 
 def syms(elf):

@@ -1,35 +1,32 @@
 # Safe flashing guide — modified Octatrack MKII firmware
 
-How to flash `out/OCTATRACK_OS1.40C_FULL_MAXO_V6.syx` onto your Octatrack MKII, with a full
+How to flash the patched firmware onto your Octatrack MKII, with a full
 safety net.
 
 > **Everything is OFF by default.** Straight after flashing the unit behaves exactly like
 > stock firmware. The changes below are switched on from **PERSONALIZE** (see §4).
 
-The firmware introduces SIX optional behavior changes + boot branding:
-1. **Lazy part apply**: when you switch patterns, the tracks that are playing keep their params (no
-   volume jump); they apply the destination Part on their first trig.
-2. **GUI-in-transition**: while a track is in transition, turning its knobs edits the **source Part**
-   (the one that's playing) and sculpts that sound in real time.
-3. **Sticky scenes**: when you switch pattern/Part, the A/B scene selection is **kept** (it does not
-   jump to the destination Part's saved scenes); it only changes if you assign a scene manually
-   (SCENE A/B + trig), which always wins.
-4. **Dirty track LEDs**: a track still sounding with the *source* Part's parameters is lit
-   **dimmer** until you re-trig it.
-5. **Dirty scene trig**: the selected scene trig goes **amber** while any track is in that state.
-6. **No BANK/PTN countdown**: the SELECT BANK / SELECT PATTERN windows no longer expire after four
+The firmware introduces TWO optional behavior changes + boot branding:
+1. **Lazy transitions**: when you switch to a pattern that uses a different Part, the tracks that
+   are playing keep the previous Part's definition — no volume jump — and their **track LED dims**
+   to show it. A track goes back to the destination Part as soon as it is modified: a sequencer
+   trig, a manual trig, or **moving one of its encoders** (you hear the jump at that moment).
+   The same switch also keeps the **A/B scene pointers** on the same slots across the Part change.
+2. **No BANK/PTN countdown**: the SELECT BANK / SELECT PATTERN windows no longer expire after four
    seconds. They stay open until you pick a trig or press the same key again to abort — the
    press-again-to-exit toggle already existed in stock firmware. The four countdown boxes stay full
    and now just mean "selection mode is active".
+3. **Boot branding**: the startup screen (and SYSTEM STATUS → OS VERSION) shows **`MAXOLYDIAN`**
+   instead of `1.40C`.
 
-Changes 1–5 are controlled by **LAZY TRANSITIONS** and change 6 by **NO BANK/PTN TIMER**, both
-new entries at the bottom of the PERSONALIZE menu.
+They are controlled by **LAZY TRANSITIONS** and **NO BANK/PTN TIMER**, two new entries at the
+bottom of the PERSONALIZE menu.
 7. **Boot branding**: the startup screen (and SYSTEM STATUS → OS VERSION) shows **`MAXOLYDIAN`**
    instead of `1.40C`.
 
-> **Do not use builds earlier than V4.** They carry a reentrancy bug in the GUI patch that
-> crashes the unit (`EXCEPTION VEC:0B`) when you hold `[SCENE B]` and turn an encoder on a
-> track in transition. V4 fixes it.
+> **Use only the current build.** Earlier ones carried a GUI-in-transition patch that could crash
+> the unit; it has been removed entirely — the new spec wants an encoder move to *end* the
+> transition, which is the opposite of what that patch did.
 
 > **About the boot branding**: the version you see at power-on lives as text in the header of the
 > ELEK container (flash address `0x4008`), in a **fixed-width, 10-character** field that cannot be
@@ -53,7 +50,7 @@ new entries at the bottom of the PERSONALIZE menu.
       ⚠️ **The upgrade does NOT work over USB** — it has to be MIDI DIN. A USB-MIDI cable or an
       audio interface with MIDI works.
 - [ ] **SysEx Librarian.app** (you already have it installed). It's the standard app on Mac for sending `.syx`.
-- [ ] **The patched firmware**: `out/OCTATRACK_OS1.40C_FULL_MAXO_V6.syx`
+- [ ] **The patched firmware**: `out/OCTATRACK_OS1.40C_MAXO_R2.syx`
 - [ ] **The official rescue firmware** (essential!): `downloads/extracted/OCTATRACK_OS1.40C.syx`
 - [ ] **Stable power** — don't power it from a dubious power strip; don't move it during flashing.
 
@@ -89,15 +86,37 @@ Even so, as a precaution:
 
 ---
 
-## 3. Flash the patched firmware
+## 3a. Flash from the CF card — the fast way (recommended)
+
+Manual §8.5.2. Reads the file off the card instead of trickling it over MIDI at 31250 baud, so it
+takes seconds rather than minutes.
+
+1. Connect the OT over USB, select **USB DISK MODE** and press **[YES]**. The CF card appears as a
+   drive on the computer.
+2. Copy **`out/OCTATRACK_MAXO_R2.bin`** to the **ROOT** of the card — not inside any folder.
+3. **Eject the card properly** on the computer, then leave USB DISK MODE on the OT. Skipping the
+   eject can leave the write in cache and the OT reads a truncated file.
+4. **PROJECT → OS UPGRADE → [YES]**, confirm the prompt.
+
+The active project is synced to the card automatically before the upgrade.
+
+> This needs a unit that boots. If it does not, use the MIDI path in §3b — the Startup Menu is in
+> a region the OS update never touches.
+
+`tools/make_bin.py` builds the `.bin`. Its correctness is not assumed: it regenerates Elektron's
+own official `.bin` byte-for-byte from that file's own container.
+
+---
+
+## 3b. Flash over MIDI — for recovery, or if the card path fails
 
 1. **Connect MIDI**: your interface's MIDI OUT → the Octatrack's **MIDI IN** (DIN, not USB).
 2. **Open SysEx Librarian**, and in its destination selector choose your MIDI interface (the output
    port connected to the OT).
-3. **Drag** `out/OCTATRACK_OS1.40C_FULL_MAXO_V6.syx` into the SysEx Librarian list.
+3. **Drag** `out/OCTATRACK_OS1.40C_MAXO_R2.syx` into the SysEx Librarian list.
 4. On the Octatrack: turn it off, hold **[FUNC]** and turn it on → **STARTUP MENU**.
 5. Press **[TRIG 3]** (MIDI UPGRADE) → it should say **"READY TO RECEIVE MIDI UPGRADE…"**.
-6. In SysEx Librarian, select the file (`_FULL_MAXO_V6.syx`) and press **Play**.
+6. In SysEx Librarian, select the file (`_MAXO_R2.syx`) and press **Play**.
    - The OT's **[TRIG]** lights turn on one by one as it receives. **It takes a while** (be patient).
 7. When the transfer finishes: **"PREPARING FLASH"** appears and then **"UPDATING FLASH"**.
    - **⚠️ DO NOT POWER OFF OR DISCONNECT** during "…FLASH". Interrupting here corrupts the OS (→ "Z" screen).
@@ -135,7 +154,7 @@ If instead the volume jumps when you switch patterns (as before), the patch is n
 8. Restart the unit: the **first screen** should show **`MAXOLYDIAN`** where it used to say `1.40C`.
 9. Also in **SYSTEM (menu) → SYSTEM STATUS → OS VERSION** it should read `MAXOLYDIAN`.
    - If it still says `1.40C`, this file wasn't flashed (or the bootloader reads the version from
-     another copy): retry with `_FULL_MAXO_V6.syx`. The change is purely cosmetic and doesn't affect operation.
+     another copy): retry with `_MAXO_R2.syx`. The change is purely cosmetic and doesn't affect operation.
 
 ### Testing sticky scenes
 10. Have two patterns with different Parts and different A/B scenes selected in each (e.g. P1 with
@@ -205,7 +224,7 @@ are not affected.
 
 | File | What it is |
 |---|---|
-| `out/OCTATRACK_OS1.40C_FULL_MAXO_V6.syx` | **Patched firmware** — everything: lazy part, GUI-in-transition, sticky scenes v2, dirty indicators, "MAXOLYDIAN" branding. The one you're going to flash |
+| `out/OCTATRACK_OS1.40C_MAXO_R2.syx` | **Patched firmware** — everything: lazy part, GUI-in-transition, sticky scenes v2, dirty indicators, "MAXOLYDIAN" branding. The one you're going to flash |
 | `out/OCTATRACK_OS1.40C_LAZYPART_GUI.syx` | Variant without boot branding — ⚠️ pre-V4, has the crash |
 | `out/OCTATRACK_OS1.40C_LAZYPART.syx` | Audio-only variant (no GUI patch, so no crash) |
 | `downloads/extracted/OCTATRACK_OS1.40C.syx` | **Official rescue OS** — for recovery or reverting |

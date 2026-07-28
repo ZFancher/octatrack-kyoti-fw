@@ -47,6 +47,15 @@ led_stub:
     move.b  ACT_PART,%d0               | d0 = active Part
     cmp.l   %d0,%d1
     beq.b   lb_norm                    | same Part -> not in transition
+    | y ademas tiene que estar SONANDO: un track parado con un per_track_part
+    | viejo daba "sucio" permanente. La condicion completa estaba en el diseno
+    | original (HANDOFF: per_track_part != active && voice_active) y la omiti.
+    move.l  %d5,%d1
+    move.l  #0xa8,%d0                  | ColdFire: mulu.l no admite inmediato
+    mulu.l  %d0,%d1                    | d1 = track * 0xa8 (voice stride)
+    lea     0x800049d8,%a0
+    tst.b   (%a0,%d1.l)
+    beq.b   lb_norm                    | no suena -> brillo de fabrica
     moveq   #LVL_DIRTY,%d0
     bra.b   lb_emit
 lb_norm:
