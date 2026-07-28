@@ -1,16 +1,23 @@
 # Safe flashing guide — modified Octatrack MKII firmware
 
-How to flash `out/OCTATRACK_OS1.40C_FULL_MAXO.syx` onto your Octatrack MKII, with a full safety
-net. This firmware introduces THREE behavior changes + boot branding:
+How to flash `out/OCTATRACK_OS1.40C_FULL_MAXO_V4.syx` onto your Octatrack MKII, with a full
+safety net. This firmware introduces FIVE behavior changes + boot branding:
 1. **Lazy part apply**: when you switch patterns, the tracks that are playing keep their params (no
    volume jump); they apply the destination Part on their first trig.
 2. **GUI-in-transition**: while a track is in transition, turning its knobs edits the **source Part**
    (the one that's playing) and sculpts that sound in real time.
 3. **Sticky scenes**: when you switch pattern/Part, the A/B scene selection is **kept** (it does not
    jump to the destination Part's saved scenes); it only changes if you assign a scene manually
-   (SCENE A/B + trig).
-4. **Boot branding**: the startup screen (and SYSTEM STATUS → OS VERSION) shows **`MAXOLYDIAN`**
+   (SCENE A/B + trig), which always wins.
+4. **Dirty track LEDs**: a track still sounding with the *source* Part's parameters is lit
+   **dimmer** until you re-trig it.
+5. **Dirty scene trig**: the selected scene trig goes **amber** while any track is in that state.
+6. **Boot branding**: the startup screen (and SYSTEM STATUS → OS VERSION) shows **`MAXOLYDIAN`**
    instead of `1.40C`.
+
+> **Do not use builds earlier than V4.** They carry a reentrancy bug in the GUI patch that
+> crashes the unit (`EXCEPTION VEC:0B`) when you hold `[SCENE B]` and turn an encoder on a
+> track in transition. V4 fixes it.
 
 > **About the boot branding**: the version you see at power-on lives as text in the header of the
 > ELEK container (flash address `0x4008`), in a **fixed-width, 10-character** field that cannot be
@@ -34,7 +41,7 @@ net. This firmware introduces THREE behavior changes + boot branding:
       ⚠️ **The upgrade does NOT work over USB** — it has to be MIDI DIN. A USB-MIDI cable or an
       audio interface with MIDI works.
 - [ ] **SysEx Librarian.app** (you already have it installed). It's the standard app on Mac for sending `.syx`.
-- [ ] **The patched firmware**: `out/OCTATRACK_OS1.40C_FULL_MAXO.syx`
+- [ ] **The patched firmware**: `out/OCTATRACK_OS1.40C_FULL_MAXO_V4.syx`
 - [ ] **The official rescue firmware** (essential!): `downloads/extracted/OCTATRACK_OS1.40C.syx`
 - [ ] **Stable power** — don't power it from a dubious power strip; don't move it during flashing.
 
@@ -75,10 +82,10 @@ Even so, as a precaution:
 1. **Connect MIDI**: your interface's MIDI OUT → the Octatrack's **MIDI IN** (DIN, not USB).
 2. **Open SysEx Librarian**, and in its destination selector choose your MIDI interface (the output
    port connected to the OT).
-3. **Drag** `out/OCTATRACK_OS1.40C_FULL_MAXO.syx` into the SysEx Librarian list.
+3. **Drag** `out/OCTATRACK_OS1.40C_FULL_MAXO_V4.syx` into the SysEx Librarian list.
 4. On the Octatrack: turn it off, hold **[FUNC]** and turn it on → **STARTUP MENU**.
 5. Press **[TRIG 3]** (MIDI UPGRADE) → it should say **"READY TO RECEIVE MIDI UPGRADE…"**.
-6. In SysEx Librarian, select the file (`_FULL_MAXO.syx`) and press **Play**.
+6. In SysEx Librarian, select the file (`_FULL_MAXO_V4.syx`) and press **Play**.
    - The OT's **[TRIG]** lights turn on one by one as it receives. **It takes a while** (be patient).
 7. When the transfer finishes: **"PREPARING FLASH"** appears and then **"UPDATING FLASH"**.
    - **⚠️ DO NOT POWER OFF OR DISCONNECT** during "…FLASH". Interrupting here corrupts the OS (→ "Z" screen).
@@ -116,7 +123,7 @@ If instead the volume jumps when you switch patterns (as before), the patch is n
 8. Restart the unit: the **first screen** should show **`MAXOLYDIAN`** where it used to say `1.40C`.
 9. Also in **SYSTEM (menu) → SYSTEM STATUS → OS VERSION** it should read `MAXOLYDIAN`.
    - If it still says `1.40C`, this file wasn't flashed (or the bootloader reads the version from
-     another copy): retry with `_MAXO.syx`. The change is purely cosmetic and doesn't affect operation.
+     another copy): retry with `_FULL_MAXO_V4.syx`. The change is purely cosmetic and doesn't affect operation.
 
 ### Testing sticky scenes
 10. Have two patterns with different Parts and different A/B scenes selected in each (e.g. P1 with
@@ -127,6 +134,20 @@ If instead the volume jumps when you switch patterns (as before), the patch is n
     - If the scenes jump anyway when you switch Part, the patch had no effect (it doesn't harm anything;
       reflash or report). Note: the "sticky" selection modifies the destination pattern's saved
       selection in the working copy; if you save the project, it persists.
+
+### Testing the dirty indicators
+13. With a track still in transition (step 2), look at its **track LED**: it should be
+    noticeably **dimmer** than the others. Re-trig that track → it returns to full brightness.
+    This is the exact, per-track signal: dim means "still sounding with the source Part's params".
+14. While any track is in that state, the **selected scene trig** should light **amber** (both
+    dies of the bi-colour LED) instead of its usual colour. This one is a global hint — it says
+    "something is still on the source Part", not which track.
+
+### Regression test — the crash fixed in V4
+15. Play B1 P1, switch to B2 P1, then hold **[SCENE B]** and turn the amp volume of a track that
+    is in transition. **Expected**: it just edits, nothing else happens.
+    - Builds before V4 threw `EXCEPTION VEC:0B` here. If you ever see that screen, power-cycle
+      the unit — nothing is damaged, the OS just trapped — and report it.
 
 ---
 
@@ -142,8 +163,10 @@ are not affected.
 
 - This firmware is **modified by you, for your own unit, for study purposes.** It is not official
   Elektron firmware and has no support from them.
-- The patch was **validated in a ColdFire emulator**, not on hardware. The logic is tested, but the
-  definitive test is this flash. Go in with the recovery net ready.
+- The patches are **validated in a ColdFire emulator**, and the audio/GUI/sticky-scene behaviour is
+  confirmed on hardware. The emulator harnesses exercise one call at a time, which is exactly how a
+  reentrancy crash slipped through into builds 1.0–3.0 — treat emulator green as necessary, not
+  sufficient, and go in with the recovery net ready.
 - The only truly delicate moment is **"UPDATING FLASH"**: don't cut power there.
 - Residual risk of a *hard* (unrecoverable) brick: very low — the rescue bootloader is not touched in
   a normal OS update.
@@ -154,7 +177,7 @@ are not affected.
 
 | File | What it is |
 |---|---|
-| `out/OCTATRACK_OS1.40C_FULL_MAXO.syx` | **Patched firmware** (audio + GUI + sticky scenes + "MAXOLYDIAN" branding) — the one you're going to flash |
-| `out/OCTATRACK_OS1.40C_LAZYPART_GUI.syx` | Variant without boot branding |
-| `out/OCTATRACK_OS1.40C_LAZYPART.syx` | Audio-only variant |
+| `out/OCTATRACK_OS1.40C_FULL_MAXO_V4.syx` | **Patched firmware** — everything: lazy part, GUI-in-transition, sticky scenes v2, dirty indicators, "MAXOLYDIAN" branding. The one you're going to flash |
+| `out/OCTATRACK_OS1.40C_LAZYPART_GUI.syx` | Variant without boot branding — ⚠️ pre-V4, has the crash |
+| `out/OCTATRACK_OS1.40C_LAZYPART.syx` | Audio-only variant (no GUI patch, so no crash) |
 | `downloads/extracted/OCTATRACK_OS1.40C.syx` | **Official rescue OS** — for recovery or reverting |

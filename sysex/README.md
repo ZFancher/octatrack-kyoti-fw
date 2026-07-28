@@ -41,22 +41,31 @@ per-hunk byte verification always holds.
 
 ## What the patch changes
 
-441 bytes out of 1,112,560 (0.04%) of the MAIN OS section.
+809 bytes out of 1,112,560 (0.07%) of the MAIN OS section.
 
 | id | source | effect |
 |---|---|---|
 | `lazy-part-apply` | `tools/patch.s` | Sounding tracks keep their params on pattern change; they apply the destination Part on their first trig — no volume jump. |
-| `gui-in-transition` | `tools/patch_gui.s` | While a track is in transition, the encoders edit the **source** Part and update the sound live. |
-| `sticky-scenes` | `tools/patch_scene.s` | Scene A/B selection is kept across pattern/Part changes instead of jumping to the destination Part's saved scenes. |
+| `gui-in-transition` | `tools/patch_gui2.s` | While a track is in transition, the encoders edit the **source** Part and update the sound live. |
+| `sticky-scenes-v2` | `tools/patch_scene2.s` | Scene A/B selection is kept across pattern/Part changes; manual assignment always wins. |
+| `dirty-track-leds` | `tools/patch_led.s` | A track still sounding with the source Part's params is lit dimmer (`0xF` → `0x5`) until it is re-trigged. |
+| `dirty-scene-trig` | `tools/patch_trig.s` | The selected scene trig goes amber (both dies of the bi-colour LED) while any track is in transition. |
 | `boot-branding` | ELEK header (`-V`) | Boot splash and SYSTEM STATUS show `MAXOLYDIAN` instead of `1.40C`. |
 
-The three code patches live in a free code cave at `0x400d64e0`–`0x400d6785`, reached by
-detours at `0x40009094` (part apply) and `0x40052e98` (encoder editor). Design,
+The code patches live in a free code cave at `0x400d64e0`–`0x400d697c`, reached by
+detours at `0x40009094` (part apply), `0x40052e98` (encoder editor), `0x4003f1b4`
+(crossfader), `0x40083fb4` (track LED painter) and `0x40034b5e` (trig painter). Design,
 addresses and reverse-engineering notes are in [`../NOTES.md`](../NOTES.md) and
 [`../ARCHITECTURE.md`](../ARCHITECTURE.md).
 
-`patches/maxolydian-1.0.json` holds each hunk with its load address, the original bytes
+`patches/maxolydian-4.0.json` holds each hunk with its load address, the original bytes
 and the replacement bytes, so the change is auditable without running anything.
+
+> Only the current revision is published. Earlier ones (1.0–3.0) carried a reentrancy
+> bug in the GUI patch that could crash the unit — holding `[SCENE B]` while turning an
+> encoder on a track in transition made a nested call clobber the single saved return
+> address, and the unit jumped to a dead address (`EXCEPTION VEC:0B`). Fixed in 4.0 by
+> a guard that makes a nested entry behave like stock. See `../NOTES.md`.
 
 ## Before you flash
 

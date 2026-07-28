@@ -55,15 +55,32 @@ When a track is IN TRANSITION (`per_track_part[track] != active_Part`, and sound
       restored; robustness 4 tracks × 4 encoders all ✓).
 - [x] Repackaged → `out/OCTATRACK_OS1.40C_LAZYPART_GUI.syx` (checksums ok).
 
-## ✅ SCENES STICKY (new) — `out/OCTATRACK_OS1.40C_FULL_MAXO.syx`
+## ✅ CURRENT BUILD — `out/OCTATRACK_OS1.40C_FULL_MAXO_V4.syx`
 
-Final firmware with EVERYTHING: lazy-part + GUI-in-transition + **scenes sticky** + MAXOLYDIAN branding.
-- Scenes sticky: when changing pattern/Part the A/B selection is kept (it only changes via manual
-  assignment). Impl: `scene_stub` (`tools/patch_scene.s`) in the detour chain of `FUN_40009094`
-  (`0x40009094 -> scene_stub@0x400d6700 -> save_stub@0x400d64e0`), copies `0x8ed90/91` outgoing->incoming.
-  RAM `0x80006c60/61` (LAST_PAT/INIT_FLAG). Validated in the emulator (`tools/emu_scene.py`).
-- Diff vs combined: 2 regions (detour 2B + stub 134B). checksums ok, round-trip identical.
-- RE detail + soft uncertainty in `NOTES.md`.
+Everything: lazy-part + GUI-in-transition (reentrancy-fixed) + sticky scenes v2 + dirty
+indicators + MAXOLYDIAN branding. 809 patch bytes, checksums ok, round-trip identical,
+reproducible from the stock `.syx` via `sysex/apply_patch.py`.
+
+| patch | source | detour | stub |
+|---|---|---|---|
+| lazy part apply | `patch.s` | `0x40009094` | `0x400d64e0` |
+| GUI-in-transition | `patch_gui2.s` | `0x40052e98` | `0x400d6600` |
+| sticky scenes v2 | `patch_scene2.s` | `0x40009094`, `0x4003f1b4` | `0x400d6700` |
+| dirty track LED | `patch_led.s` | `0x40083fb4` | `0x400d6800` |
+| dirty scene trig | `patch_trig.s` | `0x40034b5e` | `0x400d6900` |
+
+**Two corrections happened here, both documented in `NOTES.md`:**
+
+1. **Sticky scenes v1 was wrong.** It assumed `FUN_40009094` == "pattern change"; it is
+   actually `apply_part(part, pattern)` reached from 10 sites including the manual
+   scene-assign path, so v1 clobbered manual assignment. v2 polls `DAT_80000003` instead
+   and adopts vs imposes based on whether the index actually changed.
+2. **The GUI patch crashed the unit.** Its return-hook used one global slot; a nested entry
+   clobbered it and the outer return jumped to a dead address (`EXCEPTION VEC:0B`). Fixed by
+   a reentrancy guard in `patch_gui2.s`.
+
+Confirmed on hardware: lazy part, GUI-in-transition, sticky scenes v2. Pending hardware
+confirmation: the two dirty indicators, and the crash fix.
 
 ## ✅ FINAL RESULT — `out/OCTATRACK_OS1.40C_LAZYPART_GUI_MAXO.syx`
 

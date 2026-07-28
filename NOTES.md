@@ -354,7 +354,8 @@ DSP56xxx = signal (real-time audio). Synchronized by **double buffer + register 
 - **Discovery**: redirecting ONLY `DAT_100b14cf`→per_track_pattern makes it read/write the source
   (iVar10 still follows); + `0x80000002/03`=source passes the gate → live-update. (emu: TRANS without patch
   writes dest without sounding; with override writes source `0x90df4` + live `0x80000f94/95`.)
-- **Implementation** (`tools/patch_gui.s`, m68k-elf-as+ld @0x400d6600): wrapper with **return-hook**.
+- **Implementation** (`tools/patch_gui.s` — SUPERSEDED by `patch_gui2.s`, it was not reentrant;
+  see "Hardware crash and fix" below. m68k-elf-as+ld @0x400d6600): wrapper with **return-hook**.
   Entry `0x40052e98`→setup: if in transition, saves+sets globals to source, replaces the return on the stack
   with cleanup. cleanup restores globals + jmp to the real return (covers rts + the editor's tail-call). Save
   area `0x80006c30`, cave `0x400d6600` (no overlap with audio: cave `0x400d64e0`, RAM `0x80006a00`).
@@ -576,7 +577,7 @@ lazy-part patch already uses (`FUN_40009094`), carrying a shadow of the last app
 origin→destination. **Tradeoff**: it modifies the destination pattern/Part's saved scene selection (working
 copy); if the project is saved, it persists. Semantic decision pending with the user.
 
-### Sticky scenes — IMPLEMENTED (`tools/patch_scene.s`)
+### Sticky scenes v1 — SUPERSEDED (`tools/patch_scene.s`, buggy; see "Sticky scenes v2" below)
 
 `scene_stub` inserted in the detour chain of `FUN_40009094` (part-apply):
 `0x40009094 -> scene_stub(0x400d6700) -> save_stub(0x400d64e0) -> ... -> jmp 0x4000909c`.
@@ -594,5 +595,149 @@ ColdFire style (`lea -0x18,sp; movem.l ...,(sp)` — ColdFire does NOT support `
   Part change (confirmed: the lazy-part patch that uses it ALREADY works on hw) and on the per-pattern
   selection not being reloaded after the copy (evidence: writer/readers are per-pattern → no reload).
   Worst case if the assumption fails: the scenes jump the same (harms nothing; the stub only writes 2 bytes
-  of valid index to an in-range address). Possible cosmetic: scene LEDs might show the destination's
-  selection if some display reads the mirror `0x100a4ede/edf` (not updated); the audio uses `0x8ed90/91`.
+  of valid index to an in-range address).
+
+### Correction: there is NO separate RAM mirror — logs `out/ghidra_mirror{,2}.log`, `out/ghidra_partapply.log`
+
+An earlier note claimed the scene LEDs might read a mirror at `0x100a4ede/edf` that the patch
+leaves stale. **That was wrong.** `0x100a4ede/edf` and `*(0x46c82456) + 0x8ed90/91` are the
+**same two bytes**: the project working copy has a compile-time-constant base `0x1001614e`
+(84 code sites use it directly), and part of the firmware reaches the same fields through the
+pointer at `0x46c82456` instead. The offsets line up exactly:
+
+| via pointer | absolute | field |
+|---|---|---|
+| `+0x8ed80` | `0x100a4ece` | (neighbouring field) |
+| `+0x8ed88` | `0x100a4ed6` | (neighbouring field) |
+| `+0x8ed90/91` | `0x100a4ede/edf` | **scene A / B selection** |
+| `+0x8eda2` | `0x100a4ef0` | (neighbouring field) |
+
+So writing "the mirror" would be a no-op — `scene_stub` already writes what every reader reads.
+All four functions touching `0x100a4ede/edf` (`FUN_4000e79c`, `FUN_4004a100`, `FUN_40052944`,
+`FUN_400a0734`) only **store** to it; none loads from it.
+
+### Two-level scene storage (this is the real model)
+
+- **Live working copy** — `0x1001614e + pattern*0x18b2 + 0x8ed90/91`. What the crossfader
+  `FUN_4003f1b4` reads. **This is what `scene_stub` writes.**
+- **Per-Part saved copy** — `0x40170f70 + part*0x9b340 + pattern*0x18b2` (+1 for B).
+  Part stride `0x9b340`. `FUN_4004a100`/`FUN_400a0734` write both copies, but the live one only
+  when the entry's Part/pattern are the active ones (`DAT_80000002`/`DAT_80000003`).
+
+**`FUN_40009094` (our detour host) reads the per-Part copy, not the live one**
+(`cVar2 = *(char *)(iVar13 + 0x40170f70)`, then indexes scene data by it). It does **not** write
+`0x8ed90/91`, so it does not overwrite `scene_stub` — but anything it drives uses the destination
+Part's selection regardless of the patch. Signature confirmed: `FUN_40009094(part, pattern)`,
+matching the stub's `arg2 = pattern` read at `0x20(%sp)`.
+
+**Open**: which copy the scene LEDs/display read is still unidentified. If they read the per-Part
+copy, full stickiness needs writing `0x40170f70 + part*0x9b340 + pattern*0x18b2` too — more
+invasive, since that block is what gets persisted on project save.
+
+**Resolved** (see below): every consumer reads the live copy. Nothing extra is needed.
+
+## Sticky scenes v2 — `tools/patch_scene2.s` (v1 was wrong)
+
+**v1 was broken on hardware**: assigning a scene by hand after a transition got clobbered.
+
+Root cause: v1 hooked `FUN_40009094` and treated every invocation as a pattern change,
+copying the outgoing pattern's selection over the incoming one. That premise is false.
+`FUN_40009094` is `apply_part(part, pattern)`, called from **10 sites**, and:
+
+- 7 push the active pattern `(0x80000003)` as the argument;
+- 3 push an **arbitrary pattern from a register** (`FUN_4002b470` D3, `FUN_4002b654` D7,
+  `FUN_4004a8a4` D2), each preceded by `0x9b332 = 1` and `0x100f8598 = 1` — the
+  "a parameter was edited, re-apply the Part" idiom;
+- `FUN_40052944` (manual scene assign) sets those same two flags, so **assigning a scene
+  reaches apply_part too**, and v1 fired as a side effect of the user's own action.
+
+v2 ignores the arguments entirely and polls the real active pattern:
+
+```
+enforce():
+    p = *(0x80000003)
+    if !VALID:          STICKY = live[p]              ; first run
+    elif p != LAST_P:   live[p] = STICKY ; HOLD = 4   ; pattern changed -> impose
+    elif HOLD != 0:     live[p] = STICKY ; HOLD--     ; anti-loader window
+    else:               STICKY = live[p]              ; user assigned -> adopt
+    LAST_P = p ; VALID = 0xA5
+```
+
+A pattern change and a manual assignment are distinguishable because the index changes in
+one and not the other. `HOLD` is a heuristic guarding against the Part loaders
+(`FUN_4004a100`/`FUN_400a0734`) writing the destination's saved selection right after the
+change; it is the one tunable parameter. RAM `0x80006c60`..`0x64`. `enforce()` is
+idempotent and hangs off two hosts: `FUN_40009094` and `FUN_4003f1b4` (crossfader entry,
+prologue `lea -0x3c(SP),SP ; movem.l d2-d7/a2-a6,(SP)` displaced into the stub).
+Validated 9/9 in `tools/emu_scene2.py`. **Confirmed working on hardware.**
+
+## Display of the scene selection — no GUI patch needed
+
+All three consumers read the SAME live bytes, indexed by the ACTIVE pattern:
+
+| consumer | what it drives |
+|---|---|
+| `FUN_4003f1b4` | the crossfader morph (audio) |
+| `FUN_40061a94` @`0x40062c32` | publishes UI elements `0x37`/`0x38` via `FUN_40033e3c` |
+| `FUN_4004d640` | the scene numbers on the LCD (`+1`, so 0-15 shows as 1-16) |
+
+So correcting the data corrects audio and display together. `FUN_4004d5b8` (the scene trig
+comparator) is the exception: it uses `DAT_100b14cf`, the DISPLAYED pattern.
+
+`FUN_40002df4(part, pattern, scene, slot)` is NOT an LED setter — it stages 0x20 bytes of
+scene parameter data per track from `0x401715c2 + part*0x9b340 + ...` into the live scene
+buffer at `0x80000ed4 + track*0x40`, gated on the track's part/pattern matching the active
+ones. **That gate is what makes a track in transition keep the source Part's scene params
+— the real definition of "dirty".**
+
+## LED subsystem — logs `out/ghidra_led{,map,drv,buf,enc}.log`
+
+- State buffer `0x460ba98c`, **2 bits per LED** — `FUN_400132c4(id, state)` masks with
+  `3 << (id & 7)`, and ids advance by 2. Bi-colour: one bit per die, so
+  `00` off / `01` red / `10` green / `11` amber.
+- Brightness is separate and 4-bit: `FUN_400135b0(id, level)`, one call per die.
+- `FUN_400131a0(id)` / `FUN_400131c8(id)` set/clear a single bit (the widely-used pair).
+- **Track LEDs**: `FUN_40083eb0` loops 8 tracks over an id table at `0x400a9670`, computes
+  a colour state 0-3, and passes a **hardcoded `0xF` brightness** — so brightness is a free
+  dimension there. Loop tail registers: `D5` = track index, `D2` = id, `D3` = id+1,
+  `A3` = `FUN_400135b0`. It does NOT pop per call; it cleans `0x20` once at `0x40083fc6`,
+  so a stub must push exactly the same bytes and clean nothing.
+- **Trig LEDs**: `FUN_40034a44` loops 16 trigs building two local arrays, then emits them:
+  colour at `SP+0xA0`, brightness at `SP+0x20`, 4 B per entry, 2 entries per trig
+  (confirmed by the prologue `lea (-0x120,SP),SP ; lea (0xa0,SP),A6 ; lea (0x20,SP),A2`).
+  Stock combinations: `(0,0)` empty, `(0,1)` has content, `(1,0)` selected scene.
+  **`(1,1)` is never used** — that is the free slot the dirty indicator takes.
+
+Dirty indicators: `tools/patch_led.s` (track LED dimmed to `0x5`, detour `0x40083fb4`) and
+`tools/patch_trig.s` (selected scene trig amber, detour `0x40034b5e` — conveniently a
+6-byte `lea`, exactly one instruction). Both use `per_track_part[track] != DAT_80000002`.
+Validated 4/4 and 5/5 in `tools/emu_led.py` / `tools/emu_trig.py`.
+
+## Hardware crash and fix — the GUI patch was not reentrant
+
+**Symptom**: `EXCEPTION  VEC:0B  SR:2000  ADDR:000C94CA`. Vector 11 is the unimplemented
+F-line trap, and the address contains no defined code — i.e. the CPU jumped to garbage.
+Repro: play B1 P1, switch to B2 P1, hold `[SCENE B]` and turn a track's amp volume.
+
+**Cause**: `tools/patch_gui.s` installed a return-hook using ONE global slot (`SAVE_RET`
+`0x80006c34`) and ONE flag (`DID_OVERRIDE` `0x80006c33`), and `cleanup` jumped through
+`SAVE_RET` unconditionally:
+
+1. outer entry: `SAVE_RET = retOuter`, `(sp) = cleanup`, `DID_OVERRIDE = 1`
+2. nested entry: `SAVE_RET = retInner` — **clobbers retOuter**
+3. inner returns → cleanup restores, clears the flag, jumps `retInner` (fine)
+4. outer returns → cleanup sees the flag already 0, skips the restore, and jumps
+   `SAVE_RET` = `retInner`, **an already-consumed address** → wild jump → F-line
+
+A second defect rode along: in step 2 the nested entry saved the *already overridden*
+globals as if they were the originals, so the restore left them corrupted.
+
+**Fix** (`tools/patch_gui2.s`): guard at the top of `setup` — if `DID_OVERRIDE` is already
+set, a nested entry neither overrides nor hooks the return, and runs like stock. One slot
+is then sufficient because only one override can be live. The guard branch must be `bne.w`;
+`.b` is out of range (the jump crosses the whole 130-byte override block). Validated 4/4 in
+`tools/emu_gui2.py`, including the nested case.
+
+**Lesson for future patches here**: any hook that stores per-call state in a fixed global
+must either guard against reentry or keep a stack. The emulator harnesses only exercised
+single calls, which is why this survived validation and only surfaced on hardware.
