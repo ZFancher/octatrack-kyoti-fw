@@ -1,6 +1,6 @@
 # sysex/ — building the patched firmware
 
-This folder does **not** contain a firmware image. It contains the patch — the ~441
+This folder does **not** contain a firmware image. It contains the patch — the ~811
 bytes of ColdFire code authored in this repository — plus a script that applies it to
 **your own** copy of the official Elektron OS.
 
@@ -29,7 +29,7 @@ python3 sysex/apply_patch.py \
 ```
 [1/5] stock .syx checksum ok
 [2/5] extracted section_3_MAIN_OS.bin (1,112,560 bytes)
-[3/5] applied 6 hunks (537 bytes)
+[3/5] applied 12 hunks (811 bytes)
 [4/5] repacked -> OCTATRACK_MAXOLYDIAN.syx
 [5/5] output checksum ok — byte-identical to the reference build
 ```
@@ -41,7 +41,7 @@ per-hunk byte verification always holds.
 
 ## What the patch changes
 
-809 bytes out of 1,112,560 (0.07%) of the MAIN OS section.
+811 bytes out of 1,112,560 (0.07%) of the MAIN OS section.
 
 | id | source | effect |
 |---|---|---|
@@ -50,6 +50,7 @@ per-hunk byte verification always holds.
 | `sticky-scenes-v2` | `tools/patch_scene2.s` | Scene A/B selection is kept across pattern/Part changes; manual assignment always wins. |
 | `dirty-track-leds` | `tools/patch_led.s` | A track still sounding with the source Part's params is lit dimmer (`0xF` → `0x5`) until it is re-trigged. |
 | `dirty-scene-trig` | `tools/patch_trig.s` | The selected scene trig goes amber (both dies of the bi-colour LED) while any track is in transition. |
+| `no-bank-ptn-countdown` | in-place: `FUN_40056ab8` → `rts` | The SELECT BANK / SELECT PATTERN windows no longer expire after four seconds; press the same key again to abort. |
 | `boot-branding` | ELEK header (`-V`) | Boot splash and SYSTEM STATUS show `MAXOLYDIAN` instead of `1.40C`. |
 
 The code patches live in a free code cave at `0x400d64e0`–`0x400d697c`, reached by
@@ -58,7 +59,7 @@ detours at `0x40009094` (part apply), `0x40052e98` (encoder editor), `0x4003f1b4
 addresses and reverse-engineering notes are in [`../NOTES.md`](../NOTES.md) and
 [`../ARCHITECTURE.md`](../ARCHITECTURE.md).
 
-`patches/maxolydian-4.0.json` holds each hunk with its load address, the original bytes
+`patches/maxolydian-5.0.json` holds each hunk with its load address, the original bytes
 and the replacement bytes, so the change is auditable without running anything.
 
 > Only the current revision is published. Earlier ones (1.0–3.0) carried a reentrancy

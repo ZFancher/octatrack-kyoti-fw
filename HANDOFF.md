@@ -55,7 +55,7 @@ When a track is IN TRANSITION (`per_track_part[track] != active_Part`, and sound
       restored; robustness 4 tracks × 4 encoders all ✓).
 - [x] Repackaged → `out/OCTATRACK_OS1.40C_LAZYPART_GUI.syx` (checksums ok).
 
-## ✅ CURRENT BUILD — `out/OCTATRACK_OS1.40C_FULL_MAXO_V4.syx`
+## ✅ CURRENT BUILD — `out/OCTATRACK_OS1.40C_FULL_MAXO_V5.syx`
 
 Everything: lazy-part + GUI-in-transition (reentrancy-fixed) + sticky scenes v2 + dirty
 indicators + MAXOLYDIAN branding. 809 patch bytes, checksums ok, round-trip identical,

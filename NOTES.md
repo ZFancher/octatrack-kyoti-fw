@@ -741,3 +741,78 @@ is then sufficient because only one override can be live. The guard branch must 
 **Lesson for future patches here**: any hook that stores per-call state in a fixed global
 must either guard against reentry or keep a stack. The emulator harnesses only exercised
 single calls, which is why this survived validation and only surfaced on hardware.
+
+## BANK/PTN selection: removing the 4-second countdown — logs `out/ghidra_{bankptn,timeout,countdown,timerstruct,timerrefs}.log`
+
+Manual (Banks and Patterns): pressing `[BANK]` or `[PTN]` opens a SELECT window that
+expires in four seconds; `[NO]` exits. On the unit the countdown is drawn as four boxes
+that empty once per second.
+
+**State machine** — `FUN_4005a044(_, event)` is the PTN key handler, `event` 1 = press,
+0 = release:
+
+- `_DAT_460d1742`: 0 normal, 1 key held, 2 SELECT window open
+- `_DAT_460d1ab2`: set on press to `(mode != 2)` — this is what makes **press-again-to-exit
+  already work in stock firmware** on both keys (confirmed on hardware). Only the timeout
+  and the key LED were missing from what the user wanted.
+
+**The timed window** — `FUN_40059f8c(text, ticks, enable, on_timeout)`:
+
+```
+_DAT_460d1e5c = window handle      _DAT_460d1e60 = on_timeout
+_DAT_460d1e50 = ticks >> 2         _DAT_460d1e58 = reload
+_DAT_460d1e54 = 4                  _DAT_460d1e4c = enable
+```
+
+`0xf0 >> 2 = 60` ticks per box, `_DAT_460d1e54 = 4` boxes → the four seconds.
+`FUN_40056ab8` is the tick; it gates on `tst.l (0x460d1e4c)` and on expiry calls
+`FUN_40056a70` (close + callback). Callers pass `enable`: PTN `1`, SELECT BANK `0`,
+`BANK %c: SELECT PTN` `0` — the BANK path enables it afterwards via `FUN_40031200`
+(`moveq #1,D0 ; move.l D0,(0x460d1e4c)`), whose only caller is `FUN_4007b26c`.
+
+**Patch (2 bytes)**: `FUN_40056ab8` → `rts` (`4ab9…` → `4e75`). Safe because the whole
+timer is exclusive to bank/pattern selection — `FUN_40059f8c` has exactly three callers,
+all of them SELECT windows, and the tick has one caller. Closing on a trig press goes
+through `FUN_40056b00` from `FUN_4007b2fc`, independent of the countdown. The four boxes
+stay full and act as a mode indicator. **Confirmed on hardware.**
+
+**Methodology note**: a scalar-operand sweep MISSES absolute-long operands — Ghidra models
+those as references. That is why an early sweep found neither `tst.l (0x460d1e4c).l` nor the
+writers of `_DAT_46c82456`. Use `ReferenceManager.getReferencesTo` for globals; keep the
+scalar sweep only for immediates and struct offsets.
+
+## PERSONALIZE menu structure — logs `out/ghidra_{personalize,flags,settingsblock,settertbl}.log`
+
+OS 1.40C has **16 items**, not the 12 in the 1.40A manual (added: `SHORT SAMPLE NAME`,
+`RECORD QUICK MODE`, `EXT LEN GRID-REC`, `LED BRIGHTNESS`). Three parallel arrays:
+
+| array | address | entries |
+|---|---|---|
+| labels | `0x400b2a34` | 16 |
+| value getters | `0x400b2a74` | 16 |
+| `LED BRIGHTNESS` values (`LOW`/`MID`/`MAX`) | `0x400b2ab4` | 3 |
+| setters | `0x400b2ac0` | 16 |
+
+Contiguous, `0x400b2a34`–`0x400b2aff`, immediately followed by unrelated FILE MANAGER data
+— so **they cannot be extended in place**.
+
+- `FUN_40068e00(win)` renders: label `[i]`, then calls getter `[i]` for the right-hand
+  column. Count `_DAT_460e4678`, cursor `_DAT_460e4670`, scroll `_DAT_460e4668`.
+- `FUN_40068fd0(key)` handles input: calls setter `[cursor]`. Setters take `(delta, flag)`
+  on the stack, add to the current value and clamp.
+- Each setting is its **own 32-bit word**, not a bit in a shared mask:
+  `MUTE FOCUSES TRK` `0x80000090`, `QUANTIZE LIVE REC` `0x800000ac`,
+  `DIS. PAGE AUTOCOPY` `0x800000c0`, `EXT LEN GRID-REC` `0x800000cc`,
+  `LED BRIGHTNESS` `0x800000d0`.
+- **Free words inside the block**: `0x800000a8`, `0x800000d4`, `0x800000d8`, `0x800000dc`
+  (zero references anywhere).
+- No settings word is referenced by the project serializer `FUN_40086d7a`, yet the settings
+  survive power cycles → the block lives in **battery-backed RAM** (consistent with the
+  Startup Menu's EMPTY RESET, which the manual describes as clearing settings). A new flag
+  in a free word should therefore persist with no file-format change. *Inferred, not yet
+  verified on hardware.*
+
+To add items: relocate all three arrays to the cave with more entries, repoint the five
+`lea` instructions (one in `FUN_40068e00` for labels, one for getters, three in
+`FUN_40068fd0` for setters), write a getter/setter pair per item, and raise the count.
+**Open**: where `_DAT_460e4678` is initialised.
