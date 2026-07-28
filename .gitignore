@@ -1,0 +1,19 @@
+# --- Elektron copyrighted material: do NOT version or redistribute ---
+# official OS downloaded (.bin/.syx/.zip) + Elektron user manuals
+downloads/
+*.bin
+*.syx
+*.zip
+*.pdf
+
+# analysis results, patched images, Ghidra project
+out/
+
+# --- Third party (cloned by setup.sh) ---
+vendor/
+
+# --- Local ---
+.DS_Store
+.playwright-mcp/
+__pycache__/
+*.pyc
