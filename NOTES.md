@@ -812,7 +812,56 @@ Contiguous, `0x400b2a34`–`0x400b2aff`, immediately followed by unrelated FILE 
   in a free word should therefore persist with no file-format change. *Inferred, not yet
   verified on hardware.*
 
-To add items: relocate all three arrays to the cave with more entries, repoint the five
-`lea` instructions (one in `FUN_40068e00` for labels, one for getters, three in
-`FUN_40068fd0` for setters), write a getter/setter pair per item, and raise the count.
-**Open**: where `_DAT_460e4678` is initialised.
+To add items: relocate all three arrays to the cave with more entries, repoint the
+references, write a getter/setter pair per item, and raise the count.
+
+**Item count** — `FUN_40068fa8` is the list init:
+
+```asm
+tstl 0x46c8d18c ; sne d0 ; mvsb d0,d0 ; moveq #15,d1 ; subl d0,d1   -> 15 or 16
+movel d1,-(sp) ; pea 5 ; pea 0x460e4668 ; jsr 0x4007ec60            -> list_init(list, rows, count)
+```
+
+Raising the immediate to 17 gives 17 or 18 and **preserves the conditionality** of the
+16th item (which depends on `0x46c8d18c`). One byte.
+
+**Careful**: the getter and setter arrays are reached by `lea`, but the label array is
+loaded as an **immediate into D5** (`move.l #0x400b2a34,%d5` at `0x40068efc`). A sweep
+for `lea` alone misses it.
+
+Implemented in `tools/patch_menu.s` + `tools/patch_flags.s`: `NO BANK/PTN TIMER`
+(`0x800000d4`) and `LAZY TRANSITIONS` (`0x800000d8`, one switch for lazy part apply +
+GUI-in-transition + sticky scenes + both dirty indicators). Both default to unchecked, so
+an unconfigured unit behaves exactly like stock — every patch got an early-out gate.
+Glyphs: `0x400b5e90` checked, `0x400b5e8e` unchecked. Setters are `(flag + delta) & 1`,
+which turns both [YES] and the arrows into a toggle.
+
+## Composition testing — `tools/emu_image.py`
+
+**V6 froze on the logo screen while all 25 per-stub emulator tests were green.** Adding a
+gate to `save_stub` shifted `restore_stub` by 10 bytes, and the exit detour at
+`0x40009664` kept jumping to the old address, landing inside `save_stub`'s tail.
+A second stale detour (`xf_stub`, shifted 8 bytes by the `scene_stub` gate) was found by
+the same check before it could cause the next crash.
+
+The per-stub harnesses cannot catch this: each loads a freshly assembled `.bin` at a fixed
+address and tests its logic in isolation. Nothing tested whether the detours **in the
+assembled image** point where the symbols ended up.
+
+`tools/emu_image.py` runs against the real patched image and checks:
+
+1. every detour targets **exactly a known symbol** — not merely "somewhere in the cave",
+   which is what made the bug subtle: `0x400d6538` was inside the cave and inside
+   `save_stub`; it just was not an entry point;
+2. no target lands in the middle of another stub;
+3. real execution from each detour site, flagging any PC that touches a cave byte not
+   belonging to a stub (i.e. garbage);
+4. no stub overlaps the next.
+
+Verified against a deliberately re-broken image: it fails both statically and dynamically.
+**Detour targets are now derived from the symbol tables at build time, never hardcoded.**
+
+Three layers now cover a build: per-stub logic (the `emu_*.py` harnesses), image
+composition (this), and reproducibility (`sysex/apply_patch.py`). Both hardware bugs in
+this project — the reentrancy crash and this freeze — escaped through gaps between layers,
+not through a layer.

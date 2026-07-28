@@ -16,7 +16,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
-DEFAULT_PATCH = HERE / "patches" / "maxolydian-5.0.json"
+DEFAULT_PATCH = HERE / "patches" / "maxolydian-6.0.json"
 TOOL_CANDIDATES = [
     ROOT / "vendor/elektron-firmware-tool/elektron-firmware-tool",
     Path("elektron-firmware-tool"),

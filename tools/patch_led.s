@@ -37,6 +37,8 @@
     .global _start
 _start:
 led_stub:
+    tst.l   0x800000d8                 | gate: LAZY TRANSITIONS apagado -> brillo de fabrica
+    beq.b   lb_norm
     | --- decide the level for this track ---
     lea     TRK_PART,%a0
     moveq   #0,%d1

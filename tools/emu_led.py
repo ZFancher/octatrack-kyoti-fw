@@ -15,7 +15,7 @@ SETLEVEL = 0x400135b0          # A3 apunta aca
 LVL_NORM, LVL_DIRTY = 0xF, 0x5
 
 
-def run(track, part_of_track, active_part):
+def run(track, part_of_track, active_part, lazy=1):
     uc = Uc(UC_ARCH_M68K, UC_MODE_BIG_ENDIAN)
     uc.mem_map(0x40000000, 0x400000)
     uc.mem_map(0x80000000, 0x20000)
@@ -25,6 +25,7 @@ def run(track, part_of_track, active_part):
     uc.mem_write(SETLEVEL, b"\x4e\x75")
     uc.mem_write(TRK_PART + track, bytes([part_of_track]))
     uc.mem_write(ACT_PART, bytes([active_part]))
+    uc.mem_write(0x800000d8, struct.pack('>I', lazy))
 
     sp0 = 0x41018000
     uc.reg_write(UC_M68K_REG_A7, sp0)
@@ -105,5 +106,8 @@ check("3 track 0, en transicion",
       run(track=0, part_of_track=5, active_part=0), LVL_DIRTY)
 check("4 track 7 (ultimo), no en transicion",
       run(track=7, part_of_track=4, active_part=4), LVL_NORM)
+
+check("5 GATE apagado: brillo de fabrica aunque este en transicion",
+      run(track=3, part_of_track=1, active_part=2, lazy=0), LVL_NORM)
 
 print("\n" + ("TODOS OK" if not FAILS else "FALLAN: " + ", ".join(FAILS)))

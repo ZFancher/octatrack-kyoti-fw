@@ -17,7 +17,7 @@ ID_TABLE = 0x400a75f2
 COLOUR = 0x41017000          # simula local_80 (A6 apunta aca)
 
 
-def run(parts, active_part, pattern, scene_a, scene_b, slot_edit):
+def run(parts, active_part, pattern, scene_a, scene_b, slot_edit, lazy=1):
     uc = Uc(UC_ARCH_M68K, UC_MODE_BIG_ENDIAN)
     uc.mem_map(0x40000000, 0x400000)
     uc.mem_map(0x46000000, 0x1000000)
@@ -28,6 +28,7 @@ def run(parts, active_part, pattern, scene_a, scene_b, slot_edit):
     uc.mem_write(PTRLOC, struct.pack(">I", PROJ))
     uc.mem_write(TRK_PART, bytes(parts))
     uc.mem_write(ACT_PART, bytes([active_part]))
+    uc.mem_write(0x800000d8, struct.pack('>I', lazy))
     uc.mem_write(DISP_PAT, bytes([pattern]))
     uc.mem_write(SLOT_EDIT, bytes([slot_edit]))
     uc.mem_write(PROJ + pattern * STRIDE + SEL, bytes([scene_a, scene_b]))
@@ -118,5 +119,8 @@ check("4 transicion en el track 7 (ultimo del scan)",
       run([3, 3, 3, 3, 3, 3, 3, 1], 3, 7, 15, 0, slot_edit=1), 15)
 check("5 transicion en el track 0 (primero)",
       run([1, 3, 3, 3, 3, 3, 3, 3], 3, 7, 0, 2, slot_edit=1), 0)
+
+check("6 GATE apagado: no pinta aunque haya transicion",
+      run(ONE_DIFF, 3, 7, 9, 4, slot_edit=1, lazy=0), None)
 
 print("\n" + ("TODOS OK" if not FAILS else "FALLAN: " + ", ".join(FAILS)))

@@ -2,6 +2,9 @@
     .text
 | ===== SAVE_STUB (entrada de FUN_40009094) =====
 save_stub:
+    | gate: LAZY TRANSITIONS apagado -> comportamiento de fabrica
+    tst.l 0x800000d8
+    beq.w sv_stock
     | bulk-save buffers de voz: 0x80000a50 -> 0x80006a00 (0x200 B = 128 longs)
     lea 0x80000a50, %a0
     lea 0x80006a00, %a1
@@ -31,11 +34,15 @@ sv3:
     cmp.l %d1, %d0
     bne.b sv3
     | instrucciones desplazadas de la entrada + continúa
+sv_stock:
     .short 0x4fef, 0xff98
     .short 0x48d7, 0x7cfc
     jmp 0x4000909c
 | ===== RESTORE_STUB (rts de FUN_40009094) =====
 restore_stub:
+    | gate: si no se salvo nada, no hay nada que restaurar
+    tst.l 0x800000d8
+    beq.w rs_stock
     moveq #0, %d1
 rs0:
     lea 0x80006c20, %a0
@@ -68,4 +75,5 @@ rs_next:
     cmp.l %d1, %d0
     bne.b rs0
     | tail-call original desplazado (a post_work)
+rs_stock:
     jmp 0x40000c3c

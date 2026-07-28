@@ -9,7 +9,7 @@ from unicorn.m68k_const import *
 
 STUB = pathlib.Path("out/patch_scene2.bin").read_bytes()
 SCENE_STUB = 0x400d6700     # host 1: FUN_40009094 (apply_part)
-XF_STUB    = 0x400d670a     # host 2: FUN_4003f1b4 (crossfader)
+XF_STUB    = 0x400d6712     # host 2: FUN_4003f1b4 (crossfader)
 SAVE_STUB  = 0x400d64e0     # chain target de host 1
 XF_RESUME  = 0x4003f1bc     # retorno de host 2
 
@@ -28,7 +28,7 @@ def sel(pat):
     return PROJ + pat * STRIDE + SEL
 
 
-def run(entry, act_pat, state, live, extra_writes=None):
+def run(entry, act_pat, state, live, extra_writes=None, lazy=1):
     """state = (valid, last_p, sticky_a, sticky_b, hold); live = (a,b) del pattern activo"""
     uc = Uc(UC_ARCH_M68K, UC_MODE_BIG_ENDIAN)
     uc.mem_map(0x40000000, 0x400000)
@@ -38,6 +38,7 @@ def run(entry, act_pat, state, live, extra_writes=None):
     uc.mem_write(SCENE_STUB, STUB)
     uc.mem_write(PTRLOC, struct.pack(">I", PROJ))
     uc.mem_write(ACTPAT, bytes([act_pat]))
+    uc.mem_write(0x800000d8, struct.pack('>I', lazy))   # PERSONALIZE: LAZY TRANSITIONS
     valid, last_p, sa, sb, hold = state
     for addr, val in ((VALID, valid), (LAST_P, last_p), (STICKY_A, sa),
                       (STICKY_B, sb), (HOLD, hold)):
@@ -177,5 +178,15 @@ r = run(XF_STUB, 8, (0xa5, 5, *OLD, 0), NEW)
 print("\n== prologo desplazado del crossfader ==")
 print("   d2 guardado =", hex(r["regs"].get(UC_M68K_REG_D2, 0)),
       "(debe seguir siendo 0x33333333: enforce no lo toca)")
+
+# --- gate: con LAZY TRANSITIONS apagado no debe tocar nada
+r = run(SCENE_STUB, 8, (0xa5, 5, *OLD, 0), NEW, lazy=0)
+ok = (r["target"] == SAVE_STUB and r["live"] == list(NEW)
+      and r["last_p"] == 5 and r["sticky"] == list(OLD))
+if not ok:
+    FAILS.append("10 gate apagado")
+print(("PASS" if ok else "FAIL"), "10 GATE apagado: encadena a save_stub sin tocar la seleccion")
+print("      live=%s (debe seguir siendo %s), LAST_P=%d (sin cambiar)"
+      % (r["live"], list(NEW), r["last_p"]))
 
 print("\n" + ("TODOS OK" if not FAILS else "FALLAN: " + ", ".join(FAILS)))

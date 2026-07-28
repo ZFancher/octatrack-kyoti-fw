@@ -29,6 +29,8 @@
     .text
 | ===== SETUP (entrada de FUN_40052e98 = editor de encoder) =====
 setup:
+    tst.l 0x800000d8                | gate: LAZY TRANSITIONS apagado -> fabrica
+    beq.w no_override
     move.b 0x80006c33, %d0          | DID_OVERRIDE
     bne.w no_override               | <-- FIX: ya hay uno activo -> reentrada, no tocar
                                     | (.w: el salto cruza todo el bloque de override, >127 B)

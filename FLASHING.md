@@ -1,7 +1,12 @@
 # Safe flashing guide — modified Octatrack MKII firmware
 
-How to flash `out/OCTATRACK_OS1.40C_FULL_MAXO_V5.syx` onto your Octatrack MKII, with a full
-safety net. This firmware introduces SIX behavior changes + boot branding:
+How to flash `out/OCTATRACK_OS1.40C_FULL_MAXO_V6.syx` onto your Octatrack MKII, with a full
+safety net.
+
+> **Everything is OFF by default.** Straight after flashing the unit behaves exactly like
+> stock firmware. The changes below are switched on from **PERSONALIZE** (see §4).
+
+The firmware introduces SIX optional behavior changes + boot branding:
 1. **Lazy part apply**: when you switch patterns, the tracks that are playing keep their params (no
    volume jump); they apply the destination Part on their first trig.
 2. **GUI-in-transition**: while a track is in transition, turning its knobs edits the **source Part**
@@ -16,6 +21,9 @@ safety net. This firmware introduces SIX behavior changes + boot branding:
    seconds. They stay open until you pick a trig or press the same key again to abort — the
    press-again-to-exit toggle already existed in stock firmware. The four countdown boxes stay full
    and now just mean "selection mode is active".
+
+Changes 1–5 are controlled by **LAZY TRANSITIONS** and change 6 by **NO BANK/PTN TIMER**, both
+new entries at the bottom of the PERSONALIZE menu.
 7. **Boot branding**: the startup screen (and SYSTEM STATUS → OS VERSION) shows **`MAXOLYDIAN`**
    instead of `1.40C`.
 
@@ -45,7 +53,7 @@ safety net. This firmware introduces SIX behavior changes + boot branding:
       ⚠️ **The upgrade does NOT work over USB** — it has to be MIDI DIN. A USB-MIDI cable or an
       audio interface with MIDI works.
 - [ ] **SysEx Librarian.app** (you already have it installed). It's the standard app on Mac for sending `.syx`.
-- [ ] **The patched firmware**: `out/OCTATRACK_OS1.40C_FULL_MAXO_V5.syx`
+- [ ] **The patched firmware**: `out/OCTATRACK_OS1.40C_FULL_MAXO_V6.syx`
 - [ ] **The official rescue firmware** (essential!): `downloads/extracted/OCTATRACK_OS1.40C.syx`
 - [ ] **Stable power** — don't power it from a dubious power strip; don't move it during flashing.
 
@@ -86,10 +94,10 @@ Even so, as a precaution:
 1. **Connect MIDI**: your interface's MIDI OUT → the Octatrack's **MIDI IN** (DIN, not USB).
 2. **Open SysEx Librarian**, and in its destination selector choose your MIDI interface (the output
    port connected to the OT).
-3. **Drag** `out/OCTATRACK_OS1.40C_FULL_MAXO_V5.syx` into the SysEx Librarian list.
+3. **Drag** `out/OCTATRACK_OS1.40C_FULL_MAXO_V6.syx` into the SysEx Librarian list.
 4. On the Octatrack: turn it off, hold **[FUNC]** and turn it on → **STARTUP MENU**.
 5. Press **[TRIG 3]** (MIDI UPGRADE) → it should say **"READY TO RECEIVE MIDI UPGRADE…"**.
-6. In SysEx Librarian, select the file (`_FULL_MAXO_V5.syx`) and press **Play**.
+6. In SysEx Librarian, select the file (`_FULL_MAXO_V6.syx`) and press **Play**.
    - The OT's **[TRIG]** lights turn on one by one as it receives. **It takes a while** (be patient).
 7. When the transfer finishes: **"PREPARING FLASH"** appears and then **"UPDATING FLASH"**.
    - **⚠️ DO NOT POWER OFF OR DISCONNECT** during "…FLASH". Interrupting here corrupts the OS (→ "Z" screen).
@@ -127,7 +135,7 @@ If instead the volume jumps when you switch patterns (as before), the patch is n
 8. Restart the unit: the **first screen** should show **`MAXOLYDIAN`** where it used to say `1.40C`.
 9. Also in **SYSTEM (menu) → SYSTEM STATUS → OS VERSION** it should read `MAXOLYDIAN`.
    - If it still says `1.40C`, this file wasn't flashed (or the bootloader reads the version from
-     another copy): retry with `_FULL_MAXO_V5.syx`. The change is purely cosmetic and doesn't affect operation.
+     another copy): retry with `_FULL_MAXO_V6.syx`. The change is purely cosmetic and doesn't affect operation.
 
 ### Testing sticky scenes
 10. Have two patterns with different Parts and different A/B scenes selected in each (e.g. P1 with
@@ -147,15 +155,24 @@ If instead the volume jumps when you switch patterns (as before), the patch is n
     dies of the bi-colour LED) instead of its usual colour. This one is a global hint — it says
     "something is still on the source Part", not which track.
 
+### Turning the features on
+15. Go to **PROJECT → PERSONALIZE**. Scroll to the bottom: two new entries,
+    **NO BANK/PTN TIMER** and **LAZY TRANSITIONS**, both unchecked.
+    Check them with **[YES]** (or the arrow keys). The 16 stock entries above must still show
+    their own values correctly.
+16. The settings live in battery-backed RAM, so they survive a power cycle. Turn the unit off
+    and on to confirm they stay checked. A Startup Menu **EMPTY RESET** clears them back to
+    factory, like every other PERSONALIZE setting.
+
 ### Testing the BANK/PTN toggle
-16. Press **[PTN]**: the SELECT PATTERN window opens. Wait more than four seconds — **it must stay
+18. Press **[PTN]**: the SELECT PATTERN window opens. Wait more than four seconds — **it must stay
     open**, with the four boxes full and unmoving. Press a **[TRIG]** and the pattern changes.
-17. Press **[PTN]** again instead of a trig → aborts back to the sequencer.
-18. Press **[BANK]**, pick a bank with a **[TRIG]** → the display asks for the pattern, also with no
+19. Press **[PTN]** again instead of a trig → aborts back to the sequencer.
+20. Press **[BANK]**, pick a bank with a **[TRIG]** → the display asks for the pattern, also with no
     time limit. Pick a trig and you are back to normal.
 
 ### Regression test — the crash fixed in V4
-15. Play B1 P1, switch to B2 P1, then hold **[SCENE B]** and turn the amp volume of a track that
+17. Play B1 P1, switch to B2 P1, then hold **[SCENE B]** and turn the amp volume of a track that
     is in transition. **Expected**: it just edits, nothing else happens.
     - Builds before V4 threw `EXCEPTION VEC:0B` here. If you ever see that screen, power-cycle
       the unit — nothing is damaged, the OS just trapped — and report it.
@@ -188,7 +205,7 @@ are not affected.
 
 | File | What it is |
 |---|---|
-| `out/OCTATRACK_OS1.40C_FULL_MAXO_V5.syx` | **Patched firmware** — everything: lazy part, GUI-in-transition, sticky scenes v2, dirty indicators, "MAXOLYDIAN" branding. The one you're going to flash |
+| `out/OCTATRACK_OS1.40C_FULL_MAXO_V6.syx` | **Patched firmware** — everything: lazy part, GUI-in-transition, sticky scenes v2, dirty indicators, "MAXOLYDIAN" branding. The one you're going to flash |
 | `out/OCTATRACK_OS1.40C_LAZYPART_GUI.syx` | Variant without boot branding — ⚠️ pre-V4, has the crash |
 | `out/OCTATRACK_OS1.40C_LAZYPART.syx` | Audio-only variant (no GUI patch, so no crash) |
 | `downloads/extracted/OCTATRACK_OS1.40C.syx` | **Official rescue OS** — for recovery or reverting |

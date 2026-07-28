@@ -39,6 +39,8 @@
     .global _start
 _start:
 trig_stub:
+    tst.l   0x800000d8                 | gate: LAZY TRANSITIONS apagado -> no pintar
+    beq.w   ts_done
     | --- is ANY track in transition? ---
     lea     TRK_PART,%a0
     moveq   #0,%d1

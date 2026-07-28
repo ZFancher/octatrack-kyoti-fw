@@ -50,6 +50,7 @@
     .equ STRIDE,   0x18b2
     .equ SEL_OFF,  0x8ed90
 
+    .equ F_LAZY,    0x800000d8      | PERSONALIZE: LAZY TRANSITIONS
     .equ SAVE_STUB, 0x400d64e0      | audio patch entry (lazy part apply)
     .equ XF_RESUME, 0x4003f1bc      | crossfader, after the displaced prologue
 
@@ -59,13 +60,19 @@ _start:
 
 | ---- host 1: FUN_40009094 (apply_part). Detour at 0x40009094 jumps here. ----
 scene_stub:
+    tst.l   F_LAZY                     | gate: apagado -> stock
+    beq.b   sc_skip
     bsr.w   enforce
+sc_skip:
     jmp     SAVE_STUB                  | chain into the existing audio patch
 
 | ---- host 2: FUN_4003f1b4 (crossfader). Detour at 0x4003f1b4 jumps here. ----
 | Displaced prologue: lea -0x3c(sp),sp ; movem.l d2-d7/a2-a6,(sp)
 xf_stub:
+    tst.l   F_LAZY                     | gate: apagado -> stock
+    beq.b   xf_skip
     bsr.w   enforce
+xf_skip:
     lea     -0x3c(%sp),%sp
     .short  0x48d7, 0x7cfc             | movem.l %d2-%d7/%a2-%a6,(%sp)
     jmp     XF_RESUME

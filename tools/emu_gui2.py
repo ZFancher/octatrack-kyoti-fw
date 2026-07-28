@@ -8,7 +8,7 @@ from unicorn.m68k_const import *
 
 STUB = pathlib.Path("out/patch_gui2.bin").read_bytes()
 SETUP = 0x400d6600
-CLEANUP = 0x400d669a
+CLEANUP = 0x400d66a4
 EDITOR_BODY = 0x40052ea0            # a donde salta setup para seguir el editor
 TRACK = 0x100b14cc
 DISP_PAT = 0x100b14cf
@@ -29,7 +29,7 @@ def mk():
 
 
 def run_setup(track, part_of_track, pat_of_track, active_part, active_pat,
-              disp_pat, did_override, ret_addr):
+              disp_pat, did_override, ret_addr, lazy=1):
     uc = mk()
     uc.mem_write(TRACK, bytes([track]))
     uc.mem_write(DISP_PAT, bytes([disp_pat]))
@@ -38,6 +38,7 @@ def run_setup(track, part_of_track, pat_of_track, active_part, active_pat,
     uc.mem_write(TRK_PART + track, bytes([part_of_track]))
     uc.mem_write(TRK_PAT + track, bytes([pat_of_track]))
     uc.mem_write(DID_OVR, bytes([did_override]))
+    uc.mem_write(0x800000d8, struct.pack('>I', lazy))
     uc.mem_write(SAVE_RET, struct.pack(">I", 0xAAAAAAAA))   # marcador previo
 
     sp0 = 0x41018000
@@ -125,5 +126,12 @@ ck("4 cleanup: restaura globals y retorna al llamador real",
    and uc.mem_read(ACT_PART, 1)[0] == 2 and uc.mem_read(ACT_PAT, 1)[0] == 9
    and uc.mem_read(DID_OVR, 1)[0] == 0,
    f"(volvio a 0x{land.get('pc', 0):x}, DID_OVR={uc.mem_read(DID_OVR,1)[0]})")
+
+r = run_setup(track=6, part_of_track=1, pat_of_track=5, active_part=2, active_pat=9,
+              disp_pat=9, did_override=0, ret_addr=0x40052000, lazy=0)
+ck("5 GATE apagado: no overridea aunque haya transicion",
+   r["reached"] and r["did_ovr"] == 0 and r["stack_ret"] == 0x40052000
+   and r["disp_pat"] == 9 and r["act_part"] == 2,
+   f"(DID_OVR={r['did_ovr']}, globals intactos)")
 
 print("\n" + ("TODOS OK" if not FAILS else "FALLAN: " + ", ".join(FAILS)))
