@@ -1081,3 +1081,122 @@ stubs). Adds 10 qualities to the F-knob: MAJ MIN + DOR PHR LYD MIX LOC BLU PHD M
 Validation `tools/emu_arp.py` (Unicorn): decode 145/145, lookup 18432/18432 (scale×note),
 MAJ parity 0 mismatches, formatter labels correct. Composes with R10 (no detour/cave
 overlap) — mergeable as a new revision. NOT yet hardware-tested.
+
+---
+
+## Bank load from CF is ASYNC and does NOT stop audio (enables live bank paging)
+
+Educational RE of whether a single-bank reload halts playback (for a "page in 16 banks
+mid-performance" feature). Verdict: **it does not stop the sequencer/audio, and the load
+runs on a dedicated background task** — the same concurrency that streams samples from CF
+while playing. Scripts: `tools/GhidraBank*.java`.
+
+### Two-tier bank storage (new structural finding)
+- **Resident bank blobs**: `0x400e21e0 + bank*0x9b340` (635,200 B/bank, 16 banks ≈ 10 MB).
+  Cold store in RAM, deserialized from `<proj>/bankNN.work` by FUN_4008ded0.
+- **Live working copy**: patterns at `0x46c82456 + pat*0x18b2` — filled from the blob only
+  when a bank becomes current (FUN_4000faf0), gated on `DAT_80000002` = playing bank.
+
+### RELOAD BANK call chain (verified addresses)
+- Menu builder FUN_40063590 → confirm handler FUN_40063bf8.
+- FUN_40063bf8: FUN_400a10c8 (reset UI/MIDI scratch — NO transport stop) + FUN_40022778
+  posts job `{type=0x14, mask, begin=0x40023230, done=FUN_40023bf4}` via FUN_40000c3c to
+  queue @0x460d17ce (sets ColdFire soft-IRQ 0xfc04c010|=0x800 to wake consumer).
+- Consumer = dedicated task **FUN_4008445c** (created FUN_40040b94, prio 1, own 0x4000
+  stack), blocking-dequeues FUN_40000d00, switch on msg type:
+  - type 0x14 → FUN_4008f0b0(mask): loops bits 0..15, copies `bankNN.strd → .work` via
+    FUN_40016388 (buffered FS copy, no ATA spin). On done posts type 6.
+  - type 6 → FUN_400905d4(mask): loops bits 0..15, opens `bankNN.work`, FUN_4008ded0
+    deserializes into `0x400e21e0 + bank*0x9b340`. For NON-playing banks: RAM fill +
+    FUN_4000fa98(mask,0) only. Live re-apply gated `if (DAT_80000002==bank)`
+    (FUN_4000faf0/FUN_400a1030/FUN_40009094).
+- End re-sync FUN_40023998 → FUN_400238a4 (re-derive voice/engine to current position;
+  clock never stops). Short-circuit this when the playing bank is not in the mask.
+- Blocking "WORKING PLEASE WAIT" (0x400b68b2) is used only by OS-upgrade/other paths
+  (FUN_40070db8/FUN_4006e450), NOT the reload path (which uses the non-modal
+  "RELOADING BANK" 0x400b3898 overlay FUN_400808bc).
+
+### Feasibility — "page 16 banks from a sibling project, no audio stop"
+~90% exists: FUN_4008f0b0/FUN_400905d4 already accept a 16-bit bank mask and loop all 16
+into disjoint per-bank regions on the background task, concurrent with audio, no stop.
+To build: (1) redirect the filename builder from FUN_40025230(0,0) (current project) to a
+sibling project dir; (2) trigger the type-6 job with a mask excluding the playing bank;
+(3) short-circuit FUN_400238a4 when the playing bank isn't in the mask.
+- "PRELOAD" (0x400be7c5) is a dead string (no xref) — not a usable primitive.
+- **Hard usage constraint**: sample slots (Flex/Static pool) are PROJECT-level, not bank-
+  level; parts reference samples by slot. Sibling projects must share the same sample
+  pool/slot assignments, or paged banks play the wrong/absent samples. Flex RAM is not
+  reloaded by a bank load either → siblings should share Flex assignments.
+
+### HARDWARE-VALIDATED: non-playing bank loads from CF without stopping audio
+
+De-risking experiment (throwaway builds, `tools/patch_exp_bankload.s` + `tools/build_exp.py`)
+confirmed on a real MKII the assumption behind the live bank-paging feature.
+
+Method: hooked the reload confirm handler FUN_40063bf8 (the sole caller of the poster
+FUN_40022778) to (a) skip the synchronous pre-step FUN_400a10c8 and (b) force the reload
+mask to a NON-playing bank `(current+1)&15`; plus NOP the end-of-load re-sync call
+`jsr FUN_400238a4` at 0x400239a2 (`4ebaff00` → `4e71 4e71`).
+
+Findings, in order (each isolated one variable):
+- v1 (mask hook only, pre-step still ran): **audio cut at the instant of confirm** →
+  the cut is FUN_400a10c8 (per-track note/voice scratch reset), which runs synchronously
+  on confirm, NOT the async load. (Also fixed a self-inflicted VEC:04: a 6-byte detour at
+  0x40022778 spilled 2 bytes into the following `lea`; resume must replicate the displaced
+  `lea` and land at 0x40022782.)
+- v2 (skip pre-step, non-current bank, re-sync kept): immediate cut gone; **audio cut a few
+  steps AFTER confirm** → the delayed cut is the end-of-load re-sync FUN_400238a4.
+- v3 (skip pre-step + skip re-sync + non-current bank): **audio kept playing through the
+  entire load, no cut.** ✓
+
+Conclusion: the async loader task filling a non-playing bank's disjoint RAM region
+(0x400e21e0 + bank*0x9b340) does not disturb playback. The only two things that stop audio
+are the confirm-menu pre-step and the end-of-load re-sync — both avoidable when the loaded
+bank(s) exclude the playing bank. The live bank-paging feature is therefore viable; the
+remaining work is plumbing (sibling-project detection, PAGE-key state machine, YES/NO popup,
+redirect the load path to the sibling project dir) + the sample-pool-sharing usage constraint.
+
+### S1 HARDWARE-VALIDATED: redirected sibling bank load, no audio stop
+
+Bank paging Stage 1 (tools/patch_bankpage_s1.s, tools/build_bankpage_s1.py) confirmed on the
+MKII. Three detours over R11: (1) gate FUN_40025230 @0x40025244 — global g_redirect (char*)
+overrides the projname==0 default (0x100f8378) when set; (2) trigger at FUN_40063bf8 @0x40063bfe
+— skip pre-step FUN_400a10c8, sprintf("%s_2", 0x100f8378) into a cave buffer, set g_redirect,
+mask = 0xffff & ~(1<<curbank) (0x100b14ce), tail-post via FUN_40022778; (3) done at FUN_40023998
+@0x400239a2 — clr.l g_redirect + skip re-sync (replicate displaced `pea (0x1).w`, resume 0x400239aa).
+The RELOAD gesture loaded the sibling "<name>_2" project's 15 non-playing banks into RAM with the
+sequencer running and NO audio stop; a paged bank then played the sibling's patterns. Confirms the
+FUN_40025230 redirect gate + the masked multi-bank load are the correct, audio-safe mechanism.
+g_redirect/sib_name live in the code cave (writable SDRAM) — worked fine on hardware.
+
+### S3/S3b: PAGE-key bank paging UX (R12) — cycling emulator-validated
+
+Bank paging integrated into build.py as R12 (tools/patch_bankpage.s). Three detours over the
+R11 image, cave at 0x400d7400:
+- **page_cave** ← FUN_4004ffc4 @entry ([PAGE] key, keycode 0x1b). Gate: edge==1 (press) AND
+  in SELECT BANK (`_DAT_460d1e5c!=0 && _DAT_460d1e60==0x4007b408`) AND no popup open
+  (`_DAT_460e5cd0==0`). If gated: advance g_page `(page&3)+1` (1→2→3→4→1), build the target
+  name into sib_name (page 1 = base `<name>` via `sprintf("%s")`, pages 2–4 = `<name>_N` via
+  `sprintf("%s_%d")`), show `FUN_4006d57c("LOAD BANKS?", 1, {&sib_name}, 3, confirm_handler)`,
+  swallow the key (rts). Else fall through (replicate displaced `lea -0x10,SP`+`movem`, resume
+  0x4004ffcc).
+- **confirm_handler**: YES (p==0) → g_redirect=sib_name, mask=`~(1<<playingbank)`, post via
+  FUN_40022778, re-enter SELECT BANK via `FUN_4007af80(0x2f,1)`. NO → nothing.
+- **gate_cave** ← FUN_40025230 @0x40025244 and **done_cave** ← FUN_40023998 @0x400239a2:
+  the S1 redirect + conditional-re-sync mechanism (done_cave now does the stock re-sync when
+  g_redirect==0, so a normal RELOAD still re-syncs).
+
+Validation: `tools/emu_bankpage.py` (Unicorn, runs real sprintf) — cycling + name construction
+1→2→3→4→1 with correct `<name>`/`<name>_N` = ALL PASS. The core load path is the S1/S3a
+mechanism (hardware-proven). **S3b's UX additions (cycling, dynamic name, PAGE hook) are
+emulator/static-validated only — pending hardware test.**
+
+Deferred (need hardware + the vtable, see DESIGN_BANKPAGE.md):
+- **Existence gate**: only page when `<name>_2` exists, else stock PAGE. Recipe worked out:
+  build `<name>_2`, `FUN_40025230(0, name)` → path `0x460bf112`, `FUN_40025650(path)` (nonzero
+  = valid project; it checks `<path>` and `<path>/AUDIO` via the FS vtable `_DAT_46c823fa`).
+  Not shipped because that vtable is uninitialized in the static image → not emulator-testable,
+  and it sits on the PAGE critical path. Currently PAGE always pops the confirm in SELECT BANK
+  (NO declines); a load of a missing page falls to the stock error dialog.
+- **Skip-missing-page** cycling; the **page LED** (FUN_400135b0(id,0xF)); the **16th-bank
+  catch-up** on bank change; the **save guard** while paged.

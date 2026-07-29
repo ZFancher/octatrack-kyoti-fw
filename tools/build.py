@@ -28,7 +28,8 @@ STUBS = [("patch",         0x400d64e0),   # lazy part: save/restore + destinatio
          ("patch_scene2",  0x400d6700),   # sticky A/B scene pointers
          ("patch_led",     0x400d6800),   # dimmed LED while a track is dirty
          ("patch_notimer", 0x400d6900),   # countdown gate + the two menu entries
-         ("patch_arp",     0x400d7000)]   # arp key-scale: 10 extra qualities (code + data)
+         ("patch_arp",     0x400d7000),   # arp key-scale: 10 extra qualities (code + data)
+         ("patch_bankpage", 0x400d7400)]  # live bank paging (PAGE key, sibling projects)
 
 # detour site -> (source, symbol, what it displaces)
 DETOURS = [(0x40009094, "patch_scene2",  "scene_stub",   "apply_part entry"),
@@ -45,7 +46,11 @@ DETOURS = [(0x40009094, "patch_scene2",  "scene_stub",   "apply_part entry"),
            # arp key-scale: 10 extra qualities (Greek modes + blues + phd/mel/oct/hir)
            (0x4009fad2, "patch_arp",     "decode_cave",  "arp scale decode"),
            (0x4009fb74, "patch_arp",     "lookup_cave",  "arp scale lookup"),
-           (0x4003b790, "patch_arp",     "fmt_cave",     "arp scale label")]
+           (0x4003b790, "patch_arp",     "fmt_cave",     "arp scale label"),
+           # live bank paging (PAGE key in SELECT BANK -> load a sibling project's banks)
+           (0x4004ffc4, "patch_bankpage", "page_cave",   "PAGE key handler"),
+           (0x40025244, "patch_bankpage", "gate_cave",   "project-path redirect gate"),
+           (0x400239a2, "patch_bankpage", "done_cave",   "bank-load done (cond. re-sync)")]
 
 # original bytes each detour must find, as a guard against a wrong assumption
 EXPECT = {0x40009094: "4fefff98", 0x40009664: None,
@@ -54,7 +59,9 @@ EXPECT = {0x40009094: "4fefff98", 0x40009664: None,
           0x40053498: "4fefffdc48d71cfc", 0x40053a68: "4fefffd448d77cfc",
           0x4005435c: "4fefffd848d73cfc",
           0x4009fad2: "102800316606", 0x4009fb74: "41f9400d80a0",
-          0x4003b790: "4e56ff2c48d7"}
+          0x4003b790: "4e56ff2c48d7",
+          0x4004ffc4: "4feffff048d7", 0x40025244: "41f9100f8378",
+          0x400239a2: "4ebaff004878"}
 
 ARP_COUNT_AT = 0x400d4096      # arp F-knob key-scale enum: 25 states -> 145
 

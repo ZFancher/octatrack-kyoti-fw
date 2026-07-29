@@ -235,3 +235,39 @@ are not affected.
 | `out/OCTATRACK_OS1.40C_LAZYPART_GUI.syx` | Variant without boot branding — ⚠️ pre-V4, has the crash |
 | `out/OCTATRACK_OS1.40C_LAZYPART.syx` | Audio-only variant (no GUI patch, so no crash) |
 | `downloads/extracted/OCTATRACK_OS1.40C.syx` | **Official rescue OS** — for recovery or reverting |
+
+---
+
+## Live bank paging (experimental — R12)
+
+Reach more than 16 banks in a live set by paging in whole **sibling projects** from the CF
+card, **without stopping the sequencer/audio**.
+
+### Setup (sibling projects)
+1. Load your base project (e.g. `MYSET`).
+2. **PROJECT → SAVE PROJECT AS → `MYSET_2`** (this copies the sample pool). Optionally `_3`, `_4`.
+   Edit patterns/parts in each; **keep the sample pool / slot assignments identical** across
+   siblings — samples are project-level, so paged banks play whatever sample sits in each slot.
+3. Load the base `MYSET` again to perform.
+
+### Use
+1. Press **[BANK]** to open SELECT BANK.
+2. Press **[PAGE]**: a **"LOAD BANKS?"** popup shows the target project (`MYSET_2`, then `_3`,
+   `_4`, then back to the base). Each press cycles to the next page.
+3. **[YES]** loads that page's banks (all except the one currently playing) in the background —
+   **audio keeps playing** — and drops you back in SELECT BANK to pick a bank + pattern.
+   **[NO]** aborts back to the sequencer.
+
+### Notes / current limitations (release candidate)
+- The **background load is hardware-proven not to stop audio**; the surrounding UX (cycling,
+  the popup) is validated in the emulator and on-device for the core path, but the full flow is
+  still a release candidate — test it before relying on it live, and keep the official `.syx`
+  handy for recovery.
+- **The bank you're playing when you page keeps the base content** until you switch away from it
+  (loading the playing bank would interrupt audio). Switching to another bank frees it; a
+  "catch-up" of that bank is a planned refinement.
+- **Don't SAVE while paged** — the RAM banks hold the sibling's content and a save would write it
+  into the *base* project. Treat paging as performance-only for now.
+- Pressing **[PAGE]** in SELECT BANK pops the confirm even for projects without siblings (just
+  press [NO]); an existence check that keeps [PAGE] stock for non-paged projects is planned.
+- A page that doesn't exist on the card just raises the normal load-error dialog.
