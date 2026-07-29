@@ -23,7 +23,7 @@
   {
    "id": "lazy-transitions",
    "source": "tools/patch.s + patch_enc.s + patch_led.s + patch_scene2.s",
-   "desc": "On a pattern change to a different Part, sounding tracks keep the previous Part's definition (track LED dimmed) until modified. A sequencer trig or a manual trig returns the track and clears the dim; moving an encoder applies the destination Part audibly (spec point c) but does NOT clear the dim -- the LED is driven by the firmware-owned per_track_part, which a trig settles and an encoder does not. Also keeps the A/B scene pointers on the same slots across the Part change. Off by default."
+   "desc": "On a pattern change to a different Part, sounding tracks keep the previous Part's sound (no jump). A track's LED dims while it has not been re-trigged since the change; a trig (sequencer or manual) commits it to the destination Part and clears the dim. Turning an encoder applies the destination sound immediately but is not a trig, so it does not clear the dim. Also keeps the A/B scene pointers on the same slots across the Part change. Off by default."
   },
   {
    "id": "personalize-options",

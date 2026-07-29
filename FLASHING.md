@@ -8,11 +8,13 @@ safety net.
 
 The firmware introduces TWO optional behavior changes + boot branding:
 1. **Lazy transitions**: when you switch to a pattern that uses a different Part, the tracks that
-   are playing keep the previous Part's definition — no volume jump — and their **track LED dims**
-   to show it. A track adopts the destination Part when modified: a sequencer trig or a manual
-   trig (which also clears the dim), or **moving one of its encoders** (you hear the jump, though
-   the dim only clears on the next trig — see the note below). The same switch also keeps the
-   **A/B scene pointers** on the same slots across the Part change.
+   are playing keep the previous Part's sound — no volume jump. A track's **LED dims while it has
+   not yet been re-trigged** since the Part change; a **trig** (sequencer or manual) commits it to
+   the destination Part and clears the dim. So the dim tells you, at a glance, which playing tracks
+   are still on the previous Part and haven't been re-trigged. Turning an **encoder** applies the
+   destination Part's sound immediately (a live preview/commit of the audio) — it is not a trig, so
+   it does not clear the dim. The same switch also keeps the **A/B scene pointers** on the same
+   slots across the Part change.
 2. **No BANK/PTN countdown**: the SELECT BANK / SELECT PATTERN windows no longer expire after four
    seconds. They stay open until you pick a trig or press the same key again to abort — the
    press-again-to-exit toggle already existed in stock firmware. The four countdown boxes stay full

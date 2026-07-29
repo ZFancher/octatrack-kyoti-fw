@@ -962,13 +962,15 @@ each a thing assumed rather than verified:
 firmware. And never trust "this address looks free" — the only RAM proven safe is what an
 already-working patch reads back correctly.
 
-### Open: LED does not clear on an encoder move (cosmetic)
+### Definition (R10): dim == "not yet re-trigged since the Part change"
 
-The dim clears on a trig because a trig settles `per_track_part[track] = active` durably; an
-encoder move does not — `per_track_part` is firmware-owned and gets re-asserted to source
-until a genuine trig, so `enc_apply`'s write does not survive for the LED to read. The audio
-DOES jump on the encoder (that is `DEST_SNAP`, patch-owned), so the gap is purely visual: the
-track stays dimmed until its next trig. Fixing it needs the LED to stop depending on
-`per_track_part`, which needs genuinely-free patch RAM (see mistake 3) and a full map of the
-`per_track_part` lifecycle — deferred. `0x100f8598` (the "param edited, re-apply" flag) has
-many writers and no direct reader, so that path is polled via a computed address.
+After the LED saga, the feature was redefined around what the code naturally does rather than
+chasing an encoder-clears-the-dim behaviour. The dim means: a **sounding** track that changed
+Part and has **not been re-trigged**. A trig settles `per_track_part[track] = active` durably
+and clears it; an encoder move does not (it applies the destination sound via `DEST_SNAP`, but
+`per_track_part` is firmware-owned and re-asserted to source until a genuine trig). Under this
+definition the encoder-not-clearing-the-dim is correct by design: the LED and the encoder are
+two orthogonal signals — "re-trigged yet?" vs "apply the destination sound now". No further RAM
+hunt or `per_track_part` lifecycle mapping is needed. (Kept for reference: `0x100f8598`, the
+"param edited, re-apply" flag, has many writers and no direct reader — polled via a computed
+address.)
