@@ -922,3 +922,53 @@ One caveat: a container whose size is not a multiple of 4 needs the payload padd
 boundary (ours needed 2 bytes; the official happened to align). The device reads the declared
 length and ignores the tail. `FUN_4007f748` validates the checksum and returns an error code
 *before* touching flash, so a malformed `.bin` is rejected rather than half-applied.
+
+## Lazy transitions — final shape (R10) and the LED saga
+
+The shipped feature: on a pattern change to a different Part, sounding tracks keep the
+previous Part's params (no jump), the track LED dims, and the track adopts the destination
+Part on any modification — sequencer trig, manual trig, or an encoder move.
+
+- **Audio**: `patch.s` (save/restore + destination snapshot) + `patch_enc.s`. The encoder
+  path was the last piece of point (c). The destination params no longer exist when the
+  encoder moves — `apply_part` computed them and `restore_stub` overwrote them — so
+  `restore_stub` snapshots them into `DEST_SNAP` (0x80006e00, at the instant the voice
+  buffer still holds them) and `enc_apply` copies them back. **There are FIVE encoder
+  editors** (`0x40052e98`, `0x40052ae8`, `0x40053498`, `0x40053a68`, `0x4005435c`), same
+  shape but different prologues; hooking only one made the feature look dead. All five are
+  trampolined in `patch_enc.s`.
+- **LED**: `patch_led.s`, eight instructions — `per_track_part[track] != active Part` →
+  dim (`0xF`→`0x5`). That is the whole indicator, and it was ALREADY WORKING before this
+  round; the user said so explicitly.
+
+### The LED mistake, recorded so it isn't repeated
+
+I "fixed" a working indicator and spent many hardware flashes making it worse. Root causes,
+each a thing assumed rather than verified:
+
+1. The "always dirty" bug belonged to the **amber scene-trig** indicator (removed), which
+   OR-ed all 8 tracks into one light. `led_stub` never had it — the painter iterates tracks
+   and each pass checks its own. I conflated the two and edited the healthy one.
+2. Added a `&& sounding` test reading `0x800049d8` — a byte that **pulses** — so the LED
+   flickered. The audio patch reads it once per pattern change; in a per-frame painter it is
+   not a boolean.
+3. Added a patch-owned dirty mask at `0x80006c70` — which the **firmware writes**, proven by
+   the flicker returning exactly when the mask was present (R5/R6/R7/R9) and gone when it was
+   removed (R8/R10). "Free RAM" was never verified; the earlier `GhidraRamFree` scan misses
+   computed/indexed writes. Proven-stable patch RAM ends around `0x80006c64` (scene block);
+   `0x80006c70` is past it.
+
+**Rule**: when something worked and now doesn't, the first suspect is what I changed, not the
+firmware. And never trust "this address looks free" — the only RAM proven safe is what an
+already-working patch reads back correctly.
+
+### Open: LED does not clear on an encoder move (cosmetic)
+
+The dim clears on a trig because a trig settles `per_track_part[track] = active` durably; an
+encoder move does not — `per_track_part` is firmware-owned and gets re-asserted to source
+until a genuine trig, so `enc_apply`'s write does not survive for the LED to read. The audio
+DOES jump on the encoder (that is `DEST_SNAP`, patch-owned), so the gap is purely visual: the
+track stays dimmed until its next trig. Fixing it needs the LED to stop depending on
+`per_track_part`, which needs genuinely-free patch RAM (see mistake 3) and a full map of the
+`per_track_part` lifecycle — deferred. `0x100f8598` (the "param edited, re-apply" flag) has
+many writers and no direct reader, so that path is polled via a computed address.

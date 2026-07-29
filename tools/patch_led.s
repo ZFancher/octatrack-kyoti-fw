@@ -10,6 +10,15 @@
 | a hardcoded 0xF brightness for every track, every frame. Brightness is therefore a
 | free dimension — no existing meaning is displaced.
 |
+| REVERTED to this minimal form after three additions made it worse. The "always dirty"
+| bug belonged to the amber scene-trig indicator (since removed), which OR-ed all 8
+| tracks into one light; THIS stub never had it, because the painter already iterates
+| tracks and each pass checks its own. What got added on top and then removed again:
+|   - a "&& sounding" test reading 0x800049d8, a byte that PULSES -> the LED flickered
+|   - a patch-owned dirty mask, never initialised at boot -> idle tracks read as dirty
+|   - a colour override, which only existed to fight the flicker the first item caused
+| Eight instructions is the whole indicator.
+|
 | Host: FUN_40083eb0, the 8-track LED painter. At the loop tail:
 |   D5 = track index (0..7)   D2 = LED id   D3 = id+1   A3 = FUN_400135b0(id, level)
 | The original emits `pea (0xf).w ; move.l D2,-(SP) ; jsr (A3)` twice — one call per
@@ -47,15 +56,6 @@ led_stub:
     move.b  ACT_PART,%d0               | d0 = active Part
     cmp.l   %d0,%d1
     beq.b   lb_norm                    | same Part -> not in transition
-    | y ademas tiene que estar SONANDO: un track parado con un per_track_part
-    | viejo daba "sucio" permanente. La condicion completa estaba en el diseno
-    | original (HANDOFF: per_track_part != active && voice_active) y la omiti.
-    move.l  %d5,%d1
-    move.l  #0xa8,%d0                  | ColdFire: mulu.l no admite inmediato
-    mulu.l  %d0,%d1                    | d1 = track * 0xa8 (voice stride)
-    lea     0x800049d8,%a0
-    tst.b   (%a0,%d1.l)
-    beq.b   lb_norm                    | no suena -> brillo de fabrica
     moveq   #LVL_DIRTY,%d0
     bra.b   lb_emit
 lb_norm:

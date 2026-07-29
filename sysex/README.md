@@ -1,6 +1,6 @@
 # sysex/ — building the patched firmware
 
-This folder does **not** contain a firmware image. It contains the patch — the ~1,083
+This folder does **not** contain a firmware image. It contains the patch — the ~1,175
 bytes of ColdFire code authored in this repository — plus a script that applies it to
 **your own** copy of the official Elektron OS.
 
@@ -35,7 +35,7 @@ python3 sysex/apply_patch.py \
 ```
 [1/5] stock .syx checksum ok
 [2/5] extracted section_3_MAIN_OS.bin (1,112,560 bytes)
-[3/5] applied 18 hunks (1083 bytes)
+[3/5] applied 22 hunks (1175 bytes)
 [4/5] repacked -> OCTATRACK_MAXOLYDIAN.syx
 [5/5] output checksum ok — byte-identical to the reference build
 ```
@@ -47,7 +47,7 @@ per-hunk byte verification always holds.
 
 ## What the patch changes
 
-1,083 bytes out of 1,112,560 (0.10%) of the MAIN OS section.
+1,175 bytes out of 1,112,560 (0.11%) of the MAIN OS section.
 
 | id | source | effect |
 |---|---|---|
@@ -62,7 +62,7 @@ detours at `0x40009094` (part apply), `0x40052e98` (encoder editor), `0x4003f1b4
 addresses and reverse-engineering notes are in [`../NOTES.md`](../NOTES.md) and
 [`../ARCHITECTURE.md`](../ARCHITECTURE.md).
 
-`patches/maxolydian-r2.json` holds each hunk with its load address, the original bytes
+`patches/maxolydian-r10.json` holds each hunk with its load address, the original bytes
 and the replacement bytes, so the change is auditable without running anything.
 
 > Only the current revision is published. Earlier ones carried a GUI-in-transition patch

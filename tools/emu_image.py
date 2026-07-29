@@ -30,7 +30,11 @@ IMG = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "out/mainos_v6.bin").re
 DETOURS = [
     (0x40009094, "out/patch_scene2.elf",  "scene_stub",   0x4000909c, "apply_part entry"),
     (0x40009664, "out/patch.elf",         "restore_stub", 0x40000c3c, "apply_part exit"),
-    (0x40052e98, "out/patch_enc.elf",     "enc_stub",     0x40052ea0, "encoder editor"),
+    (0x40052e98, "out/patch_enc.elf",     "enc_e98",      0x40052ea0, "encoder editor 1"),
+    (0x40052ae8, "out/patch_enc.elf",     "enc_ae8",      0x40052af0, "encoder editor 2"),
+    (0x40053498, "out/patch_enc.elf",     "enc_498",      0x400534a0, "encoder editor 3"),
+    (0x40053a68, "out/patch_enc.elf",     "enc_a68",      0x40053a70, "encoder editor 4"),
+    (0x4005435c, "out/patch_enc.elf",     "enc_35c",      0x40054364, "encoder editor 5"),
     (0x4003f1b4, "out/patch_scene2.elf",  "xf_stub",      0x4003f1bc, "crossfader"),
     (0x40083fb4, "out/patch_led.elf",     "led_stub",     0x40083fc4, "track LED painter"),
     (0x40056ab8, "out/patch_notimer.elf", "cd_stub",      0x40056abe, "BANK/PTN countdown"),

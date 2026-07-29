@@ -1,28 +1,35 @@
 //@category Octatrack
+// Who calls FUN_40052e98, and is it the only encoder-edit path? The encoder patch
+// never fires while the LED (same condition, different track source) works.
 import ghidra.app.script.GhidraScript;
-import ghidra.app.decompiler.*;
-import ghidra.program.model.address.*;
 import ghidra.program.model.listing.*;
 import ghidra.util.task.ConsoleTaskMonitor;
 import java.util.*;
 public class GhidraEnc extends GhidraScript {
-  DecompInterface dec; ConsoleTaskMonitor mon; FunctionManager fm; AddressSpace sp;
-  Set<Long> seen=new HashSet<>();
-  void dump(long s) throws Exception {
-    Address a=sp.getAddress(s); Function f=fm.getFunctionContaining(a);
-    if(f==null){disassemble(a); f=createFunction(a,null);}
-    if(f==null){println("[!] sin func @"+Long.toHexString(s));return;}
-    if(!seen.add(f.getEntryPoint().getOffset()))return;
-    DecompileResults r=dec.decompileFunction(f,90,mon);
-    println("\n#### "+f.getName()+" @ "+f.getEntryPoint()+" (via 0x"+Long.toHexString(s)+") ####");
-    println(r!=null&&r.decompileCompleted()? r.getDecompiledFunction().getC():"  (no-C)");
-  }
   public void run() throws Exception {
-    sp=currentProgram.getAddressFactory().getDefaultAddressSpace();
-    fm=currentProgram.getFunctionManager();
-    dec=new DecompInterface(); dec.openProgram(currentProgram);
-    mon=new ConsoleTaskMonitor();
-    dump(0x40025830L); dump(0x4002b59aL); dump(0x4004a8fcL);
-    println("\n[END]");
+    var sp=currentProgram.getAddressFactory().getDefaultAddressSpace();
+    var fm=currentProgram.getFunctionManager();
+    var lst=currentProgram.getListing();
+    var f=fm.getFunctionAt(sp.getAddress(0x40052e98L));
+    println("=== llamadores de FUN_40052e98 ===");
+    List<String> o=new ArrayList<>();
+    for(Function c:f.getCallingFunctions(new ConsoleTaskMonitor()))
+      o.add("  "+c.getName()+" @"+c.getEntryPoint()+" ("+c.getBody().getNumAddresses()+"B)");
+    Collections.sort(o);
+    if(o.isEmpty()) println("  (via tabla)");
+    for(String s:o) println(s);
+    println("\n=== quien ESCRIBE DAT_100b14cc (track actual) ===");
+    var rm=currentProgram.getReferenceManager();
+    var ri=rm.getReferencesTo(sp.getAddress(0x100b14ccL));
+    int w=0,r=0;
+    while(ri.hasNext()){
+      var x=ri.next();
+      var fn=fm.getFunctionContaining(x.getFromAddress());
+      if(x.getReferenceType().isWrite()){
+        w++; println("  W "+x.getFromAddress()+"  "+lst.getInstructionAt(x.getFromAddress())
+                     +"  en "+(fn!=null?fn.getName():"?"));
+      } else r++;
+    }
+    println("  ("+w+" escrituras, "+r+" lecturas)");
   }
 }

@@ -32,14 +32,22 @@ STUBS = [("patch",         0x400d64e0),   # lazy part: save/restore + destinatio
 # detour site -> (source, symbol, what it displaces)
 DETOURS = [(0x40009094, "patch_scene2",  "scene_stub",   "apply_part entry"),
            (0x40009664, "patch",         "restore_stub", "apply_part exit"),
-           (0x40052e98, "patch_enc",     "enc_stub",     "encoder editor"),
            (0x4003f1b4, "patch_scene2",  "xf_stub",      "crossfader"),
            (0x40083fb4, "patch_led",     "led_stub",     "track LED painter"),
-           (0x40056ab8, "patch_notimer", "cd_stub",      "BANK/PTN countdown tick")]
+           (0x40056ab8, "patch_notimer", "cd_stub",      "BANK/PTN countdown tick"),
+           # all five encoder editors -- hooking only one made the feature look dead
+           (0x40052e98, "patch_enc",     "enc_e98",      "encoder editor 1"),
+           (0x40052ae8, "patch_enc",     "enc_ae8",      "encoder editor 2"),
+           (0x40053498, "patch_enc",     "enc_498",      "encoder editor 3"),
+           (0x40053a68, "patch_enc",     "enc_a68",      "encoder editor 4"),
+           (0x4005435c, "patch_enc",     "enc_35c",      "encoder editor 5")]
 
 # original bytes each detour must find, as a guard against a wrong assumption
-EXPECT = {0x40009094: "4fefff98", 0x40009664: None, 0x40052e98: "4fefffe0",
-          0x4003f1b4: "4fefffc4", 0x40083fb4: "4878000f", 0x40056ab8: "4ab9460d"}
+EXPECT = {0x40009094: "4fefff98", 0x40009664: None,
+          0x4003f1b4: "4fefffc4", 0x40083fb4: "4878000f", 0x40056ab8: "4ab9460d",
+          0x40052e98: "4fefffe048d70cfc", 0x40052ae8: "4fefffe048d70cfc",
+          0x40053498: "4fefffdc48d71cfc", 0x40053a68: "4fefffd448d77cfc",
+          0x4005435c: "4fefffd848d73cfc"}
 
 LBL_AT, GET_AT, SET_AT = 0x400d6a00, 0x400d6a50, 0x400d6aa0
 OLD_LBL, OLD_GET, OLD_SET, N_OLD = 0x400b2a34, 0x400b2a74, 0x400b2ac0, 16

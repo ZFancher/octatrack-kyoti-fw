@@ -15,7 +15,7 @@ SETLEVEL = 0x400135b0          # A3 apunta aca
 LVL_NORM, LVL_DIRTY = 0xF, 0x5
 
 
-def run(track, part_of_track, active_part, lazy=1, sounding=1):
+def run(track, part_of_track, active_part, lazy=1):
     uc = Uc(UC_ARCH_M68K, UC_MODE_BIG_ENDIAN)
     uc.mem_map(0x40000000, 0x400000)
     uc.mem_map(0x80000000, 0x20000)
@@ -25,8 +25,8 @@ def run(track, part_of_track, active_part, lazy=1, sounding=1):
     uc.mem_write(SETLEVEL, b"\x4e\x75")
     uc.mem_write(TRK_PART + track, bytes([part_of_track]))
     uc.mem_write(ACT_PART, bytes([active_part]))
+    uc.mem_write(0x800000d8, struct.pack('>I', lazy))   # PERSONALIZE: LAZY TRANSITIONS
     uc.mem_write(0x800000d8, struct.pack('>I', lazy))
-    uc.mem_write(0x800049d8 + track * 0xa8, bytes([sounding]))  # voice activo
 
     sp0 = 0x41018000
     uc.reg_write(UC_M68K_REG_A7, sp0)
@@ -110,7 +110,5 @@ check("4 track 7 (ultimo), no en transicion",
 
 check("5 GATE apagado: brillo de fabrica aunque este en transicion",
       run(track=3, part_of_track=1, active_part=2, lazy=0), LVL_NORM)
-check("6 en transicion pero NO suena: brillo de fabrica",
-      run(track=3, part_of_track=1, active_part=2, sounding=0), LVL_NORM)
 
 print("\n" + ("TODOS OK" if not FAILS else "FALLAN: " + ", ".join(FAILS)))

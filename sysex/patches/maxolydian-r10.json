@@ -1,6 +1,6 @@
 {
  "name": "maxolydian",
- "version": "r2",
+ "version": "r10",
  "target": {
   "device": "Elektron Octatrack MKII",
   "os": "1.40C",
@@ -9,11 +9,11 @@
   "section_name": "MAIN_OS",
   "section_len": 1112560,
   "section_sha256_before": "164f31224bf61181e3f50e7dec40df9afcae5b16dbf6e4c0d0cc5e986af0a84e",
-  "section_sha256_after": "c046ca54c65cd1e5a9121a2f5e12a1dca65d6acc1ebd31b5a94f8f41e83ad405",
+  "section_sha256_after": "fea09087cc25ee9fc62f354d82eec05d223f8a06e03e3547a0b0a4495eb45440",
   "load_base": "0x40000400"
  },
  "display_version": "MAXOLYDIAN",
- "result_syx_sha256": "2b257307792c1315e13226f7447ab9017fd0401b7b706ba81cf94eac74898a88",
+ "result_syx_sha256": "4bf7f11c2b9319c00ddc3c2def33a844a6bff11adb034e11cf1ad940393b3eeb",
  "changes": [
   {
    "id": "no-bank-ptn-countdown",
@@ -23,7 +23,12 @@
   {
    "id": "lazy-transitions",
    "source": "tools/patch.s + patch_enc.s + patch_led.s + patch_scene2.s",
-   "desc": "On a pattern change to a different Part, sounding tracks keep the previous Part's definition (LED dimmed) until the track is modified: a sequencer trig, a manual trig, or moving one of its encoders. Also keeps the A/B scene pointers on the same slots across the Part change. Off by default."
+   "desc": "On a pattern change to a different Part, sounding tracks keep the previous Part's definition (track LED dimmed) until modified. A sequencer trig or a manual trig returns the track and clears the dim; moving an encoder applies the destination Part audibly (spec point c) but does NOT clear the dim -- the LED is driven by the firmware-owned per_track_part, which a trig settles and an encoder does not. Also keeps the A/B scene pointers on the same slots across the Part change. Off by default."
+  },
+  {
+   "id": "personalize-options",
+   "source": "tools/patch_notimer.s",
+   "desc": "Adds NO BANK/PTN TIMER and LAZY TRANSITIONS to PERSONALIZE, both unchecked by default."
   },
   {
    "id": "boot-branding",
@@ -54,11 +59,39 @@
    "new": "4ef9400d6712"
   },
   {
+   "addr": "0x40052ae8",
+   "offset": 337640,
+   "len": 6,
+   "orig": "4fefffe048d7",
+   "new": "4ef9400d6612"
+  },
+  {
    "addr": "0x40052e98",
    "offset": 338584,
    "len": 6,
    "orig": "4fefffe048d7",
    "new": "4ef9400d6600"
+  },
+  {
+   "addr": "0x40053498",
+   "offset": 340120,
+   "len": 6,
+   "orig": "4fefffdc48d7",
+   "new": "4ef9400d6624"
+  },
+  {
+   "addr": "0x40053a68",
+   "offset": 341608,
+   "len": 6,
+   "orig": "4fefffd448d7",
+   "new": "4ef9400d6636"
+  },
+  {
+   "addr": "0x4005435c",
+   "offset": 343900,
+   "len": 6,
+   "orig": "4fefffd848d7",
+   "new": "4ef9400d6648"
   },
   {
    "addr": "0x40056ab8",
@@ -126,9 +159,9 @@
   {
    "addr": "0x400d6600",
    "offset": 877056,
-   "len": 118,
-   "orig": "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
-   "new": "4ab9800000d86700006070001039100b14cc02800000000741f98000182a7200123008007c001c3980000002b28667382200ed8941f980006e00d1c143f980000a50d3c1721022d8538166fa41f98000182a118608007c001c398000000341f980001832118608004fefffe048d70cfc4ef940052ea0"
+   "len": 210,
+   "orig": "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+   "new": "610000584fefffe048d70cfc4ef940052ea0610000464fefffe048d70cfc4ef940052af0610000344fefffdc48d71cfc4ef9400534a0610000224fefffd448d77cfc4ef940053a70610000104fefffd848d73cfc4ef9400543644fefffe848d7030f4ab9800000d8675e70001039100b14cc02800000000741f98000182a7200123008007400143980000002b28267382600ed8b41f980006e00d1c343f980000a50d3c3721022d8538166fa41f98000182a11820800740014398000000341f980001832118208004cd7030f4fef00184e75"
   },
   {
    "addr": "0x400d6700",
@@ -140,9 +173,9 @@
   {
    "addr": "0x400d6800",
    "offset": 877568,
-   "len": 94,
-   "orig": "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
-   "new": "4ab9800000d8673441f98000182a7200123058007000103980000002b280671c2205203c000000a84c00100041f9800049d84a301800670470056002700f13c080006c652f002f024e937000103980006c652f002f034e934ef940083fc4"
+   "len": 70,
+   "orig": "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+   "new": "4ab9800000d8671c41f98000182a7200123058007000103980000002b280670470056002700f13c080006c652f002f024e937000103980006c652f002f034e934ef940083fc4"
   },
   {
    "addr": "0x400d6900",
