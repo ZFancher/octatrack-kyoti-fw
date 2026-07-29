@@ -27,7 +27,8 @@ STUBS = [("patch",         0x400d64e0),   # lazy part: save/restore + destinatio
          ("patch_enc",     0x400d6600),   # encoder move -> adopt destination Part
          ("patch_scene2",  0x400d6700),   # sticky A/B scene pointers
          ("patch_led",     0x400d6800),   # dimmed LED while a track is dirty
-         ("patch_notimer", 0x400d6900)]   # countdown gate + the two menu entries
+         ("patch_notimer", 0x400d6900),   # countdown gate + the two menu entries
+         ("patch_arp",     0x400d7000)]   # arp key-scale: 10 extra qualities (code + data)
 
 # detour site -> (source, symbol, what it displaces)
 DETOURS = [(0x40009094, "patch_scene2",  "scene_stub",   "apply_part entry"),
@@ -40,14 +41,22 @@ DETOURS = [(0x40009094, "patch_scene2",  "scene_stub",   "apply_part entry"),
            (0x40052ae8, "patch_enc",     "enc_ae8",      "encoder editor 2"),
            (0x40053498, "patch_enc",     "enc_498",      "encoder editor 3"),
            (0x40053a68, "patch_enc",     "enc_a68",      "encoder editor 4"),
-           (0x4005435c, "patch_enc",     "enc_35c",      "encoder editor 5")]
+           (0x4005435c, "patch_enc",     "enc_35c",      "encoder editor 5"),
+           # arp key-scale: 10 extra qualities (Greek modes + blues + phd/mel/oct/hir)
+           (0x4009fad2, "patch_arp",     "decode_cave",  "arp scale decode"),
+           (0x4009fb74, "patch_arp",     "lookup_cave",  "arp scale lookup"),
+           (0x4003b790, "patch_arp",     "fmt_cave",     "arp scale label")]
 
 # original bytes each detour must find, as a guard against a wrong assumption
 EXPECT = {0x40009094: "4fefff98", 0x40009664: None,
           0x4003f1b4: "4fefffc4", 0x40083fb4: "4878000f", 0x40056ab8: "4ab9460d",
           0x40052e98: "4fefffe048d70cfc", 0x40052ae8: "4fefffe048d70cfc",
           0x40053498: "4fefffdc48d71cfc", 0x40053a68: "4fefffd448d77cfc",
-          0x4005435c: "4fefffd848d73cfc"}
+          0x4005435c: "4fefffd848d73cfc",
+          0x4009fad2: "102800316606", 0x4009fb74: "41f9400d80a0",
+          0x4003b790: "4e56ff2c48d7"}
+
+ARP_COUNT_AT = 0x400d4096      # arp F-knob key-scale enum: 25 states -> 145
 
 LBL_AT, GET_AT, SET_AT = 0x400d6a00, 0x400d6a50, 0x400d6aa0
 OLD_LBL, OLD_GET, OLD_SET, N_OLD = 0x400b2a34, 0x400b2a74, 0x400b2ac0, 16
@@ -139,6 +148,13 @@ def main():
         sys.exit(f"count at 0x{COUNT_AT:08x} is not moveq #15: {bytes(img[o:o+2]).hex()}")
     img[o:o + 2] = b"\x72\x11"
     print(f"  count   0x{COUNT_AT:08x}  moveq #15 -> #17  (17 or 18 items)")
+
+    print("\n=== arp key-scale enum ===")
+    o = off(ARP_COUNT_AT)
+    if bytes(img[o:o + 4]) != (25).to_bytes(4, "big"):
+        sys.exit(f"arp count at 0x{ARP_COUNT_AT:08x} is not 25: {bytes(img[o:o+4]).hex()}")
+    img[o:o + 4] = (145).to_bytes(4, "big")
+    print(f"  count   0x{ARP_COUNT_AT:08x}  25 -> 145  (OFF + 12 roots x 12 qualities)")
 
     OUT.write_bytes(bytes(img))
     stock = STOCK.read_bytes()

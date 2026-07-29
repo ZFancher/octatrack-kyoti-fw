@@ -974,3 +974,110 @@ two orthogonal signals — "re-trigged yet?" vs "apply the destination sound now
 hunt or `per_track_part` lifecycle mapping is needed. (Kept for reference: `0x100f8598`, the
 "param edited, re-apply" flag, has many writers and no direct reader — polled via a computed
 address.)
+
+---
+
+## ARP key-scale (F knob) — RE map for adding scales (Greek modes / blues)
+
+Educational investigation into extending the arpeggiator's "key scale" (ARPEGGIATOR
+SETUP, F knob) beyond the stock major/minor. No binary was changed. All addresses
+verified against `out/raw/section_3_MAIN_OS.bin` (file_offset = vaddr − 0x40000400);
+analysis ran in a fresh fully-analyzed project at `out/ghidra_arp` (scripts:
+`tools/GhidraArp*.java`).
+
+### Mechanism (manual §15.4.4)
+The F knob forces arpeggiated notes *and* the per-step note offsets onto a key scale;
+it "affects the note trigs of the track even if the MODE setting is OFF" → the actual
+pitch quantizer sits on the shared MIDI note-trig output path, not inside the arp loop.
+
+### Selector — fully mapped and patchable
+- **Per-track storage**: arp struct byte at `_DAT_46c82456 + pattern*0x18b2 + track*0x24
+  + 0x8f273` (offset +3; +0 is the arp LEN byte). In the compact load struct
+  (`FUN_400260d0`) it is field **+0x16**.
+- **Encoder handler**: `FUN_4007a2ec`, branch `param==5`. Reads the byte
+  (`mvz.b (1,A0),D0` @0x4007a428), min `0x400d4066`=0, count `0x400d4096`=**0x19 (25)**,
+  `subq #1` → max 24, clamp, write back (`0x4007a466`).
+- **Enum**: 25 states = `0` OFF, `1..24` = 12 roots × {major,minor}, encoded as one
+  value: `root=(v-1)>>1`, `quality=(v-1)&1` (0=MAJ, 1=MIN). No hidden scales.
+- **Label render** (`FUN_4003b790`, descriptor @0x400d40c6): draws root-note name +
+  suffix from two parallel 25-entry pointer tables — roots @`0x400a7e54`, suffixes
+  @`0x400a7eb8` (`MAJ`=0x400b5750, `MIN`=0x400b4419). Guard `moveq #0x18` @0x4003b7ca.
+  The scale is TEXT only (root + maj/min); no keyboard is drawn — so new scales are
+  cheap visually (just add suffix strings + widen the tables).
+
+### To add qualities (major,minor → +dorian,phrygian,lydian,mixolydian,locrian,blues)
+Encoding is root×quality, so 8 qualities ⇒ 1 + 12×8 = **97 states**. Selector/label side:
+1. count datum `0x400d4096`: `19`→`61` (25→97).
+2. formatter guard `moveq #0x18` @0x4003b7ca (`70 18`→`70 60`).
+3. table-copy sizes `pea (0x64).w` @0x4003b7a0 / @0x4003b7b6 (100→388=`0x184`), enlarge
+   `FUN_4003b790` stack frame accordingly.
+4. rebuild both label tables to 97 entries (root ×8 per pitch class; suffix cycling
+   8 abbreviations e.g. DOR/PHR/LYD/MIX/LOC/BLU) — packed literal pool, cannot grow in
+   place, relocate + repoint the two `pea` bases (@0x4003b7a4→0x400a7eb8,
+   @0x4003b7ba→0x400a7e54).
+
+### Runtime quantizer — LOCATED (`FUN_4009f794`), all bytes verified
+The MIDI note-trig emitter for all 8 MIDI tracks (called from `FUN_400a1608`), runs for
+every track's note trigs regardless of arp MODE. Reads the scale byte from a **third RAM
+mirror** at `0x46c76df1 + track*0x44` (not the project struct +0x8f273; `FUN_400260d0`
+writes all three mirrors on load). Algorithm (verified):
+
+```
+scale = mirror[track][0x31]                 ; 0x4009fad2  move.b (0x31,A0),D0
+if (scale == 0) noQuantize                   ; OFF
+root = (scale-1) >> 1                         ; asr.l #1     (root 0..11)
+K    = (scale & 1) ? 0x0C : 0x15              ; btst #0 @0x4009fae4; odd=MAJOR(12), even=MINOR(21)
+local_44 = K - root
+idx  = (note + local_44) % 12                 ; 0x4009fb6a moveq #0xC / divsl.l
+note = note + snaptable[idx]                  ; 0x4009fb74 lea 0x400d80a0 ; add.l (A0,idx*4),D0
+```
+
+**One snap table only** @`0x400d80a0` (file `0xd7ca0`), 12×int32 =
+`[0,-1,0,-1,0,0,-1,0,-1,0,-1,0]` → in-scale PCs `{0,2,4,5,7,9,11}` = **MAJOR**.
+Minor has no table of its own: it reuses major rotated by the relative-major offset
+(K=21 vs 12; +9 mod 12). Snapping is always DOWN 1 semitone for out-of-scale tones.
+
+Verified byte anchors: scale read `0x4009fad2` (`10280031`); quality bit `0x4009fae4`
+(`08000000`); minor K `0x4009faec` (`7415`); major K `0x4009faf8` (`760c`); OFF guard
+`0x4009fb58` (`4aaeffc06f22`); table lea `0x4009fb74` (`41f9400d80a0`).
+
+### Adding scales is FEASIBLE — two tiers
+- **5 Greek modes = FREE** (all rotations of major, reuse table `0x400d80a0`, new K each):
+  Dorian 14, Phrygian 16, Lydian 17, Mixolydian 19, Locrian 23 (Ionian 12 / Aeolian 21
+  already present). `local_44 = K - root` stays > 0 for all roots, satisfying the guard.
+- **Blues** `{0,3,5,6,7,10}` is non-diatonic → needs one new 12×int32 snap table + a
+  conditional table base at the lookup `lea 0x400d80a0` (`0x4009fb74`).
+- **Code change (not data-only):** rewrite the decode block `0x4009fad2–0x4009fafc`
+  (~46 B). With 8 qualities the split becomes `root=(v-1)%12 / quality=(v-1)/12` feeding a
+  small switch that picks K (and, for blues, the alternate table). Relocate to a code cave
+  + detour (same pattern as the other patches); pair it with the selector/label widening
+  above (enum 25→97 at `0x400d4096`, formatter guard `0x4003b7ca`, label tables
+  `0x400a7e54`/`0x400a7eb8`).
+
+### IMPLEMENTED — 12-quality arp key scale (`tools/patch_arp.s`, emulator-validated)
+
+Standalone build `tools/build_arp.py` → `out/mainos_arp.bin` (stock + arp only, for
+isolated testing). Cave at `0x400d7000` (inside the proven-free R10 run, clear of R10's
+stubs). Adds 10 qualities to the F-knob: MAJ MIN + DOR PHR LYD MIX LOC BLU PHD MEL OCT HIR.
+
+- **Encoding**: value 0 = OFF; 1..144 = root*12 + quality (root = (v-1)/12 slow/outer,
+  quality = (v-1)%12 fast/inner). Enum count datum `0x400d4096`: 25 → 145.
+- **decode_cave** (detour @0x4009fad2, replaces the 46-byte local_44 block): sets
+  `local_44 = 12*quality + (12-root)` (0 for OFF). The 12*quality term vanishes under the
+  stock mod-12, so the existing idx computation still yields (note-root) mod 12; and the
+  lookup recovers quality as (local_44-1)/12 — so NO extra stack slot / frame change is
+  needed (the prologue movem saves regs at the frame bottom, so growing the frame was
+  unsafe). Division by 12 done with the magic multiply (v*171)>>11 (exact for 0..143;
+  avoids ColdFire divide-form uncertainty).
+- **lookup_cave** (detour @0x4009fb74, replaces `lea 0x400d80a0`): idx += quality*12;
+  note += UT[quality*12+idx] (signed byte); preserves D2/D3.
+- **fmt_cave** (detour @0x4003b790, replaces FUN_4003b790): computes root/quality and
+  draws NOTETAB[root] + QUALTAB[quality] instead of the stock 25-entry tables. Same
+  callback contract (draw suffix at pos via 0x40013a08, tail-draw root at pos+5).
+- **UT** unified snap table (144 signed bytes, quality-major): MAJ/MIN reproduce stock
+  `0x400d80a0` exactly; 7-note scales snap down; BLU/OCT/HIR snap to nearest. A snap-up at
+  note 127 wraps to a negative byte and the firmware drops it (benign, top of MIDI range).
+
+Validation `tools/emu_arp.py` (Unicorn): decode 145/145, lookup 18432/18432 (scale×note),
+MAJ parity 0 mismatches, formatter labels correct. Composes with R10 (no detour/cave
+overlap) — mergeable as a new revision. NOT yet hardware-tested.

@@ -143,12 +143,13 @@ freshly flashed unit is indistinguishable from stock until you opt in:
 |---|---|
 | **Lazy transitions** | On a pattern change to a different Part, sounding tracks keep the previous Part's sound (no volume jump). The track LED dims while the track hasn't been re-trigged since the change; a trig commits it to the destination Part. Also keeps the A/B scene pointers on the same slots across the change. |
 | **No BANK/PTN countdown** | The SELECT BANK / SELECT PATTERN windows stop expiring after four seconds. |
-| **PERSONALIZE options** | The two switches above, added to the PERSONALIZE menu, unchecked by default. |
+| **Arp key scales** | The MIDI arpeggiator's key-scale (ARP SETUP, F knob) gains 10 extra qualities beyond the stock major/minor: the five Greek modes (Dorian, Phrygian, Lydian, Mixolydian, Locrian) plus blues, phrygian-dominant, melodic-minor, octatonic and hirajoshi — 12 qualities × 12 roots. `OFF`/`maj`/`min` stay byte-identical to stock, so the extra scales only appear if you scroll the F knob past them. |
+| **PERSONALIZE options** | The two behavior switches (lazy transitions, no countdown), added to the PERSONALIZE menu, unchecked by default. |
 | **Boot branding** | Boot splash and SYSTEM STATUS show `MAXOLYDIAN` instead of `1.40C`. |
 
-The code changes total **1,175 bytes** out of 1,112,560 (0.11%), live in a free
-code cave, and are reached by 6-byte jump detours. See
-[`sysex/README.md`](sysex/README.md) for the per-hunk table.
+The code changes live in a free code cave and are reached by 6-byte jump detours.
+The arp-scales work is written up in [`NOTES.md`](NOTES.md) (search "ARP key-scale");
+the behavior patches have a per-hunk table in [`sysex/README.md`](sysex/README.md).
 
 ---
 
