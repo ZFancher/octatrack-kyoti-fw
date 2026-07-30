@@ -28,29 +28,31 @@ page_cave:
     move.l  0x460d1e60, %d0        | select callback
     cmp.l   #0x4007b408, %d0       | == BANK select?
     bne.w   pc_stock
-    move.l  0x460e5cd0, %d0        | popup already open?
-    bne.w   pc_swallow
-    | advance page: (page & 3) + 1  -> 1,2,3,4,1,...
+    move.l  0x460e5cd0, %d0        | a popup already open?
+    bne.w   pc_swallow             | the confirm popup is modal & eats keys -> nothing to do
+    | gate: engage paging only if sibling "<name>_2" exists, else stock PAGE
+    moveq   #2, %d0
+    bsr.w   chk_sibling           | builds "<name>_2", D0 = exists?
+    tst.l   %d0
+    beq.w   pc_stock              | no sibling -> non-paged project -> stock PAGE
+    | cycle to the next EXISTING page (page 1 = base always exists; skip missing)
+pc_try:
     move.l  g_page, %d0
     moveq   #3, %d1
     and.l   %d1, %d0
-    addq.l  #1, %d0
+    addq.l  #1, %d0               | (page & 3) + 1 -> 1,2,3,4,1,...
     move.l  %d0, g_page
-    | build target project name into sib_name
     cmp.l   #1, %d0
     beq.b   pc_base
-    move.l  %d0, -(%sp)            | page number
-    pea     0x100f8378            | base project name
-    pea     fmt_sd                | "%s_%d"
-    pea     sib_name
-    jsr     0x40013a08            | sprintf(sib_name,"%s_%d",name,page)
-    lea     16(%sp), %sp
-    bra.b   pc_popup
+    bsr.w   chk_sibling           | builds "<name>_<page>", D0 = exists?
+    tst.l   %d0
+    bne.b   pc_popup              | exists -> sib_name ready
+    bra.b   pc_try                | missing -> advance again (terminates at base)
 pc_base:
     pea     0x100f8378
     pea     fmt_s                 | "%s"
     pea     sib_name
-    jsr     0x40013a08            | sprintf(sib_name,"%s",name)  (page 1 = base)
+    jsr     0x40013a08            | sib_name = "<name>"  (page 1 = base)
     lea     12(%sp), %sp
 pc_popup:
     pea     confirm_handler
@@ -66,6 +68,44 @@ pc_stock:
     lea     -0x10(%sp), %sp        | replicate displaced entry (lea + movem)
     movem.l %d2-%d4/%a2, (%sp)
     jmp     0x4004ffcc
+
+| helper: D0 = page number -> builds sib_name="<name>_<D0>", returns D0 = exists?
+| existence = can we OPEN "<sib>/bank01.strd"? (open works for files; a dir predicate
+| did not). Only ever touches SIBLING files (never the playing project's open files).
+| uses scratch regs + firmware calls (which preserve callee-saved regs).
+chk_sibling:
+    move.l  %d0, -(%sp)           | page number (sprintf %d)
+    pea     0x100f8378
+    pea     fmt_sd                | "%s_%d"
+    pea     sib_name
+    jsr     0x40013a08            | sib_name = "<name>_<page>"
+    lea     16(%sp), %sp
+    pea     sib_name
+    clr.l   -(%sp)
+    jsr     0x40025230            | -> D0 = "<set>/<name>_N" (0x460bf112)
+    addq.l  #8, %sp
+    move.l  %d0, -(%sp)
+    pea     fmt_bank              | "%s/bank01.strd"
+    pea     fpath
+    jsr     0x40013a08            | fpath = "<sib>/bank01.strd"
+    lea     12(%sp), %sp
+    move.l  #0x10000, -(%sp)      | FUN_40016864(fh, fpath, "r", buf, 0x10000)
+    pea     0x460a8f60
+    pea     0x400b3289            | mode "r"
+    pea     fpath
+    pea     fh
+    jsr     0x40016864
+    lea     0x14(%sp), %sp
+    tst.l   %d0
+    bmi.b   cs_no                 | <0 -> not found
+    pea     fh
+    jsr     0x4001677c            | close
+    addq.l  #4, %sp
+    moveq   #1, %d0
+    rts
+cs_no:
+    moveq   #0, %d0
+    rts
 
 | ---- confirm handler: p at 4(SP); p==0 YES, p!=0 NO ----
 confirm_handler:
@@ -114,8 +154,13 @@ g_page:     .long 1                | 1 = base; 2..4 = _2/_3/_4
 g_redirect: .long 0
 fmt_sd:     .asciz "%s_%d"
 fmt_s:      .asciz "%s"
+fmt_bank:   .asciz "%s/bank01.strd"
 title_load: .asciz "LOAD BANKS?"
     .balign 4
 lines_arr:  .long sib_name
+    .balign 4
+fh:         .space 32
+    .balign 4
+fpath:      .space 320
     .balign 4
 sib_name:   .space 288

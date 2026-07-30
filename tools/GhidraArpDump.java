@@ -8,7 +8,7 @@ import ghidra.program.model.listing.*;
 import ghidra.program.model.mem.MemoryAccessException;
 
 public class GhidraArpDump extends ghidra.app.script.GhidraScript {
-    long[] FUNCS = { 0x40025650L };
+    long[] FUNCS = { 0x40016864L, 0x4001677cL };
 
     public void run() throws Exception {
         DecompInterface dec = new DecompInterface();

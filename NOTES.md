@@ -1200,3 +1200,24 @@ Deferred (need hardware + the vtable, see DESIGN_BANKPAGE.md):
   (NO declines); a load of a missing page falls to the stock error dialog.
 - **Skip-missing-page** cycling; the **page LED** (FUN_400135b0(id,0xF)); the **16th-bank
   catch-up** on bank change; the **save guard** while paged.
+
+### Bank paging existence check — via file-open, not a dir predicate (R12, hardware-validated)
+
+The sibling-existence check first tried FUN_40025650 (the firmware's "valid project?"
+predicate). Hardware diagnostics (tools/patch_bankpage_diag.s) showed it returns 0 even for
+the CURRENTLY-LOADED project (C=0) — its FS vtable `_DAT_46c823fa` does not resolve project
+DIRECTORIES from this call site. Switched to a FILE-open check: existence = can we open
+`<sibling>/bank01.strd` via the loader's own open helper FUN_40016864(fh, path, "r", buf,
+0x10000) (D0>=0 = opened; close with FUN_4001677c). Diagnostics confirmed the sibling's
+bank01.work AND bank01.strd both open (wrk=1 std=1).
+
+Critical rule learned: **only ever open SIBLING files, never the playing project's** — a
+diagnostic that opened the current project's bank01.strd and closed it made the NEXT open
+fail with -2 (closing a handle the firmware holds open for playback corrupts FS state).
+chk_sibling only touches `<name>_N` files, so it is safe. Validated end-to-end in
+tools/emu_bankpage.py with the open/size/close vtable slots stubbed to simulate a card with
+base + _2 + _3 (no _4): the PAGE cycle skips _4 and, with no `_2`, PAGE stays stock.
+
+Open refinement (for the non-modal redesign): skip the CURRENTLY-LOADED page in the cycle
+(track g_loaded, updated on YES-load, reset to base on project load) so it never offers a
+useless reload of the page you are on.
