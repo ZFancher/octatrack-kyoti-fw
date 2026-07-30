@@ -1221,3 +1221,15 @@ base + _2 + _3 (no _4): the PAGE cycle skips _4 and, with no `_2`, PAGE stays st
 Open refinement (for the non-modal redesign): skip the CURRENTLY-LOADED page in the cycle
 (track g_loaded, updated on YES-load, reset to base on project load) so it never offers a
 useless reload of the page you are on.
+
+### Bank paging SHELVED — the audiopool is the real blocker
+
+Bank paging (loading sibling-project banks live) was reverse-engineered and hardware-proven to
+load without stopping audio, but cancelled. Reason: it only avoids the audio stop by requiring
+siblings to SHARE the sample pool. `PROJECT → CHANGE` stops playback because it reloads the
+**audiopool** (samples); paging sidesteps that only by not touching samples. So paging brings in
+new patterns/parts but not new sounds — too limiting, and it doesn't solve the root problem
+(loading genuinely new material live). The real, unsolved frontier is a **live audiopool swap**
+(new Flex/Static samples into RAM without halting the DSP/playback). Shipped firmware reverted to
+R11 (arp key scales + lazy transitions). The bank-paging sources/emulators/diagnostics remain in
+tools/ and DESIGN_BANKPAGE.md as documented, reusable RE.

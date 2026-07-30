@@ -1,5 +1,20 @@
 # Design — Live Bank Paging (sibling-project bank pages)
 
+> **SHELVED (not shipped).** This feature was explored, reverse-engineered, and partly built
+> (hardware-validated: sibling banks load from CF with no audio stop), then **cancelled** for a
+> fundamental reason worth recording:
+>
+> The root problem it aimed at is that **loading a new project stops the audio**. Bank paging
+> only avoids that stop by requiring sibling projects to **share the sample pool** — because
+> `PROJECT → CHANGE` stops playback precisely to reload the **audiopool** (the samples), which
+> paging deliberately does not touch. So paging can only bring in new *patterns/parts* that reuse
+> the *same samples*; it cannot bring in new sonic material. That makes it too limiting to justify
+> the complexity, and it does not solve the real problem. **The real frontier is a live audiopool
+> swap** (loading a new project's Flex/Static samples without stopping playback) — a much larger,
+> unsolved effort. The RE below is kept for reference and reuse.
+
+---
+
 Load a fresh page of 16 banks from a **sibling project** on the CF card into the
 resident bank RAM **without stopping the audio/sequencer**, driven from the SELECT
 BANK screen with the [PAGE] key. Educational, for the author's own MKII.
