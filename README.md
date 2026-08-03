@@ -95,6 +95,23 @@ direct disassembly. Full write-ups live in [`ARCHITECTURE.md`](ARCHITECTURE.md)
 - **Storage:** **CompactFlash** (FAT16/32) over the ColdFire's on-chip ATA
   controller, reached through the FlexBus.
 
+### Memory map
+Two RAM chips, recovered from a static scan of every real address-operand reference in the
+MAIN OS: a **128 MB main DDR** at `0x40000000` and a **separate ~1 MB metadata SRAM** at
+`0x10000000` (a different chip-select). Full derivation in [`NOTES.md`](NOTES.md).
+
+| Segment | Range | Size | Use |
+|---|---|---|---|
+| Metadata SRAM | `0x10000000`–`~0x10100000` | ~1 MB | Sample **settings** tables (0x448 B/slot: flex `0x100b14f0`, static `0x100d5b30`) + project globals. Separate small chip — **reads past its end bus-fault**; full, cannot grow in place. |
+| DDR — code + BSS | `0x40000000`–`~0x40200000` | ~2 MB | OS image (`@0x40000400`) + BSS + the free **code cave** (`0x400d64da`–`0x400d7c3b`) the patches live in |
+| DDR — bank buffers | `0x400e21e0`–`0x40a955e0` | ~10 MB | 16 resident banks (stride `0x9b340`) |
+| DDR — flex pool | `0x40a955e0`–`~0x46000000` | ~85 MB | Flex sample RAM + recorder buffers (the shared 85.5 MB budget) |
+| DDR — app structs | `0x46000000`–`~0x46ceb400` | ~13 MB | Recorder metadata, sample **state** tables (0x2c B/slot), streaming tables |
+| DDR — reserved | `0x40a955e0`–`0x40af55e0` | 384 KB | Reclaimed by moving the flex pool +64 pages; canary-confirmed untouched — a fixed home for relocated tables |
+| DSP shared RAM | `0x80000000`–`~0x80010000` | ~64 KB | Voice state (`0x80004dc8`, stride `0xA8`), double-buffered DSP frames, mailboxes |
+| DSP coprocessor | `0x20000000` | — | Command / status / frame-index MMIO |
+| Peripherals (MBAR) | `0xFC000000` | — | ColdFire on-chip: DDR controller `0xFC0B8000`, ATA host `0xFC0451xx`, IRQ ctrl `0xFC04C010` |
+
 ### Firmware format and update chain
 Elektron ships a ZIP with **two transports of the same OS** — a `.bin` and a
 `.syx` — both wrapping the same compressed container:

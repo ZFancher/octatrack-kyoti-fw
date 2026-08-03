@@ -238,14 +238,71 @@ sequencer trig
 DSP56xxx = signal (real-time audio). Synchronized by **double buffer + register handshake**.
 
 ### Consolidated memory map
-| Window | Use |
-|---|---|
-| `0x40000000` / `0x46000000` | SDRAM: code (img @0x40000400) + app data/BSS |
-| `0x20000000` | **Audio DSP coprocessor** (cmd 0x04, status 0x08, frame idx 0x1c) |
-| `0x80000000` | Fast/shared RAM: voice state, mailboxes, **double-buffered DSP frames** |
-| `0x90000000` | ATA task-file (CompactFlash) via FlexBus |
-| `0x100b0000` | Small globals (current track/pattern) |
-| `0xFC000000` | ColdFire on-chip peripherals (MBAR: ATA host, interrupt ctrl 0xFC04C010, etc.) |
+
+Segment table derived from a static scan of every real address-operand reference in the MAIN OS
+(lea/movea/pea/adda/move.l#imm/jsr/jmp), **2026-08-03**. Two RAM chips: a 128 MB main DDR at
+`0x40000000` and a **separate ~1 MB metadata SRAM** at `0x10000000` (different chip-select).
+
+| Segment | Range | Size | Use |
+|---|---|---|---|
+| **Metadata SRAM** | `0x10000000`–`~0x10100000` | ~1 MB | Sample **settings** tables (0x448 B/slot): FLEX `0x100b14f0`, STATIC `0x100d5b30`; project globals (name ptr `0x100f8378`). Highest real ref `0x100fff04`. **Separate small chip — reads past ~`0x10100000` are UNMAPPED → bus fault** (this is what froze the RAM probes). Boxed-in and full → no room to grow the tables here. |
+| DDR: code + BSS | `0x40000000`–`~0x40200000` | ~2 MB | OS image (`@0x40000400`, 1.1 MB) + BSS/globals + the free **code cave** `0x400d64da`–`0x400d7c3b` |
+| DDR: bank buffers | `0x400e21e0`–`0x40a955e0` | ~10 MB | 16 resident banks (stride `0x9b340`) |
+| DDR: flex pool | `0x40a955e0`–`~0x46000000` | ~85 MB | Flex sample RAM **+ recorder buffers** (the shared 85.5 MB budget) |
+| DDR: app structs | `0x46000000`–`~0x46ceb400` | ~13 MB | Recorder metadata (`0x46c939cc`), **state** tables (0x2c B/slot): STATIC `0x46c90a78`, FLEX `0x46c922c4`; streaming tables `0x46c7fe24`/`0x46c7ff42` |
+| DDR: ~"free" tail | `~0x46d00000`–`0x48000000` | ~19 MB | Mapped but unreferenced in the static image — **NOT free**: a hardware canary showed it (and every unreferenced DDR/SRAM span tried) is used by the heap/pool at runtime. **"Unreferenced ≠ free."** |
+| **DDR: RESERVED** | `0x40a955e0`–`0x40af55e0` | **384 KB** | The old flex-pool base. **Reclaimed** by moving the pool physically +64 pages (base `0x40a955e0`→`0x40af55e0` at all 23 code refs; page count `0x390A`→`0x38CA` to keep the top fixed). Now sits below the pool → referenced by nothing → **hardware-canary-confirmed reserved** across record / sample-load / pattern & project changes. The fixed home for the extended static tables (274 KB settings + 11 KB state = 285 KB). |
+| DSP shared RAM | `0x80000000`–`~0x80010000` | ~64 KB | Voice state array (`0x80004dc8`, stride `0xA8`), double-buffered DSP frames, selector `0x800000e0`, mailboxes |
+| DSP coprocessor | `0x20000000` | — | cmd `0x2000_0004`, status `0x08`, frame index `0x2000_001c` |
+| ATA / CompactFlash | `0x90000000` | — | ATA task-file via FlexBus |
+| Peripherals (MBAR) | `0xFC000000` | — | ColdFire on-chip: **DDR controller `0xFC0B8000`/`0xFC0BC000`**, ATA host `0xFC0451xx`, interrupt ctrl `0xFC04C010` |
+
+DDR total = **128 MB** (`0x40000000`–`0x48000000`): pool base `0x40a955e0` + 85.5 MB ≈ `0x46000000`,
+app structs to `~0x46ceb400` → ~108 MB used, next power-of-two bank is 128 MB → a ~19 MB mapped tail.
+
+**Lesson (why the RAM probes froze):** the metadata region is a small (~1 MB), fully-used, separate
+chip — not the 8–16 MB span earlier guessed. Bulk-reading `0x10000000..0x10800000` crossed into
+unmapped space → bus fault → "corrupt" noises + freeze. Only bulk-read within the **contiguous DDR**
+(`0x40000000`–`0x48000000`); never speculatively read the metadata SRAM past `~0x10100000`.
+
+### Reclaiming fixed RAM from the flex pool  [2026-08-03, hardware-confirmed]
+
+Goal: a fixed 285 KB home for the extended STATIC tables (128→256). No RAM is *free* to
+reserve — every unreferenced span is dynamic heap/pool at runtime (proven by canary: DDR
+`0x47800000` and SRAM `0x10020000` both got overwritten under operation). The only reliable
+way is to **reclaim** from a known allocator.
+
+The flex pool is a paged allocator: `phys = base(0x40a955e0) + pagemap[i]*0x1800`; total pages
+in the literal `move.l #0x390A, d6` at `0x40096f80` (→ `0x80006920`); page size `0x1800`.
+Reserving *logical* pages (advancing the alloc pointer `0x8000691c`) does NOT reserve a fixed
+*physical* address — the page-map scrambles it (canary confirmed: base still used).
+
+**What works — move the pool's physical base up:**
+- Rewrite the pool base `0x40a955e0` → `0x40af55e0` at **all 23 code operands** (blanket
+  4-byte replace; they are `lea`/`adda`/`addi.l`/`move.l#`/`pea`/`cmpa.l`, no data refs).
+- Reduce the page count `0x390A`→`0x38CA` (@`0x40096f82`) so the pool *top* stays put.
+- The pool now lives at `0x40af55e0`; `[0x40a955e0, 0x40af55e0)` (384 KB) sits below it,
+  referenced by nothing → reserved. **Deterministic, no mapping ambiguity, no canary needed.**
+
+Hardware: audio / recording / sample-load / pattern & project changes all work (the move was
+clean — 23 refs is the complete set), and a canary at `0x40a955e0` stayed 100% intact through
+heavy operation. `tools/build_ramdump.py` does the relocation; the reserve region is the home
+for the relocated static tables. Cost: 384 KB (0.4%) off the ~85.5 MB pool — graceful (worst
+case one fewer sample fits when the pool is maxed).
+
+**Step 2a (relocate the static settings table) — FAILED, the settings table is DSP-read.**
+`tools/build_ramdump.py` relocates the static **settings** table `0x100d5b30`→`0x40a955e0`
+(delta `+0x309bfab0`) at all **56 operand refs in the code region** (BASE ×43 + END ×9 + two
+slot-0 field refs; data-region byte-coincidences excluded via an operand-position + `<0x400e0000`
+filter). The CPU side was complete and verified (0 old-table operand refs left), but on hardware
+the unit made **"corrupt" noises at the start of project load and hung**. Cause: the `0x448`/slot
+settings tables are **read by the DSP** (same as the recorder settings `0x100d52a0`, already
+noted "DSP-read live"). The DSP still reads the OLD SRAM address — the CPU operand relocation does
+not update however the DSP obtains the table address (a pointer in the `0x80000000` shared window,
+or a per-frame field the CPU passes). **Conclusion:** the static tables can't simply move to DDR;
+either keep them in the SRAM (`0x10xxxxxx`) and grow *there*, or find + update the DSP-side address
+source. (Recovered via the Startup Menu → MIDI OS UPGRADE; the crash never touches the CF or the
+rescue bootloader.)
 
 ## Sequencer clock ✓ — logs `out/ghidra_clock.log`, r2 disasm
 
@@ -1233,3 +1290,852 @@ new patterns/parts but not new sounds — too limiting, and it doesn't solve the
 (new Flex/Static samples into RAM without halting the DSP/playback). Shipped firmware reverted to
 R11 (arp key scales + lazy transitions). The bank-paging sources/emulators/diagnostics remain in
 tools/ and DESIGN_BANKPAGE.md as documented, reusable RE.
+
+## Audiopool / sample slots — extend STATIC 128 -> 256?  [RECON 2026-07-30]
+
+Motivation: sibling-bank paging died because siblings must share the audiopool.
+New angle: enlarge the STATIC slot count (128 -> 256). STATIC streams from CF, so
+more slots cost no sample RAM — the 128 cap is purely a table/bound artifact.
+
+### Structure (from the two free-slot allocators)
+- `alloc_free_static_slot` FUN_40024098: base **0x46c90a78**, stride **0x2c (44 B)**,
+  loop bound **!= 0x80 (128)**; slot[+8]==1 means "free". On overflow -> 'NO FREE
+  STATIC SLOTS!' via FUN_4005a2b8(msg,0x30). Unified setter `FUN_40023f1c(type,idx,..)`
+  type 0=static, 1=flex.
+- `alloc_free_flex_slot`  FUN_400240e8: base **0x46c922c4**, same stride 0x2c, same 0x80.
+- Table spans: STATIC 0x46c90a78..0x46c92078 ; FLEX 0x46c922c4..0x46c938c4.
+  Gap static-end..flex-start = 0x24c (588 B) — NOT enough to grow in place (need 0x1600
+  for +128, or 0x2c00 total for 256).
+- Right after static table: another struct at 0x46c920a4 (10 refs) — static table is boxed
+  in; in-place growth impossible. Relocation is the only path.
+
+### File format = SAFE (the scary risk is gone)
+Project/bank sample assignments are serialized as TEXT blocks:
+  `[SAMPLE]` `TYPE=STATIC|FLEX` `SLOT=%03d` ... `[/SAMPLE]`  (serializer @0x40089xxx).
+UI already renders `STATIC %03d` / `FLEX %03d` (3 digits, @0x4006df80). So more slots
+neither shift fixed offsets (no corruption of saved sets) nor overflow the UI/format —
+`%03d` already supports up to 999.
+
+### Cost / risk (the real blocker)
+- **NO central accessor.** Base 0x46c90a78 is inlined at **36 sites** (flex: 48), as
+  absolute 32-bit immediates in heterogeneous ops: `addi.l #base,Dn`, `adda.l #base,An`,
+  `lea (base),A0`. Because the value is unique, a blanket 4-byte immediate replace
+  (0x46c90a78 -> newbase) mechanically relocates all 36 in one pass.
+- **Need a 0x2c00 (11.3 KB) contiguous FREE RAM hole** for the relocated 256-entry table.
+  BLOCKER: this lives in 0x46xxxxxx DDR, populated at runtime — CANNOT be found from the
+  static flash image. Requires a runtime RAM map from hardware (allocator free-list dump
+  or probing candidate regions). The 0x80006a00 fast-RAM cave is too small.
+- **Every 128/0x80 bound on the static index must be found & bumped** (alloc loop, UI
+  nav clamp, loader loop, serializer loop, collect-samples, ...). A missed *upper* clamp
+  = only 128 usable (benign); relocation removes the adjacent-corruption danger.
+- **Audio/voice streaming path** must be audited for a baked-in 128 (some of the 36 refs
+  are in 0x4000xxxx voice code). Per-voice ring buffers (8 voices) shouldn't scale with
+  slot count, but confirm.
+- **No emulator harness** for the slot subsystem -> hardware-only verification of a
+  memory-layout change = highest brick/corruption risk of anything attempted so far.
+
+### Verdict
+Feasible in principle and the file-format risk is gone, but this is a table RELOCATION
+(not a counter bump): 36 immediate rewrites + N bound bumps + audio-path audit, gated on
+(a) sourcing an 11 KB free RAM hole that needs HARDWARE reconnaissance, and (b) accepting
+hardware-only testing. Sibling-bank rehab (base 1-128 / sibling 129-256) would further
+need slot-reference REMAPPING of the sibling's patterns — a separate large step.
+
+### UPDATE — there are TWO tables per slot, not one (cost went up a lot)
+The setter FUN_40023f1c + FUN_40024510 reveal each slot has TWO parallel entries:
+  1. **STATE table, 0x2c B/slot** — 0x46c90a78 static / 0x46c922c4 flex (the free flag
+     `[+8]`, label at `+0x18`). STATIC->256 = 0x2c00 (11 KB) relocation. Base inline at
+     **36 sites**.
+  2. **PATH/SETTINGS table, 0x448 B/slot** — &DAT_100d5b30 static / &DAT_100b14f0 flex,
+     in the SEPARATE 0x10000000 region. Holds the sample path + all sample settings
+     (trim/loop/gain/slices). STATIC 129 entries span 0x100d5b30..0x100f8378 — and
+     0x100f8378 IS the project-name global, i.e. the table is boxed in by project globals,
+     cannot grow in place. STATIC->256 = **0x44800 (274 KB) relocation**. Base inline at
+     **43 sites**.
+
+Total static base-immediate rewrites: 36 + 43 = **79 sites**, but only TWO unique base
+values (0x46c90a78, 0x100d5b30) -> a blanket 4-byte search-replace relocates all 79 in
+two passes. So the 79 sites are NOT the bottleneck.
+
+**Bounds are heterogeneous and tangled with the 8 recorders**: static uses 0x80/0x81,
+flex uses 0x87/0x88 because the flex tables also hold 8 recorder slots at indices 128-135.
+Every static-index bound must be found and bumped without disturbing recorder indexing.
+
+**Both RAM regions look fully used**: a scan of pointer immediates finds references across
+the ENTIRE 0x10000000-0x10ffffff and 0x46000000-0x46ffff7f spans (each ~16 MB, densely
+referenced). No obvious fixed free hole from static analysis -> the 274 KB + 11 KB holes
+can only be confirmed by RUNTIME reconnaissance (canary-paint candidate windows, operate
+normally, report surviving-canary runs).
+
+### Revised verdict
+STATIC 256 = relocate TWO tables (11 KB in 0x46c9xxxx + **274 KB** in 0x100xxxxx) via
+blanket base rewrites + bump heterogeneous bounds (entangled with 8 recorders) + audit the
+audio/voice path + hardware-only verification (no emulator). The dominant gate is sourcing
+**~285 KB of contiguous fixed free RAM across two densely-packed 16 MB regions** — doubtful
+from static evidence, needs a canary-paint diagnostic on hardware to settle. Biggest,
+riskiest feature attempted; payoff (128->256 static) is real but incremental.
+
+## Live audiopool swap — why PROJECT->CHANGE stops audio  [RECON 2026-07-30]
+
+Traced the full project-change chain. The stop is PHYSICS, not a lazy safety check.
+
+### The chain
+- `change_project_handler` FUN_40063e48: calls `need_stop_predicate` FUN_400448dc.
+  - Predicate = "is anything SOUNDING right now?": loops 8 tracks, `FUN_40000e50(t)`
+    voice state `& 0xffffff00 != 0` -> active; plus `FUN_4009b290(-1)` = _DAT_800065b8
+    (sequencer-running flag). Returns 1 if any voice active or seq running.
+  - Predicate ONLY gates the "PLAYBACK WILL BE STOPPED" warning popup. It is NOT a
+    "should we stop?" gate. There is NO hidden no-stop path to exploit.
+- Both branches call `do_project_change` FUN_40063e28(0), which UNCONDITIONALLY runs:
+  1. `FUN_400a10c8()` — full panic/reset: clears MIDI track state (0x80006500..10),
+     voice mailboxes (0x46c7e998 / 0x46c7faa4), arp state (0x46c7dfba <- 0x2d), etc.
+     (This is the instant-cut culprit we already knew from bank paging.)
+  2. `FUN_40008fe4(0xffffffff)` — stop ALL 8 voices (recurses, sets 0x8000184c=0xff,
+     FUN_40008f84 per track).
+  3. `FUN_400647a0()` — opens the CHOOSE PROJECT picker (FUN_4005829c + FUN_40064624);
+     the heavy flex-RAM reload happens AFTER the user picks (cb FUN_40063ee4).
+  So audio dies the instant you confirm CHANGE PROJECT, before the picker even opens.
+
+### Flex format vs flex content
+- Flex RAM FORMAT (partition layout) = DAT_80000051..56 (live copy in 0x80000000) mirrored
+  to DAT_100b14b1..b6 (persistent). `reformat_flex_ram` FUN_40066784 warns "PLAYBACK WILL
+  BE STOPPED" only if the target format (0x460e4550..54) differs from the live one.
+  reformat_confirm rewrites those params + FUN_4009b5ac/FUN_40006890/FUN_4004bd48.
+- Reformatting (repartition) is separate from loading sample CONTENT into partitions.
+
+### The fundamental constraint (established)
+Flex samples live in RAM the DSP reads in REAL TIME. Overwriting a flex partition while a
+voice reads it = glitch/garbage -> the project load must kill all voices first. STATIC
+samples STREAM from CF (not in the swappable pool) -> safe to reassign live (bank paging
+proved this). So the audio stop is not removable in general; it's protecting live reads.
+
+### The only glitch-free ways to change the pool live
+1. **Shared/identical flex pool (siblings).** The reload writes the same bytes -> sounding
+   voices unaffected. This is what was cancelled — but it is precisely the ONLY clean
+   UNIVERSAL mechanism. The "limitation" (shared samples) is inherent, not a shortcut.
+2. **Lazy per-partition swap** (mirrors the shipped LAZY TRANSITIONS feature): reload only
+   flex partitions NOT currently read by a sounding voice; busy partitions keep the old
+   sample until the voice stops/retriggers, then load. Glitch-free for the common case.
+   Needs per-partition busy tracking + deferred load + retrigger hook. Substantial.
+3. **Double-buffer flex RAM** (2x pool, atomic switch). Likely does not fit RAM.
+
+### Takeaway
+No free lunch: the stop is real. The realistic frontier feature is (2) a "lazy audiopool
+swap" — same philosophy as lazy transitions, applied to flex partitions. The cancelled
+sibling approach (1) was actually the correct clean core, just bounded to shared samples.
+
+## Lazy audiopool swap — mechanism + design  [RECON 2026-07-30]
+
+### The flex load is per-slot (great) but the pool is a BUMP ALLOCATOR that repacks
+- Reload orchestrator `FUN_4009083c`: loops STATIC 0..0x7f then FLEX 0..0x87 (136), each:
+  `if (slot has path) FUN_40096548(slot,1)`. Per-slot -> clean hook point.
+- Flex pool prep `FUN_40096a5c`: per-slot unload `FUN_40096300(slot)` x136 (NOT one bulk
+  wipe — but it clears every slot's size marker).
+- Flex slot load `FUN_40096548(slot,1)`: unloads the slot, reads the .wav, and BUMP-ALLOCATES:
+  - pool cursor `_DAT_8000691c`, pool end `_DAT_80006920`, per-slot offset table base
+    `_DAT_80006918` (offset = `_DAT_80006918[slot]`), per-slot size `DAT_46c75e88[slot*2]`.
+  - `if slot size==0: if (end-cur < need) OUT_OF_MEM; else off[slot]=cur; cur+=need; size=need`.
+  - `else (already allocated): error 0xffffffd2` -> so a reload REQUIRES all slots cleared first.
+  => The pool is repacked from base in load order every project change. A sounding voice's
+     sample region WILL be reused by the repack. This is the physical reason for the stop.
+
+### Consequence for lazy swap
+Naively deferring a busy slot breaks addressing (the bump repack moves everything). A true
+per-slot lazy swap needs allocator surgery: PIN busy slots (reserve their RAM so the bump
+alloc for other slots skips it) + defer their new sample to a queue drained on voice-stop.
+Real but invasive (touches the memory allocator + needs voice->slot busy detection).
+
+### THE CLEAN MVP — pool-identity live project change (the sibling case, done right)
+If the new project's flex table (128 x 0x448 paths at 0x100b14f0) is IDENTICAL to the
+currently loaded one, the reload would produce a BYTE-IDENTICAL bump layout -> same
+addresses, same data. So we can simply SKIP the entire flex teardown+reload, and skip the
+voice-kill (FUN_400a10c8 + FUN_40008fe4) in FUN_40063e28. Banks/parts/patterns still load
+live (bank paging proved that path is audio-safe); patterns reference flex by index -> same
+sample -> correct. Result: GLITCH-FREE live project change between audiopool-identical
+projects — exactly the cancelled sibling feature, but implemented at the correct layer
+(project change + pool-identity detection) instead of the bank-paging hack, and honest about
+the inherent shared-pool constraint.
+- Hooks: (1) FUN_40063e28 — if pools identical, skip FUN_400a10c8 + FUN_40008fe4(0xffffffff).
+  (2) FUN_4009083c — if new flex table == current, skip the flex loop + its prep.
+- Identity test: compare the 128 flex 0x448-entry paths (or format params DAT_80000051..56
+  + a path digest). STATIC differences are safe (stream from CF).
+- Degrades correctly: non-identical pools fall back to the stock stop.
+
+### Full version (later): per-slot pin-and-defer for MIXED pools
+Reserve busy slots' RAM, reload only non-busy slots, queue busy slots' new samples for load
+on voice-stop/retrigger. Needs: voice->slot busy map, a reserved-region bump allocator, and
+a retrigger/stop drain hook. The natural evolution of LAZY TRANSITIONS applied to flex RAM.
+
+## Live pool swap — RECORDER-PRESERVING design (user's, confirmed)  [2026-07-30]
+
+Design (user): allow an audio CUT for everything EXCEPT the 8 recording buffers. On a
+project change, reload the whole audiopool (flex 0-127 + static, any new project) but
+PRESERVE the recorder buffers (flex slots 0x80-0x87) and keep their voices sounding. User
+is responsible that only recorder audio is sounding during the swap. Workflow: record the
+live audio into a recorder, mute all other tracks, change project (recorder bridges), then
+fade into the new project's tracks.
+
+### Confirmed mechanism
+- Flex pool is PAGED: 0x1800-byte pages from a pool at **0x40a955e0**; page index tables at
+  0x46c2e9c0 / 0x46c2e580 / 0x46c35bd4; bump/compaction cursor _DAT_8000691c; pool end
+  _DAT_80006920; free/clear a page = FUN_40020984(page*0x1800+0x40a955e0, 0x1800).
+- Recorders 0x80-0x87 reserve pages in a SEPARATE index range `(rec+2)*0x390a` (limits
+  0x3908/0x3909), sized by 0x461053a8[rec] (default 0x461053c8[rec]), managed by
+  FUN_40095a90 / FUN_400948cc. Distinct from the flex-slot page pool.
+- `unload_slot` FUN_40096300(slot): recorder branch resets size to reserved + reclaims pages
+  via FUN_40095a90 -> MUST skip for 0x80-0x87 during the swap. Flex branch frees+compacts.
+- `kill_voice` FUN_40008f84(track): sets 0x8000184a bit, resets arp (0x46c7dfba[track]=0x2d),
+  FUN_4000672c(track) stops the voice. To spare a recorder voice, skip the track in the kill.
+
+### Scope
+1. Trigger: a dedicated live-swap project change. REQUIRE flex format identical
+   (DAT_80000051..56 / recorder reservation) so recorder pages stay at the same addresses
+   and no DSP reformat runs (reformat = DSP teardown = glitch). If format differs -> abort
+   or fall back to the stock stop.
+2. In the load path (FUN_40063e28 + FUN_4009083c/FUN_40096a5c):
+   - Spare voices reading a recorder buffer in FUN_40008fe4/FUN_40008f84 (and FUN_400a10c8).
+   - Skip FUN_40096300 unload + reload for recorder slots 0x80-0x87 (preserve their pages).
+   - Reload flex 0-127, static, banks, parts, patterns normally (cut is acceptable there).
+
+### Remaining unknowns (need a bit more recon)
+- VOICE->RECORDER detection: which track's voice is currently reading a recorder slot
+  (0x80-0x87), to spare it. Look at the voice struct (0x800049d8, stride 0xA8) / the track's
+  active machine source slot.
+- Does a recorder voice keep sounding across the sequencer stop that a project change does?
+  (Workflow implies a held/looping recorder playback that survives; confirm on hardware.)
+- Confirm the non-reformat load path doesn't reset the DSP in a way that glitches the spared
+  recorder voice (format-identical requirement should prevent the reformat DSP teardown).
+
+### Voice->recorder detection — RESOLVED
+- Voice struct: base 0x800049d8 + track*0xA8; [0]=active flag, [0x14]=type (voice_stop
+  FUN_4000672c gates on [0x14]==4 for the recorder-linked path). `_DAT_461054ec` = live
+  bitmask of recorder-linked tracks; `_DAT_461054f0` = the surviving recorder descriptor.
+- Given the user contract (only recorders sound during the swap), detection simplifies to
+  "spare every ACTIVE voice" (0x800049d8[t*0xA8]!=0), optionally refined to [0x14]==4.
+  Precise track->slot mapping is NOT required.
+- Only ONE teardown to skip: FUN_40096a5c unloads all 136 slots via FUN_40096300; skip
+  0x80-0x87. The load loop FUN_4009083c already skips recorders (no path in the 0x448 table).
+=> Full design in DESIGN_POOLSWAP.md. Contained scope, comparable to arp/bank-paging patches.
+
+## Live pool swap — DIAG #1 result + lazy-parts pivot  [2026-07-30]
+
+MAXODIAG build (skip FUN_40063e28 teardown + preserve recorder pages via FUN_40096a5c
+0x88->0x80) tested on hardware. RESULT: still cuts. User confirmed the stock "PLAYBACK WILL
+BE STOPPED" popup appears and audio cuts on the load.
+
+Diagnosis: the teardown is NOT only in FUN_40063e28 (that only opens the picker). The real
+voice teardown + engine reinit happens in the ASYNC LOAD TASK `FUN_4008445c` (a giant
+on-stack trampoline dispatcher) reached AFTER the project is picked. My diag never touched
+it -> net behavior looks stock. FUN_4009083c (reload) callers: 0x40084d32 / 0x400853c2 /
+0x40085bb0, all inside the 0x4008xxxx load task.
+
+User's key insight (correct): a project load is a FULL REINIT — it selects the new project's
+last-saved bank/pattern, whose destination PART may not hold the recorder's flex machine. So
+even if the buffer + voice survive, the new part REDEFINES the sounding track. => need the
+LAZY-PARTS mechanism (already shipped for in-project part changes) adapted to bridge a
+project change.
+
+PROMISING: the load DOES route through the lazy-hooked apply_part. FUN_400905d4 (bank RAM
+load) calls, for the playing bank: `if (DAT_80000002==bank){ FUN_4000faf0; FUN_400a1030;
+FUN_40009094(bank,DAT_80000003); }` — FUN_40009094 is apply_part, already carrying the
+lazy save/restore detours (0x40009094 entry, 0x40009664 exit). And the lazy mechanism
+snapshots LIVE voice state (0x80000a50, 0x200 B) — which survives the part-data overwrite.
+So lazy-parts is likely the right tool for the machine-def bridge.
+
+STILL NEEDED (scope escalation — multi-hook feature, ~ lazy transitions size):
+1. Spare the sounding recorder voice through the load task's HARD voice stop (find it in
+   FUN_4008445c / the load orchestrators 0x400853c2 / 0x40085bb0).
+2. Preserve recorder pages (done in diag).
+3. Lazy-parts bridge: keep the sounding recorder track on its old (recorder) machine def
+   across the load, via the existing 0x80000a50 snapshot, until re-trig.
+
+NEXT RECON: (a) locate the hard voice stop in the async load task; (b) confirm whether the
+project-load apply_part path triggers the lazy save/restore for the sounding recorder track.
+
+## Live pool swap — teardown is MULTI-MECHANISM (strategic finding)  [2026-07-30]
+
+Traced the voice-silencing during load. There is NO single choke point:
+- **FUN_40006820(track)** = per-track voice stop primitive: clears the voice ACTIVE flag
+  `0x800049d8[track*0xA8]=0` (the frame builder stops synthesizing when 0) + FUN_4000672c.
+  Recursive for 0xffffffff. Called from MANY sites (f6890 stop-all, flex assign
+  FUN_40096ab0, etc.). This is the "active flag" silencer.
+- **FUN_400a10c8 (panic)** silences via a DIFFERENT path: DSP commands FUN_400a539c(0xffffffff)
+  / FUN_4009f2f8 / FUN_4009da20 + mailbox clears — does NOT go through FUN_40006820. ~12
+  callers in the 0x40063xxx project-menu region.
+- **flex unload** kills the voice of the track reading an unloaded slot via FUN_400977cc ->
+  FUN_40008f84 (kill bit + FUN_4000672c). Recorder slots preserved -> shouldn't fire for it.
+- **apply_part FUN_40009094** (lazy-hooked) IS called during bank load for the playing bank
+  (FUN_400905d4: `if(DAT_80000002==bank){FUN_4000faf0; FUN_400a1030; FUN_40009094(bank,ptn)}`)
+  -> redefines the track (user's insight); the lazy save/restore only preserves a track still
+  marked SOUNDING.
+
+Voice TYPE field: voice[0x14]==4 (recorder/pickup) in FUN_4000672c; `_DAT_461054ec` = live
+recorder-track bitmask. Note: a Flex machine pointing at a recorder buffer may be type 1, not
+4 — so type==4 alone may not catch every "playing a recorder" case.
+
+### Assessment
+Bridging a live recorder voice through a project load means neutralizing SEVERAL independent
+silencers (active-flag FUN_40006820 + panic DSP-command path FUN_400a10c8 + keeping it
+SOUNDING so the lazy apply_part preserves its def) AND preserving pages (done). No single
+hook. High hardware-iteration cost, uncertain. This is a bigger fight than lazy transitions.
+
+Most informative next test: a diag that hooks FUN_40006820 to SPARE recorder-linked tracks
+(_DAT_461054ec / voice[0x14]==4) + keeps page preservation, and see if the recorder survives.
+If it does -> FUN_40006820 was the dominant path. If not -> the panic DSP path also kills it,
+and the bridge starts fighting the whole load reinit.
+
+## Live pool swap — PIVOT to a dedicated HOT CHANGE entry point  [2026-07-30]
+
+Diag #2 result: Flex-on-recorder does NOT survive (voice[0x14]!=4, likely ==1, so the
+FUN_40006820 spare missed it). Pickup untested. But the masking approach is whack-a-mole
+against a flow (PROJECT->CHANGE) we don't control.
+
+USER IDEA (adopted): add a NEW menu entry PROJECT -> HOT CHANGE with its OWN load sequence
+that BYPASSES the teardowns by simply not calling them, instead of masking a flow we don't
+control. We author the exact steps.
+
+Why it's the right pivot:
+- Revives the SHELVED bank-paging infra, which ALREADY PROVED audio-safe bank loading on
+  hardware (poster FUN_40022778 w/ bank mask, redirect gate FUN_40025230 override,
+  conditional re-sync skip). See DESIGN_BANKPAGE.md.
+- HOT CHANGE = [preserve recorder pages] + [load new project's banks/parts/patterns via the
+  proven audio-safe path] + [reload flex 0-127 + static, recorders preserved] + [lazy-parts
+  so the sounding recorder track keeps its def]. The audio-safe machinery already exists.
+
+METHODOLOGY FIX (important): the diag builds were from STOCK, which has NO lazy parts / sticky
+scenes / arp scales. The design DEPENDS on lazy parts (to avoid redefining the recorder track
+on apply_part). All further pool-swap experiments MUST be built on R11 (out/mainos.bin from
+tools/build.py), not stock, so lazy parts is present.
+
+NEXT: design the HOT CHANGE custom load (reuse bank-paging poster/redirect/re-sync-skip +
+flex 0-127/static reload w/ recorder preservation + lazy-parts), built on R11.
+
+## Live pool swap — KEY FINDING: the async load is AUDIO-SAFE  [2026-07-30]
+
+Verified: there is NO global audio teardown (panic FUN_400a10c8, stop-all FUN_40008fe4)
+ANYWHERE in the async project-load path:
+- load task + steps 0x40084xxx: none
+- load orchestrator 0x40085xxx: none
+- project.strd + bank + flex load 0x4008exxx-0x40092xxx: none
+- flex/static load+unload 0x40093xxx-0x40099xxx: only PER-SLOT voice ops (FUN_40006820 at
+  0x40093ec0 static / 0x40096ad4 flex-assign; FUN_40008f84 at 0x40097856 per-slot unload).
+  These stop only the voice reading the specific slot being (un)loaded — not a global panic.
+
+=> The global audio teardown (panic + kill-all) is a SYNCHRONOUS PREFIX in the menu handler
+   (0x40063xxx), NOT in the async load. The async load itself is data-only / audio-safe
+   (consistent with bank paging, which posted a load job with no audio stop).
+
+### HOT CHANGE design (flavor a, now tractable)
+Do NOT replicate the load (the task is a generic table-driven dispatcher over FUN_4008419c —
+impractical to reimplement). Instead: a new menu entry PROJECT -> HOT CHANGE that TRIGGERS
+the stock async project load for the target, MINUS the synchronous menu-handler teardown:
+  1. Open the CHOOSE PROJECT picker WITHOUT the up-front panic/kill.
+  2. On pick: set target project + POST the stock async load (the real, complete load) with
+     NO synchronous panic/kill.
+  3. Recorder pages preserved (FUN_40096a5c 0x88->0x80, gated on a hot flag).
+  4. Lazy-parts (present in R11) preserves the sounding recorder track's machine def; the
+     per-slot flex-unload kills never hit the recorder (preserved) nor muted tracks (no
+     active voice).
+No global panic ever reaches the recorder voice. Build on R11.
+
+NEXT RECON: find the pick->post-load trigger (how CHANGE PROJECT posts the async load after
+the picker selection), to replicate just that part minus the synchronous teardown.
+
+## Live pool swap — the load-post template (HOT CHANGE core)  [2026-07-30]
+
+The project-load is POSTED to the load queue, panic FIRST (synchronous). Template (from the
+project-menu handler that posts 0x4002325c):
+    FUN_400a10c8();                         // <-- synchronous PANIC (HOT CHANGE skips this)
+    DAT_460bd922  = 0x13;                    // job id
+    _DAT_460bd926 = 0x4002325c;              // handler = project-load orchestrator (audio-safe)
+    _DAT_460bd92a = FUN_40023cf8;            // cb1
+    _DAT_460bd92e = FUN_40022dc4;            // cb2
+    FUN_40000c3c(0x460d17ce, &DAT_460bd922); // POST to the load queue (same queue as bank paging)
+Job descriptor table at 0x400227xx: {handler 0x4002325c, cb FUN_40023cf8/FUN_40022dc4}.
+The orchestrator 0x4002325c loads the CURRENT project (0x100f8378) — for a CHANGE, the picker
+sets 0x100f8378 to the target first.
+
+Why diag #1 still cut: there are (at least) TWO synchronous panic sites on the change path —
+FUN_40063e28 (before the picker) AND the load-post handler (before FUN_40000c3c). Diag #1
+only skipped the first; the second killed the recorder. HOT CHANGE must skip BOTH.
+
+### Consolidated HOT CHANGE design (final)
+Reuse the ENTIRE stock CHANGE PROJECT flow (picker + select + post + async load — the load is
+audio-safe, proven above). Gate on a HOT flag so we skip the synchronous teardown and preserve
+recorders:
+  1. Menu entry PROJECT -> HOT CHANGE: arm g_hot, then run the stock change (open picker).
+  2. Skip FUN_400a10c8 + FUN_40008fe4 at BOTH synchronous sites when g_hot (FUN_40063e28 +
+     the load-post handler).
+  3. FUN_40096a5c unload bound 0x88->0x80 when g_hot (preserve recorder pages).
+  4. Lazy-parts (already in R11) preserves the sounding recorder track's def; per-slot flex
+     unload kills never touch the recorder (preserved) or muted tracks (no active voice).
+  5. Clear g_hot at load-done.
+Exact panic/kill sites on the change path to be pinned during implementation (iterate on
+hardware like bank paging v1/v2/v3). Build on R11.
+
+## HOT CHANGE prototype — v1 result, v2 (panic gate)  [2026-07-30]
+
+v1 (on R11: skip FUN_40063e28 teardown + preserve recorder pages, LAZY on): still cuts.
+User confirmed: LAZY was enabled, and the cut happens AFTER selecting the project (during
+load) -> the SECOND synchronous panic (the load-post handler's FUN_400a10c8) killed the
+recorder. Not the apply_part redefinition (lazy was on).
+
+v2 (MAXOHOT, tools/patch_hotchange.s + build_hotchange.py, on R11):
+- cave @0x400d7240 (R11 free run 0x400d7223+): hot_change + hot_panic + g_hot.
+- detour FUN_40063e28 -> hot_change: arm g_hot=1 + open picker (skip panic+stop-all).
+- detour FUN_400a10c8 -> hot_panic: if g_hot, one-shot disarm + rts (skip); else stock
+  panic (replicate `lea -0x24(sp),sp; movem.l D2-D5/A2-A6,(sp)`, jmp 0x400a10d0).
+- in-place FUN_40096a5c 0x88->0x80 (preserve recorder pages).
+- LAZY parts (R11) bridges the recorder track's def.
+One-shot rationale: FUN_40063e28's panic is no longer routed through FUN_400a10c8 (the cave
+replaces it), so the first FUN_400a10c8 after arming IS the post-handler panic. Self-healing
+on picker-cancel. Awaiting hardware result.
+
+## HOT CHANGE v2 result + v3 (re-sync skip)  [2026-07-30]
+
+v1 test was INVALID (flex track level was 0 -> nothing sounding). v2, with the recorder
+actually sounding: it SURVIVED the whole load and cut only AFTER the project finished loading.
+=> panic gate + recorder-page preservation WORK; the remaining cut is the end-of-load RE-SYNC
+FUN_400238a4 (called via `jsr (d16,PC)` from FUN_40023998 @0x400239a2) — the same one bank
+paging had to skip.
+
+v3 (MAXOHOT3): adds hot_done hooking 0x400239a2 (mirror of bank paging's done_cave): if g_hot,
+disarm + SKIP the re-sync (replicate `pea (0x1).w`, jmp 0x400239aa); else stock re-sync. Also
+moved g_hot disarm from hot_panic (one-shot) to hot_done (load-done) so the panic gate stays
+armed through the whole load. Awaiting hardware result.
+
+## HOT CHANGE v3 fail -> v4 (hook the re-sync FUNCTION)  [2026-07-31]
+
+v3 still cut (SYSTEM STATUS confirmed MAXOHOT3). Root cause: FUN_400238a4 (re-sync) has FOUR
+call sites (0x40023936 create, 0x400239a2 bank-reload done, 0x40023a4a FUN_40023a08,
+0x40023afa FUN_40023ab8). v3 hooked 0x400239a2 = the BANK-reload done; the PROJECT load
+re-syncs from FUN_40023ab8 (0x40023afa). So the project-load re-sync ran (cut) AND g_hot never
+cleared (stuck armed). FUN_40099680 (slot finalize) returns early for active recorder slots
+(state[+8]!=0, param_3==0) -> does not disturb the recorder; the cut is purely the re-sync.
+
+v4 (MAXOHOT4): hook FUN_400238a4 ITSELF -> if g_hot, one-shot disarm + rts (skip); else stock
+(replicate `move.l A2,-(sp); jsr 0x4009b220`, jmp 0x400238ac). Covers all 4 sites; the re-sync
+is the per-operation load-done so one-shot is safe. hot_panic reverted to skip-while-armed (no
+clear; the re-sync hook now owns the disarm). Awaiting hardware result.
+
+## HOT CHANGE v4 -> v5 (skip recorder unload everywhere)  [2026-07-31]
+
+v4 result: PROGRESS — audio cuts but the SEQUENCER KEEPS RUNNING (panic gate + re-sync skip
+worked; no full stop). The remaining problem: the recording buffer of the sounding flex track
+reinitializes to EMPTY.
+
+Cause: FUN_40096300 (slot unload) is called from a SECOND site — a per-slot step inside the
+load task FUN_4008445c @0x4008598e — not just the prep FUN_40096a5c. So the recorder slots
+0x80-0x87 got unloaded (reset size to reserved + reclaim pages) despite the prep-loop skip.
+
+v5 (MAXOHOT5): hook FUN_40096300 ITSELF -> hot_unload: while g_hot, if slot in 0x80-0x87,
+return success WITHOUT unloading (covers every unload call site). Removed the in-place
+FUN_40096a5c 0x88->0x80 (was ungated / affected all ops); the gated hook replaces it. Hooks
+now: hot_change + hot_panic + hot_resync + hot_unload, all gated on g_hot. Awaiting result.
+
+## HOT CHANGE v5 -> v6 (skip recorder page reclaim)  [2026-07-31]
+
+Scope narrowed by user: preserve ONLY flex tracks pointing at a recording buffer, and only
+those matching source<->dest (their setup: track 7 = flex on a recorder, in every project).
+Since both projects have track 7 = flex-on-recorder, the machine DEF matches -> apply_part
+doesn't change it; only the buffer CONTENT (pages) must survive.
+
+v5 result: sequencer runs, but audio cuts after select AND the sounding track shows a
+COMPLETELY DIFFERENT waveform + recorder empty -> the recorder PAGES were REUSED by a flex
+sample. Root cause: the load task, after the reload (FUN_4009083c @0x40085bb0), runs a
+per-recorder loop `FUN_40095a90(rec) [reclaim] ; FUN_400948cc(rec) [realloc]` @0x40085bfc that
+FREES the recorder pages (reclaim) -> reused. hot_unload (FUN_40096300 skip) did not cover
+this direct reclaim.
+
+v6 (MAXOHOT6): add hot_reclaim hooking FUN_40095a90 -> if g_hot, skip (rts). Keeps the
+recorder pages held; FUN_400948cc realloc then no-ops (pages already present, `if *psVar6!=0
+stop`). Hooks: hot_change + hot_panic + hot_resync + hot_unload + hot_reclaim, all gated on
+g_hot. Awaiting result.
+
+## HOT CHANGE — ROOT of the recorder wipe: FUN_40096f24 (full pool reinit)  [2026-07-31]
+
+v7 result: still fails; but "can't stop the sequencer after the change" CONFIRMS g_hot stayed
+armed (hot_panic kept skipping the STOP panic). So hot_unload + hot_reclaim DID fire and still
+didn't preserve the recorder -> the wipe is elsewhere / upstream.
+
+ROOT FOUND: FUN_40096f24 (called @0x40085ba0 in the load task, right BEFORE FUN_4009083c
+reload) is the FULL FLEX POOL RE-INIT:
+  _DAT_8000691c = 0; _DAT_80006920 = 0x390a;        // reset flex cursor + recorder boundary to top
+  rebuild free page table 0x46c2e9c0 = 1..0x390a
+  clear all flex slot metadata (0x46c922c4 / DAT_46c75e88)
+  FUN_40020984(0x40a955e0, 0x5590800)               // ZERO the ENTIRE ~89MB PCM pool
+  loop recorders 0x80-0x88: re-establish reserved sizes + FUN_400948cc(rec)
+So a project load ZEROES the whole flex pool (flex + recorder PCM) and rebuilds. This is the
+real teardown for flex audio (a data wipe, not a voice stop) — and it wipes recorder content.
+All prior hooks were downstream of this.
+
+Implication: preserving recorder content across a project load requires making FUN_40096f24
+recorder-preserving (skip zeroing the recorder pages + keep the boundary + keep the recorder
+metadata/page-table for the preserved recorders) — substantial allocator surgery — OR a
+snapshot/restore of the recorder content (needs free RAM for MBs of audio; the RAM blocker).
+Recommend building a flex-allocator EMULATOR (like emu_arp.py) to design/validate the
+recorder-preserving reinit in software before flashing, to stop the blind hardware iteration.
+
+## HOT CHANGE — allocator emulator validates the recorder-preserving reinit  [2026-07-31]
+
+Built tools/emu_pool.py: faithful model of the flex paged allocator (reinit FUN_40096f24,
+rec reserve FUN_400948cc, rec reclaim FUN_40095a90, flex bump alloc). Page geometry: NPAGES
+0x390a, page 0x1800, base 0x40a955e0. Free list = band 0 of 0x46c2e9c0; recorders MOVE pages
+out of the free list (from the TOP) into their bands; flex bumps from the BOTTOM. Recorders
+always hold the HIGH physical pages; flex the low ones.
+
+Design (validated): a recorder-preserving reinit = a FLEX-ONLY reinit —
+  - KEEP the current boundary _DAT_80006920 (don't reset to 0x390a) -> recorder region stays reserved
+  - cursor _DAT_8000691c = 0
+  - rebuild free list ONLY [0..boundary): 0x46c2e9c0[i]=i+1
+  - zero ONLY the flex region (pages 1..boundary), NOT the recorder pages (boundary+1..0x390a)
+  - clear flex slot metadata (0..0x7f) as stock does
+  - SKIP the recorder loop entirely (recorders kept, held by hot_unload/hot_reclaim)
+
+Emulator results: PASS 4/4 scenarios (typical / 8-recs / 64s-24bit / 16-flex-slots) — recorder
+pages identical, content kept, ZERO flex<->recorder page overlap. And STOCK-vs-PRESERVE
+comparison reproduces the bug: stock reinit LOSES recorder content (kept=False), preserve
+KEEPS it (kept=True). Confidence high before hardware.
+
+NEXT: implement the flex-only reinit as a g_hot-gated hook on FUN_40096f24 (cave reimpl of
+the flex portion), restore proper g_hot lifecycle. Then one hardware flash.
+
+## HOT CHANGE v8 — recorder-preserving reinit implemented (emulator-validated)  [2026-07-31]
+
+Implemented tools/patch_hotchange.s hot_reinit: hook FUN_40096f24 -> when g_hot, a FLEX-ONLY
+reinit (keep boundary, cursor=0, rebuild free list [0..B), clear flex metadata 0..0x7f as
+stock, skip pool zero + recorder loop). Mirrors emu_pool.py reinit_preserve exactly (PASS
+4/4 + stock-vs-preserve reproduces bug). Restored hot_resync one-shot g_hot clear (so STOP
+works again after the change). 6 hooks total, all gated on g_hot; only affects HOT CHANGE,
+normal loads stay stock. ColdFire fixups: cmpi/move-#imm can't target memory -> via register.
+Build: out/OCTATRACK_MAXOHOT.bin (MAXOHOT8). Awaiting CF mount + hardware test.
+
+## HOT CHANGE v8 result + WALL on recorder content  [2026-07-31]
+
+v8 (recorder-preserving reinit): project loads, STOP works, recorder RESERVATION preserved
+(size 1.33 shown) — but the recorder CONTENT is SILENCE after the change (manual re-trig of
+track 7 = silence; no waveform, no BPM). User tested correctly (sequencer stopped, record
+trig removed from destination) -> NOT the record trig; the PCM pages were wiped.
+
+But: exhaustive search finds NO uncovered zero of the recorder pool region (0x40a955e0):
+- FUN_40020984 (memset) has only 2 call sites: 0x40097012 (INSIDE FUN_40096f24 -> replaced by
+  v8) and 0x4000fd46 (zeroes the BANK blobs 0x400e21e0, not the flex pool).
+- FUN_40095a90 reclaim (which zeroes recorder pages per-page) is skipped by hot_reclaim.
+- FUN_40096f24 zero + recorder loop replaced by hot_reinit.
+So no known path zeroes the recorder pages, yet they end up silent. The recorder content/
+playback model has a dependency not yet mapped (possibly a separate "committed" copy, a
+content flag, or a non-FUN_40020984 memset). RE not converging after ~8 hw iterations.
+
+Honest status: the POOL STRUCTURE problem is SOLVED (no crash/overlap, project loads, STOP
+works, reservation preserved, emulator-validated reinit). The recorder AUDIO CONTENT bridge
+is blocked on an elusive wipe. Realistic paths: (1) robust snapshot/restore of R7's content
+pages via a CF temp file (brute-force, sidesteps the mechanism, ~230KB, substantial); (2)
+deeper RE of the recorder playback/content model; (3) consolidate the (large) progress.
+
+## HOT CHANGE — MILESTONE: recorder CONTENT is fully preserved  [2026-07-31]
+
+Runtime diagnostics (v10/v11) DEFINITIVELY show v8 works at the pool level:
+- v10: R7 (rec6) band[0] = page 14602 (top, non-zero) -> band intact; boundary = 14374
+  (not reset to 0x390a=14602) -> reservation preserved.
+- v11: content word of an R7 page = 0xF96DFE36 (NON-ZERO, audio-like) -> the recorded PCM
+  survives the load. The flex-only reinit (v8) fully preserves the recorder audio + pages.
+
+So the pool-structure problem is SOLVED. The remaining "silence" is PLAYBACK/METADATA: the
+audio is in the pages, but the load resets the recorder's playback-enabling metadata (recorded
+length / trim points / BPM — user saw the BPM vanish), so the engine treats R7 as empty.
+
+PLAN: snapshot/restore R7's metadata structs around the load (content already preserved by v8):
+  - 0x448 settings struct: 0x100b14f0 + slot*0x448 (trim/loop/slices/BPM)
+  - 0x2c state struct:      0x46c922c4 + slot*0x2c  (state/length/label)
+  - recorder metadata:      0x46c938c4 + rec*0x2c
+  - sizes: 0x461053a8[rec], 0x46c75e88[slot]
+Small (~2KB), deterministic, sidesteps finding the exact reset. slot=0x80+rec.
+
+## HOT CHANGE v13 — recorder metadata snapshot/restore (THE FIX)  [2026-07-31]
+
+Diag v12 confirmed: after the load, R7 content word = 0xF96DFE36 (preserved) but the recorded
+LENGTH field (0x2c struct +0x10) = 0. So the load resets the recorder's playback metadata
+(length -> engine sees empty -> silence/no waveform/no BPM), while v8 preserves the audio.
+
+FIX (v13): snapshot R7's metadata while intact (in hot_change, before the load) and restore
+it at load-done (in hot_resync, after the reset). Content is already preserved by v8; only the
+metadata needs bridging.
+  - 0x2c state struct  @0x46c939cc (44 B) -> snap_2c   (holds +0x10 length, state, label, gen)
+  - 0x448 settings str @0x100d52a0 (1096 B) -> snap_448 (trim/loop/slices/BPM)
+  memcpy = FUN_40020898(dst, src, len) (verified). Buffers live in the cave (writable SDRAM).
+Hardcoded to R7 (rec6) for the prototype. If it plays -> generalize to all sounding recorders.
+Cave 1608 B @0x400d7240 (fits the R11 free run). Build MAXOHT13. Awaiting hardware.
+
+### v15 (MAXOHT15) — keep track 6's VOICE alive across the swap  [2026-08-01]
+
+v14 result (hardware): pool + metadata fully preserved — R7 shows waveform + BPM and
+RE-SOUNDS when the sequencer hits its trig — but the live voice still cuts ~1 s in. User's
+decisive observation: *during load all tracks flip to STATIC, then to the part's machine*;
+the cut is the machine-reassign stopping the playing voice, NOT the pool/metadata.
+
+RE of the voice-stop path (Ghidra listing — these fns are hot-path, decompiler emits empty):
+- `FUN_40006820(track)` = per-track voice-stop primitive: clears the active byte
+  `0x800049d8+track*0xA8`, clears the voice command slot `0x80004898[...]`, bumps a gen
+  counter `0x80004a68+track*0xA8`, and sends the DSP note-off `FUN_4000672c(track)`.
+  `track<=7` stops one; `track>=8` recurses over all 8.
+- `FUN_40096ab0(track)` = flex machine-assign: writes machine-type `0x40` to
+  `0x46c80354[track]`, THEN calls `FUN_40006820(track)` to kill the voice, then writes the
+  slot into the project data. This is the load's "apply flex machine → voice dies".
+- `FUN_4000672c` (DSP note-off) is reached ONLY from `FUN_40006820` and `FUN_40008f84`.
+- `FUN_40006890` (stop-ALL-8) is called ONLY from `reformat_confirm` — never in the load
+  path. So during CHANGE PROJECT the ONLY way track 6's voice is stopped is the
+  `FUN_40006820` ENTRY. `apply_part` (FUN_40009094) itself only writes params (no stop).
+
+Fix: 7th detour `hot_vstop` on `FUN_40006820` entry — while `g_hot` and `track==6`, `rts`
+(skip the stop). Displaces 8 bytes (2f0a 2f02 222f000c = 3 instrs); trampoline replays them
+and `jmp 0x40006828`. `FUN_40096ab0` still writes the (matching) flex machine-type + slot,
+so track 6 ends correctly configured but is never silenced → the buffer should sound
+continuously across the swap. build_hotchange.py now nop-pads detours that displace >6 B.
+Pending hardware test: does R7 now sound WITHOUT the ~1 s cut?
+
+### v16 (MAXOHT16) — timing hypothesis: disarm fires BEFORE the killing apply  [2026-08-01]
+
+v15 (hot_vstop gating FUN_40006820 for track 6) had ZERO effect on hardware, yet pool +
+metadata are provably preserved (waveform/BPM show) → g_hot IS armed during the load. The
+only consistent explanation: the voice-stop of track 6 happens in the POST-load part-apply
+(sequencer re-applies the destination Part → machine reassign → FUN_40006820), which runs
+AFTER hot_resync has already `clr.l g_hot`. So when FUN_40006820(6) fires, g_hot==0 and
+hot_vstop is inert. Fits all 4 observations: preserved metadata (hot_resync ran), voice cut
+~1s in (post-load apply), v15 no-op (disarmed by then), re-sounds on trig.
+
+v16 = DIAGNOSTIC: removed `clr.l g_hot` from hot_resync (leave armed). If track 6 now sounds
+CONTINUOUS across the swap → hypothesis confirmed → add proper disarm-on-first-track6-trig
+(8th detour on FUN_40005030, arg0=track). If still cuts → stop is a non-FUN_40006820 path.
+Caveat of the diag build: g_hot stays armed → track 6 unstoppable + hot_panic keeps skipping
+panics → power-cycle after the test.
+
+### v17 (MAXOHT17) — the note-off funnel FUN_4000672c was the leak (emulator-found)  [2026-08-01]
+
+Built tools/emu_hotchange.py: a Unicorn tracer of the REAL patched image that seeds the
+load-context globals (0x400d7c48=0 "load active", 0x400d7c4c=6 active track), seeds all 8
+voices alive + machine=flex + voice-type(+0x14)=4, runs in supervisor mode (so move-from-SR
+in the stop body doesn't fault), and logs every call to the voice-stop/note-off primitives +
+writes to track6's voice-active byte and the note-off side-effect 0x461054ec, with g_hot.
+
+Findings (no hardware):
+- A. flex-assign(6) DISARMED: FUN_40096ab0->FUN_40006820(6) clears voice byte @0x4000685e AND
+  writes note-off fx 0x461054ec @0x400067a0 -> track6 silenced. Ground truth.
+- B. flex-assign(6) ARMED: hot_vstop swallows it -> no clear, no note-off. OK.
+- E/F. FUN_40008f84(6)/FUN_40008fe4(6): reach FUN_4000672c (the DSP note-off) WITHOUT going
+  through FUN_40006820 -> NOT covered by hot_vstop. On the real DSP this note-off silences
+  track6 even though the CPU voice-active byte stays set (emulator can't see DSP audio, only
+  the note-off write). THIS is why v16 (g_hot armed) still cut after the static-reset.
+
+FUN_4000672c is the SINGLE funnel to the DSP note-off (only FUN_40006820 and FUN_40008f84
+call it). Fix v17 = 8th detour hot_noteoff on FUN_4000672c entry: g_hot && track==6 -> rts.
+Emulator re-run confirms E/F now hit hot_noteoff and emit ZERO note-off fx write -> track6
+cannot be silenced by any path while armed. Displaces 8B (4feffff0 48d7003c); nop-padded.
+v17 still keeps disarm OFF (diagnostic) to hold g_hot through the post-load window. If HW
+confirms continuous audio -> v18 adds proper disarm-on-first-track6-trig.
+
+### v17 REGRESSION + revert  [2026-08-01]
+
+Hardware v17 (hot_noteoff on FUN_4000672c): audio cut ABSOLUTELY for the whole load,
+returned only at load-end. So gating FUN_4000672c is WRONG: that function is voice
+ALLOCATION (0x461054ec free-mask + ff1 slot pick + voice-struct probe), not a pure DSP
+note-off. Skipping it for track 6 corrupts the voice. The emulator green-lit it falsely
+because it only sees the CPU-side write to 0x461054ec, not the DSP audio -> KEY LIMIT of
+emu_hotchange.py: it validates *who writes what*, never *is sound produced*.
+
+Reverted: removed the hot_noteoff detour (kept the source stub). Back to best-known v16
+(hot_vstop only, disarm off).
+
+Honest architectural read: a project load rebuilds the whole audio engine. We preserve the
+recorder BUFFER (pool+metadata) and the voice RETURNS at load-end, but keeping the live
+voice continuous THROUGH the load means freezing track 6 across many teardown/rebuild sites,
+none of which the emulator can audio-verify. Machine-type writers: FUN_4000db98 sets 0x40
+(flex), FUN_4000e018 sets 0x1d; no clean bulk "reset to static" write found -> the visible
+"all tracks -> static" is likely a transient display default, not a single gate-able write.
+
+### Global-DSP-mute hunt — CONCLUSION: no global mute exists  [2026-08-01]
+
+User picked "hunt the global DSP mute". Investigated the DSP MMIO (0x20000000) + the frame
+handler FUN_4000a8fc (cmd 0x8b, acks int-ctrl 0xfc04801d). Its guards:
+- 0x80001860: NOT global — set by FUN_40005214 only when a track's machine-type == 4
+  (== the RECORDER-BUFFER-PLAYBACK machine, i.e. track 7's machine). FUN_40005214 configures
+  that machine's loop timing (0x80001866 = loop len, 0x8000186a) and is reached via
+  FUN_40096ab0(flex-assign) -> FUN_400972fc -> FUN_40005214. Per-track setup, not a mute.
+- 0x80000028 bit0: a PROJECT setting (written by project_settings_serialize) — not a load mute.
+- 0x46104ca8: its clearer FUN_40056c40 has NO direct callers (vectored) — not in the load path.
+- DSP reprogram (FUN_400e1292 via FUN_400e136c): FUN_400e136c is a ROOT (no callers) = boot
+  only. The project LOAD does NOT reprogram/reset the DSP.
+
+=> There is NO single global audio-disable toggled by project load. Consistent with v16's
+FLICKERING audio (on-off-on), not a clean global off (only the CORRUPTED v17 gave clean-off).
+The cuts are inherent PER-TRACK voice reallocation during load: the only clean CPU-side clear
+of track6's voice-active byte is FUN_40006820 (already gated by hot_vstop, which recovered the
+most); the residual dropouts come from the DSP voice-allocator FUN_4000672c, which CANNOT be
+gated without corrupting the voice (v17). Fully-seamless-through-load likely needs a deeper
+engine change. Useful byproduct: machine TYPE 4 = the recorder-playback machine (track 7's).
+
+### v18 (MAXOHT18) — index-agnostic gate: protect type-4 recorder voices  [2026-08-01]
+
+Addressed the "am I even targeting the right track?" concern. hot_vstop no longer hardcodes
+track==6; it reads voice[track]+0x14 (0x800049ec+track*0xA8) and protects the stop only when
+type==4 (recorder-buffer playback). At stop time the voice type still reflects the OLD state
+(FUN_40005214 sets type-4 AFTER the stop), so this reliably catches the live recorder voice.
+Emulator H1/H2: type=4 voice PROTECTED (no clear, no note-off); type=0 voice NOT protected
+(FUN_4000672c runs, voice cleared). Binary question for HW: if "6" was already right, behaves
+like v16; if index was wrong, this fixes targeting. disarm still OFF (diagnostic).
+Type-4 recorder-playback uses GLOBAL state: 0x80001860(enable) 0x80001866(loop len) 0x8000186a
++ 0x400d7c4c(active recorder track) -> next lever if v18==v16: preserve/keep-active that global
+recorder state for the live track across the load.
+
+### v19 (MAXOHT19) — gate the OTHER release caller, fix v17 the right way  [2026-08-01]
+
+v17 corrupted the voice by gating FUN_4000672c (voice ALLOCATOR) directly. Correct approach:
+FUN_4000672c has exactly 2 callers (FUN_40006820 -> hot_vstop; FUN_40008f84 -> NEW hot_vstop2).
+Gate BOTH callers for a type-4 recorder voice => FUN_4000672c is NEVER called for that voice
+(so its DSP slot is never released) while FUN_4000672c itself runs untouched for everything
+else (no corruption). hot_vstop2 = 9th detour on FUN_40008f84 (EXPECT 4feffff448d7040c), same
+type-4 detection. Emulator: E (f84(6) type-4) + F (fe4(6)->f84) now hit hot_vstop2 and DO NOT
+reach FUN_4000672c (previously they did). disarm still OFF (diagnostic). Best-reasoned seamless
+attempt: closes the f84->672c leak that survived v16/v18 without the v17 corruption.
+
+### v19 result + CONCLUSION of the seamless hunt  [2026-08-01]
+
+MAXOHT19: SAME as v16/v18 — cuts during load, returns at first trig, buffer survives. So
+gating BOTH callers of FUN_4000672c for the recorder voice (emulator-proven: FUN_4000672c
+never called for track 6) made NO audible difference.
+
+DEFINITIVE (proven, not guessed):
+- buffer (pool+metadata) preserved end-to-end
+- track index correct (7=idx6; v18==v16)
+- voice-active byte preserved (hot_vstop)
+- EVERY CPU-side voice stop/release gated for the recorder voice (FUN_40006820, FUN_40008f84,
+  FUN_40008fe4; FUN_4000672c never reached) -- emulator-confirmed
+- no global DSP mute; DSP not reprogrammed during load
+- AND IT STILL CUTS during the load, resuming at the first trig.
+
+=> The during-load cut is NOT a gate-able CPU-side voice stop. It is inherent to the audio
+PRODUCTION/transport being reconfigured by the project load: the recorder-buffer playback is
+trig-driven (returns at the next trig), so the load's transport/sequencer/frame-production
+reset stops the playing voice by a mechanism orthogonal to the per-voice stop primitives.
+Preserving that would require reverse-engineering the frame builder's per-track production
+condition + the DSP voice playback state and freezing them across the load -- a large effort
+that STILL can't be verified without hardware (DSP not emulated). This is the practical limit
+of surgical patching for "seamless DURING load".
+
+WHAT WORKS AND IS WORTH SHIPPING: buffer fully preserved across CHANGE PROJECT, playback
+resumes at the first trig. Recommend productizing this (proper disarm + PERSONALIZE toggle),
+optionally with an auto-retrig at load-end to tighten the resume to load-duration.
+
+### CF TEXT LOGGING capability found + debug instrument  [2026-08-01]
+
+The frame builder can't be emulated (Unicorn/QEMU-m68k crashes on bfextu @0x4000c8a6 and
+lacks ColdFire EMAC MAC/MSAC used throughout the audio hot-path) -> no frame-level emulator
+verification is possible. Replaced it with HARDWARE observability via the firmware's own file
+primitives (user's idea: reuse the OT crash/log mechanism).
+
+Found: FUN_4001ff2c writes "/LOG %s.txt" using
+  FUN_40016864(&fh, path, "w", iobuf, size)  open   (mode string "w" @0x400b328b)
+  FUN_400166b8(&fh, buf, len)                write  (the missing primitive)
+  FUN_4001677c(&fh)                          close
+  FUN_40013a08(dst, fmt, ...)                sprintf
+Also: "EXCEPTION"/"SSP:%01x VEC:%02x" @0x400b43cc = the crash handler display.
+
+Built tools/patch_hotdbg.s + build_hotdbg.py (MAXODBG1): two detours, pure observability.
+- FUN_40063e28 (change) -> log "BEFORE" track-6 state
+- FUN_400238a4 (end-of-load re-sync) -> log "AFTER" + flush to /HOTDBG.TXT
+Logs per line: p=playflags(0x800018a6) t=timing(0x80001886) m=mtype(0x46c8036c)
+v=voice-active(0x80004dc8) e=rec-enable(0x80001860) k=active-rec-track(0x400d7c4c).
+Buffers: logbuf+fh in the cave; iobuf reuses the OT log buffer 0x460261e0. sprintf formats hex.
+Comparing BEFORE vs AFTER on real hardware will show EXACTLY what the load clears in track-6's
+play-state -> designs the apply_part gate from data, not guesses. Reading: pull CF, cat /HOTDBG.TXT.
+
+### MAXODBG1-3 findings + MAXOHT20 (fix+diag)  [2026-08-01]
+
+CF logging works on hardware (user's idea). Instrumented stock CHANGE PROJECT (MAXODBG1-3):
+- MAXODBG1: my assumed play-state addresses (0x800018a6 playflags, 0x80001886 timing,
+  0x46c8036c mtype, 0x80001860 rec-en, 0x400d7c4c rec-track) are ALL 0 even while the voice
+  plays. Only voice-active v(0x80004dc8 byte0)=FF. => those were the WRONG targets; a fix on
+  them would have been blind-wrong. Log caught it.
+- MAXODBG2/3 (voice struct 0x80004dc8 diff): the ONLY clean, deterministic destructive change
+  the load makes is o0 (active flag) FF000000->0. Other diffs (o44/o48/o4C/o50, o90..oA0) are
+  playback POSITION/phase counters that naturally ADVANCE (time passed). o18's byte 0x1a
+  oscillates FF/01 across runs = dynamic, not a stable mute. Sample pointers (o4=0x46c939cc
+  recmeta, o8=0x100d52a0 settings, o68-74 buffers, o14 slot 0x86) are PRESERVED.
+
+So the load's clean destructive act = clear o0 (via FUN_40006820), which hot_vstop gates. Yet
+the fix still cuts -> decisive question: does hot_vstop actually keep o0=FF on hardware?
+MAXOHT20 = full fix + hc_diaglog: at armed hot_resync logs V0/V18/V44/V90 of voice[6] to
+/HOTDBG.TXT. If V0=FF -> hot_vstop works, cut is elsewhere (frame builder / DSP frame, not the
+voice struct). If V0=0 -> a second o0-clearer exists that we haven't gated.
+
+### MAXOHT21/22 — ROOT CAUSE FOUND (hardware-observed) + hot_recmeta fix  [2026-08-01]
+
+MAXOHT20 diag (V0=0): the type-4 detection in hot_vstop (v18+) was WRONG -- the recorder
+voice's type byte (voice+0x14) is 0x01, not 4 (MAXODBG2 v14=0x01860001). The EMULATOR
+"validated" type-4 only because the harness SEEDED the fake value -> false confirmation. Only
+the CF log exposed it. Reverted hot_vstop/hot_vstop2 to hardcoded track 6 (confirmed correct,
+v18==v16). MAXOHT21: V0=FF000000 -> o0 now preserved on HW; audio bridges ~1s then cuts,
+resumes at trig.
+
+ROOT CAUSE (via FUN_40007960 RE + the diag): FUN_40007960 is the PER-FRAME recorder-voice
+processor (sole caller FUN_40004008 = root/vectored audio path). It takes the PLAY path
+(produces R7's DSP frame) ONLY if the recorder metadata at voice+0x4 (=0x46c939cc) has
+state(+0x8)==0 AND length(+0x10)>0; otherwise it jumps to 0x40008110 -> FUN_40006820 (stop).
+hot_vstop blocks that stop so o0 stays FF, but the voice is then ACTIVE-BUT-UNFED = silent.
+The load invalidates R7's metadata ~1s in; we only restored it at hot_resync (load-end) = too
+late (hence "resumes at trig").
+
+FIX (MAXOHT22): hot_recmeta = 9th detour on FUN_40007960 entry (EXPECT 4e56ff7448d73cfc). While
+g_hot, memcpy 0x46c939cc <- snap_2c (0x2c) at entry EVERY frame -> R7's metadata is always
+playable -> FUN_40007960 always takes PLAY -> R7's frame produced continuously. Recorder pages
+preserved by hot_reinit so the restored handle stays valid. Pending HW test.
+
+### MAXOHT22 result + FUN_40007960 is EMULATABLE (decision function)  [2026-08-01]
+
+MAXOHT22 (hot_recmeta): audio bridged NOTICEABLY LONGER after CHANGE PROJECT, then still cut,
+resumes at trig. So hot_recmeta fixed the FIRST mute gate (recorder metadata state/length) but
+a later gate remains.
+
+BREAKTHROUGH: FUN_40007960 uses NO ColdFire EMAC -> Unicorn RUNS it (tools/emu_recvoice.py).
+So the per-frame PLAY/MUTE DECISION is emulatable (the frame builder itself is not). Findings:
+- MUTE-stop (0x40008110, ->FUN_40006820) triggers on: meta+0x10(length)<=0, meta+0x8(state)!=0,
+  meta+0x14(gen) != voice+0x10, o0 inactive, voice+0x4(meta ptr)==0. hot_recmeta+hot_vstop clear
+  all these -> passes to 0x400079cc.
+- MUTE2 (0x4000812c): after the metadata checks, `tst.b D5(arg0x1c); bne skip; tst.b D4; beq MUTE2`
+  where D4 = FUN_40001598(voice). FUN_40001598 is a recorder STREAMING check: reads voice+0x14
+  (type), voice+0x15 (slot 0x86->rec6), voice+0x5c/0x60 (play position), tables 0x46c7ff42[rec]
+  and 0x46c7fe24[rec] (recorder write/limit positions); returns 0 (=>MUTE2) if no data available
+  at the position. The load disturbs this streaming state -> the residual cut.
+
+So recorder playback depends on MORE than metadata: also the streaming position tables
+(0x46c7ff42/0x46c7fe24) + voice+0x5c/0x60. NEXT: use emu_recvoice.py to pin the exact streaming
+state that yields PLAY-complete, then either preserve it per-frame (extend hot_recmeta) or detour
+FUN_40007960 to force the PLAY path for track 6. The emulator now verifies the decision, so the
+next build is not blind. Progress ladder: nothing -> 1s -> "noticeably longer".
+
+### MAXOHT23/24 — the wall: a transient race on the recorder length (ml)  [2026-08-01]
+
+MAXOHT23 (per-frame settings 0x448 restore): WORSE — audio SCREECH (corruption). The 0x448
+settings struct is read LIVE by the DSP; per-frame overwrite tears it. Reverted. Lesson:
+per-frame restore is safe ONLY for CPU-side bookkeeping (metadata), NOT DSP-read data (settings).
+
+MAXODBG4 (capture PLAY vs LOAD external state): the ONLY disturbed field is ml (recorder
+metadata length 0x46c939dc): PLAY=0x556BC -> LOAD=0. Tables (t1/t2), position (p5), settings[0]
+(s0), state (ms) all PRESERVED. So o0 (hot_vstop) + ml (hot_recmeta) is the complete disturbed set.
+
+MAXOHT24 (fix + min-ml diag): mlmin=0 -> ml DOES hit 0 during the load despite the fix. hot_recmeta
+restores it at FUN_40007960 entry, but that runs AFTER the frame builder (FUN_4000c8a4) in the frame
+cycle (the tick FUN_4000a8fc sends DSP cmd 0x8b only after the buffer is built). So the frame builder
+reads ml=0 in the window before hot_recmeta's first restore -> silent frame -> the voice mutes.
+=> RACE. Per-frame restore can't win it (frame builder reads first, un-detourable: bfextu+EMAC).
+
+The ml clearer is elusive: the two functions that clear the recorder metadata length by index
+(FUN_40096f24 @0x400970ba, FUN_40096300 @0x40096524) are BOTH already gated (hot_reinit/hot_unload).
+Other clr.l(0x10,An) sites operate on different structs (e.g. FUN_40093814 uses base+0x46c90a78).
+So an un-pinned early-teardown path clears ml once, before hot_recmeta can cover it.
+
+STATUS: progress ladder nothing -> 1s -> noticeably longer -> "continues after the change, stops
+during load". Real progress, deep understanding, powerful tooling (CF logging + FUN_40007960 is
+emulatable). But the residual is a transient race in a deeply timing-sensitive subsystem; robust fix
+needs pinning + gating the early ml-clearer (elusive) or restoring ml before the frame builder
+(un-hookable). Diminishing returns. Options: keep hunting the clearer; productize the partial bridge;
+or pivot to the hardware-proven RELOAD path (no audio stop, but shared samples).
