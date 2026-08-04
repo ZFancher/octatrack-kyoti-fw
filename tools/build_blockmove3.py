@@ -124,6 +124,16 @@ def main():
     if left:
         sys.exit("relocation incomplete")
 
+    # CF-id popup fix: the stored CF-card id lives in the metadata slots we moved to volatile
+    # boot-zeroed DDR, so FUN_4004abcc reads it as 0 -> "wrong card" (d0==0) -> popup. Route the
+    # d0==0 case to the card-OK path (0x40062022, which mounts the card) instead of the popup.
+    POPUP_AT = 0x4006201a
+    o = off(POPUP_AT)
+    if bytes(img[o:o + 6]).hex() != "4eb94005936c":
+        sys.exit(f"popup site changed: {bytes(img[o:o+6]).hex()}")
+    img[o:o + 6] = bytes.fromhex("60064e714e71")   # bra.b 0x40062022 ; nop ; nop
+    print("CF-id popup: routed d0==0 -> card-OK path 0x40062022 (no popup)")
+
     # boot-zero hook
     r = subprocess.run(["m68k-elf-as", "-mcpu=5407", "-o", "out/bootzero.o", "tools/patch_bootzero.s"])
     if r.returncode:
