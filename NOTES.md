@@ -328,15 +328,28 @@ are the static base (relocate) — 7 boundary refs (5 `cmpa` + 2 `cmpi`). At `0x
 base-loads are the global (keep). Moving the WHOLE block makes `0x100d5b30` internal, so only
 the top global (2 `pea`) needs keeping.
 
-**STILL OPEN — "FILE NOT FOUND" on load.** Post-fix the load is stable but reports one early
-`FILE NOT FOUND` and loads nothing (no banks/patterns/samples, flex included). Not corruption
-(relocation verified clean). The load opens files via an FS-open function not yet identified:
-the firmware layers opens — `FUN_40016864` (write wrapper), `0x4001b570` (universal, via
-`*(0x46c8242a)`), plus a third the project load actually uses. `tools/build_openlog.py` logs
-every open path via a hooked open to a DDR ring buffer dumped on CHANGE, but hooking
-`FUN_40016864` then `0x4001b570` both logged nothing → the load's open is elsewhere. NEXT:
-trace the top-down project load (`change_project_handler FUN_40063e48`) to its first file open.
-(Recovered each time via Startup Menu → EMPTY RESET → CF OS UPGRADE of R11 — no sysex needed.)
+**The block has METADATA slots past 127 — extend to slot 130.** After the crash fix the load
+stayed stable but reported one early `FILE NOT FOUND` and loaded nothing. Root cause (found via
+`tools/build_pathlog.py`, which hooks all 7 path-taking FS funcs and logs paths to a DDR ring
+buffer dumped on CHANGE — the load's real open is `0x4001b724 = *(0x46c823fa)`, tag `7`): the
+load was resolving the project path to `/universi/UNTITLED` — a folder that doesn't exist (the
+set has `altre-galassie` + `_2`). The project NAME was read EMPTY:
+
+    FUN_40025230: ... lea 0x100f8378,a0 ; tstb (a0) ; beq -> sprintf(buf,"%s/UNTITLED",set)
+
+`0x100f8378` (the project-name buffer) is `static_base + 129*0x448` = **slot 129** — a METADATA
+slot ABOVE the 128-slot table. The static "table" has extra metadata slots (128-129: project
+name `0x100f8378`, other fields `0x100f8480`/`0x100f8584`/…, and the CF-card id) that are
+accessed BOTH block-relatively (`static_base + slot*0x448`, moved by the relocation) AND by
+absolute refs (94 of them, unmoved). Cutting the block at 0x100f7f30 split them → the writer
+(block-relative → DDR) and reader (absolute → SRAM) diverged → the name read empty → UNTITLED.
+
+**Fix — `tools/build_blockmove3.py`:** BLK_HI = `0x100f87c0` (through slot 130), so slots 128-129
+move WITH the block (253 refs, 0 false positives). **Hardware-confirmed: altre-galassie loads
+and PLAYS end-to-end.** The static settings block now lives in DDR — the 128→256 technique is
+proven. Minor side effect: the metadata slots were battery-backed persistent state (CF-id,
+current project); in volatile boot-zeroed DDR they reset each boot → a dismissible "WRONG
+COMPACT FLASH CARD" popup and the current project defaulting to UNTITLED until re-selected.
 
 ## Sequencer clock ✓ — logs `out/ghidra_clock.log`, r2 disasm
 
