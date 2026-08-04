@@ -403,6 +403,87 @@ possible firmware mods; every edit exact (one wrong -> crash). The settings-bloc
 (done) already lets siblings share the pool; whether 128 slots + careful sample layout suffices
 for the sibling transition, vs paying this full 256 cost, is the open design call.
 
+## Static 128->256 — REVISED architecture: DUAL TABLE (approach B), no relocation  [2026-08-04]
+
+Blanket relocation of the state table (Phase 2a: 0x46c90a78 -> 0x40b00000, all 36 refs) booted
+once then crashed VEC:04 ADDR:0 at the PROJ key / inconsistently at boot, twice. Root cause: a
+deep hidden dependency in the HIGH-DDR fixed-structure region that base relocation breaks (table
+A is runtime-initialised at 0x46c90a78 and neighboured densely; something reaches it other than
+the 36 immediates we moved). Relocation abandoned.
+
+**Approach B (additive, no relocation):** keep table A at 0x46c90a78 for slots 0..127 EXACTLY as
+stock (all init, neighbours, deep deps untouched). Add table B for slots 128..255 in reserved
+DDR. Every accessor range-checks and picks the table. Because table A is byte-identical to stock,
+this is safe by construction.
+
+### State table (0x2c=44 B/slot) accessor anatomy (disassembled, all 36 refs)
+- **35 sites are RANDOM-ACCESS** `base + slot*44`: a `muls.l dS,REG` (REG = slot*44) then a
+  6-byte `addi.l/adda.l #0x46c90a78,REG`. Registers used: d0(16) d1(2) d2(3) d4(1) d5(1)
+  a0(4) a2(3) a3(4) a5(1).
+- **1 site is the allocator loop-start** `lea 0x46c90a78,a0` @ 0x4002409c (FUN_40024098): walks
+  a0 +44/step, free-flag = `slot[+8]==1`, bound `cmpi #128,d1`. Sequential, not base+slot*44.
+- **~24 of the 35 are already guarded** by `cmpi/cmpa #128,dN; bhi/bls <default>` — stock
+  STRUCTURALLY rejects slot>=128 (returns null) BEFORE computing an address. So slots 128..255
+  are simply unreachable today; opening them is a matter of bumping those guards (Layer 2).
+- **CCR-safe:** verified no site branches on the base-add's CCR (each followed by an
+  unconditional branch, a movea (no flags), or a flag-overwriting move/tst). So a helper using
+  cmpi/cmpa is transparent.
+
+### Layer 1 — dual-table plumbing, BEHAVIOUR-NEUTRAL (tools/build_phase2_state.py + patch_state_helpers.s)
+Layers on out/mainos_phase1.bin. Replaces each of the 35 random-access `addi.l/adda.l #base,REG`
+(6 bytes) with `jsr sh_<REG>` (6 bytes, byte-exact). 9 helpers in a cave @ 0x400d7400 range-check
+the PRODUCT (slot*44):
+  product <= 0x1600 (slot 0..128)  -> REG + 0x46c90a78              (table A, IDENTICAL to stock)
+  product >  0x1600 (slot 129..255)-> REG + 0x40afea00 (=0x40b00000-0x1600)  (table B, Layer-2)
+Allocator lea left literal (extended in Layer 2). Residual 0x46c90a78 immediates after build = 10
+(1 lea + 9 helper table-A adds); a static equivalence proof in the build asserts helper(idx) ==
+stock base+idx*44 for ALL idx 0..128. Every image bound still stops at 128 -> the table-B branch
+is DEAD -> Layer 1 is byte-identical to stock for every reachable index.
+
+**BUG FOUND & FIXED (flash #1 crashed VEC:04 ADDR:0 at IPL 7 / SRC:STATIC):** the first helper
+used `bcc` (product >= 0x1600), which redirected INDEX 128 to table B. But index 128 is the stock
+TEMPLATE/sentinel slot at table-A end (0x46c92078) — accessors with an INCLUSIVE `bls #128` guard
+(0x40021ef2, 0x40077f76, 0x400794fc, 0x4009405a) and the voice "empty slot" path read it. Redirect
+-> uninitialised table B -> garbage ptr -> jump to 0. The IPL-7 SR:2700 pinned it to the audio
+interrupt = the ONE converted voice site 0x4000f4a6 (sh_a5). FIX: `bcc`->`bhi` (strict >), so index
+128 stays in table A. LESSON: index 128 is overloaded (template vs future new-slot-128) — Layer 2
+must split template accessors (keep bhi/stock) from audio accessors (switch to >= for table B).
+
+### Layer 2 — open the bounds (next, AFTER Layer 1 verified on hardware)
+- Bump the ~24 state `cmpi/cmpa #128` guards -> #256 (they gate the muls+jsr; by proximity to a
+  state ref, distinct from the 4 settings-loop #128 counts).
+- Extend the allocator (FUN_40024098): after walking table A (0..127) full, continue into table B
+  (128..255) — detour to a rewritten walker in a cave.
+- Init table B free-flags (slot[+8]=1). Cheapest: the project-load "clear all static slots" reset
+  loop, once its bound is 256, initialises B for free — no boot-zero extension needed.
+- Settings table (0x448 B/slot, 0x100d5b30 static) gets the SAME dual-table pattern (helpers on
+  its 43 base refs / the 100d5b30 siblings seen beside several state refs) + a side-car file
+  (e.g. static_ext.work) for slots 128..255, so project.work stays 129-record for bidirectional
+  compatibility. UI slot caps (AUDIO list, per-track SLOT param) -> 256.
+
+### Layer 1 exhaustive static audit (post-crash, before re-flash) — ALL GREEN
+Multi-pass verifier (each pass independent; 3 initial "fails" were audit-script bugs, corrected):
+- **A/B** stock has exactly 36 state-base immediates; 1 LEA (allocator) + 35 addi/adda classified.
+- **H (byte-diff phase1 vs phase2_state):** 386 differing bytes, EVERY one accounted for = the
+  216-B helper cave + 35×6-B `jsr` rewrites. Zero collateral changes.
+- **C** all 9 helpers encode `cmp #0x1600 ; bhi ; +0x46c90a78/rts ; +0x40afea00/rts`.
+- **CCR:** 23 addi sites end in the identical `addi #base,dN` -> CCR bit-identical to stock. 12
+  adda sites: helper's `cmpa` changes CCR, but the first post-site instr overwrites CCR (movew/
+  movel/moveq/tstl) or is `bra` BEFORE any conditional -> invisible. (Verified per-site.)
+- **E** no branch targets a converted-site interior byte {o, o+2} (same-length replace, same start).
+- **F** equivalence: helper(idx)==stock base+idx*44 for ALL idx 0..128 (template incl.).
+- **G** every converted STATIC site's controlling guard is <=128 (27 sites #128, 8 unguarded).
+  The 8 unguarded all pair static-state (0x46c90a78) with static-settings (0x100d5b30) on the
+  same index reg -> static path, index<=128. `#135` guards belong ONLY to the sibling FLEX path
+  (flex base 0x46c922c4, flag 0x46105408) and never feed a converted site. Flex refs (48)
+  identical stock vs patched. Allocator lea immediate intact.
+Conclusion: Layer 1 is provably behaviour-neutral for every reachable index; only idx>=129
+(unreachable until Layer 2) diverges to table B.
+
+STATUS: Layer 1 designed, built, and EXHAUSTIVELY audited (all green). Packaged
+out/OCTATRACK_STATE2.bin/.syx (bhi fix). Flash #1 (STATE1, bcc bug) crashed; STATE2 is the fix.
+Flash only after the user finishes sysex recovery + confirms.
+
 ## Sequencer clock ✓ — logs `out/ghidra_clock.log`, r2 disasm
 
 **The sequencer has NO timer of its own: it is clocked by the DSP's audio FRAME interrupt**
