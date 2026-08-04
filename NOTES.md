@@ -351,6 +351,41 @@ proven. Minor side effect: the metadata slots were battery-backed persistent sta
 current project); in volatile boot-zeroed DDR they reset each boot → a dismissible "WRONG
 COMPACT FLASH CARD" popup and the current project defaulting to UNTITLED until re-selected.
 
+### Static 128->256 — Phase 2 change map (exhaustive, pre-build)  [2026-08-04]
+
+Phase 1 (done, committed): reserved region enlarged to 768 KB (pool +128 pages, base
+0x40a955e0->0x40b555e0, count 0x390A->0x388A) — the 256-block (flex 136 + static 256 +
+metadata 2 = ~0x40afecb0 end) fits. Hardware-confirmed load/play/record.
+
+Phase 2 is ONE entangled operation (moving the metadata is inseparable from bumping the
+counts, because the metadata sits at static_base + count*0x448 and loops that reach it use
+count+1/count+2 bounds). The static-slot count bounds are NOT the ~400 generic `#128`
+refs — they are only the bounds on the **stride-0x448 (settings)** and **state-table
+(0x46c90a78)** loops, a bounded/enumerable set. Full map:
+
+**Settings loops (stride 0x448) — 26 loops enumerated (tools recon):**
+- 4x `cmpi.l #128` (static count) -> **#256**  [0x4008f904, 0x400908f8, 0x40091146, 0x4009137e]
+- 1x `cmpi.l #129` (static + template slot 128) -> **#257**  [0x40089604 loop]
+- 4x `cmpa.l #static_end` + 3x `cmpi.l #static_end` -> **new static end** (static_end is the
+  relocated 0x100f7f30; for 256 = static_base + 256*0x448)
+- UNCHANGED: `cmpi #136`/`#137` (flex, 5x), `cmpa/cmpi #static_base` (Table-A end, 7x)
+
+**State table 0x46c90a78 (44 B/slot):**
+- 33 of 36 base refs sit in loops bounded by `cmpi.l #128` -> all 33 **-> #256**.
+- CANNOT grow in place: 0x46c920a4 (just past the 128-entry end 0x46c92078) is referenced.
+  The state table must be **relocated** to a 256*44 = 0x2c00 home + its 36 base refs moved.
+
+**Metadata (slots 128-129, the project name at 0x100f8378 etc.):** 94 absolute refs shift
+**+0x22400** (128 slots) so slots 128/129 -> 256/257, past the extended static. The
+static-end address bounds and the metadata slot-128 refs are the SAME address, so they move
+together. Note the project-name buffer 0x100f8378 has DUAL access (block-relative via the
+129-loop AND ~26 absolute refs) — both must land at the new slot-257 position.
+
+**STILL TO MAP:** project.work serializer (FUN_40088288 vicinity) static-count handling;
+the UI that lists/selects slots (0-127 range); recorder entanglement (recorders live in the
+pool's HIGH pages — verify the +128-page reclaim + 256 static don't collide). ~140 coordinated
+edits total + a state-table relocation. Every edit must be exact (one wrong -> crash).
+
 ## Sequencer clock ✓ — logs `out/ghidra_clock.log`, r2 disasm
 
 **The sequencer has NO timer of its own: it is clocked by the DSP's audio FRAME interrupt**
