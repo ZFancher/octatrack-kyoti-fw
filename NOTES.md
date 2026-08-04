@@ -381,10 +381,27 @@ static-end address bounds and the metadata slot-128 refs are the SAME address, s
 together. Note the project-name buffer 0x100f8378 has DUAL access (block-relative via the
 129-loop AND ~26 absolute refs) — both must land at the new slot-257 position.
 
-**STILL TO MAP:** project.work serializer (FUN_40088288 vicinity) static-count handling;
-the UI that lists/selects slots (0-127 range); recorder entanglement (recorders live in the
-pool's HIGH pages — verify the +128-page reclaim + 256 static don't collide). ~140 coordinated
-edits total + a state-table relocation. Every edit must be exact (one wrong -> crash).
+**project.work format (FUN_40088288 serializer):** writes a TEXT file (sprintf format
+strings), 129 static records per project (`cmpi #129` loop at 0x40089604 = static 0-127 +
+template slot 128). Extending to 257 records **breaks compatibility** with stock/existing
+128-projects (e.g. altre-galassie) unless the deserializer accepts BOTH counts (129 and 257).
+Real cost: existing projects.
+
+**Recorders — SEPARATE, no entanglement (good news):** the flex table (0x100b14f0, 136 slots =
+128 flex + 8 recorders) is a different table from static (0x100d5b30). The static 128->256
+extension doesn't touch flex, so recorder loops (bounded `#136`) stay unchanged. The old "82
+bounds entangled with recorders" note was about a flex change, not static.
+
+**UI:** no simple `#127` clamps; the static-slot LIST draw and the per-track SLOT parameter cap
+(0-127) live in the AUDIO-menu code / a parameter-range table (small, findable during the build,
+not a scope blocker).
+
+**SCOPE (complete): ~140 coordinated edits** (26 settings-loop bounds ~12 changed + 33 state
+#128->256 + 36 state base refs relocated + 94 metadata refs shifted +0x22400) **+ a state-table
+relocation + a project.work dual-format deserializer + UI slot-limit edits.** One of the largest
+possible firmware mods; every edit exact (one wrong -> crash). The settings-block-in-DDR win
+(done) already lets siblings share the pool; whether 128 slots + careful sample layout suffices
+for the sibling transition, vs paying this full 256 cost, is the open design call.
 
 ## Sequencer clock ✓ — logs `out/ghidra_clock.log`, r2 disasm
 
