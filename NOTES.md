@@ -290,19 +290,53 @@ heavy operation. `tools/build_ramdump.py` does the relocation; the reserve regio
 for the relocated static tables. Cost: 384 KB (0.4%) off the ~85.5 MB pool — graceful (worst
 case one fewer sample fits when the pool is maxed).
 
-**Step 2a (relocate the static settings table) — FAILED, the settings table is DSP-read.**
-`tools/build_ramdump.py` relocates the static **settings** table `0x100d5b30`→`0x40a955e0`
-(delta `+0x309bfab0`) at all **56 operand refs in the code region** (BASE ×43 + END ×9 + two
-slot-0 field refs; data-region byte-coincidences excluded via an operand-position + `<0x400e0000`
-filter). The CPU side was complete and verified (0 old-table operand refs left), but on hardware
-the unit made **"corrupt" noises at the start of project load and hung**. Cause: the `0x448`/slot
-settings tables are **read by the DSP** (same as the recorder settings `0x100d52a0`, already
-noted "DSP-read live"). The DSP still reads the OLD SRAM address — the CPU operand relocation does
-not update however the DSP obtains the table address (a pointer in the `0x80000000` shared window,
-or a per-frame field the CPU passes). **Conclusion:** the static tables can't simply move to DDR;
-either keep them in the SRAM (`0x10xxxxxx`) and grow *there*, or find + update the DSP-side address
-source. (Recovered via the Startup Menu → MIDI OS UPGRADE; the crash never touches the CF or the
-rescue bootloader.)
+### Moving the settings table to DDR — the CRASH is SOLVED  [2026-08-04, hardware-confirmed]
+
+The earlier "DSP-read" theory was **WRONG** (the DSP is 24-bit, cannot deref a 32-bit CPU
+pointer; canary/writethrough/zero-init tests all ruled out memory-behaviour causes). The real
+cause was **contiguity**, found by classifying every ref by opcode:
+
+The per-slot (`0x448`) settings live in **one contiguous block** of two adjacent tables:
+- **flex** table `0x100b14f0`, **136 slots** (`0x100b14f0 + 136*0x448 == 0x100d5b30`)
+- **static** table `0x100d5b30`, **128 slots** (ends at `0x100f7f30`)
+
+So each boundary address is **shared** with a neighbour, and some loops walk the two tables
+**as one array** (e.g. `a4 = 0x100b14f0`, `+0x448` until `cmpa #0x100f7f30`). Relocating the
+static table alone (`build_ramdump.py`/`build_2afix`) left flex in SRAM and static in DDR →
+every combined/boundary loop ran away (start in SRAM `0x100b14f0`, bound in DDR) → **runaway
+loop → "corrupt noises" + hang right after the LOADING popup** (the DSP starves while the CPU
+spins). This is why zero-init / writethrough / the 2-`pea` fix all failed — none touched the
+bad loop bounds.
+
+**Fix — `tools/build_blockmove.py`:** move the ENTIRE block `[0x100b14f0, 0x100f7f30)`
+(264 slots, `0x46A40` = 283 KB) to DDR `0x40a955e0` by one delta (`+0x309e40f0`), so every
+internal offset is preserved and flex-only, static-only AND combined loops all stay consistent.
+Relocate all **166** operand refs in the block; keep only the two `pea 0x100f7f30` base-loads
+(that address doubles as a global struct base ABOVE the block, which does not move). 0 false
+positives (every relocated operand is even-aligned and a clean instruction operand). Plus
+`tools/patch_bootzero.s` zeroes the reserved DDR window at boot (the stock boot conditionally
+clears the SRAM `[0x10000000, 0x100fff00)` the block came from, at `0x4001fa64`).
+
+Hardware: **no more crash/hang** — the project load now runs stably; corrupt noises are gone.
+The contiguous-block relocation is the correct technique for the 128→256 extension.
+
+**Boundary disambiguation rule** (needed by any block relocation): at a boundary address shared
+between the block and a neighbour, the instruction TYPE decides ownership. At `0x100d5b30`
+(flex-end / static-base) `cmpa`/`cmpi` are the FLEX table's end bound (keep), base-loads/arith
+are the static base (relocate) — 7 boundary refs (5 `cmpa` + 2 `cmpi`). At `0x100f7f30`
+(static-end / global-base) `cmpa`/`cmpi`/arith are static loop bounds (relocate), `pea`
+base-loads are the global (keep). Moving the WHOLE block makes `0x100d5b30` internal, so only
+the top global (2 `pea`) needs keeping.
+
+**STILL OPEN — "FILE NOT FOUND" on load.** Post-fix the load is stable but reports one early
+`FILE NOT FOUND` and loads nothing (no banks/patterns/samples, flex included). Not corruption
+(relocation verified clean). The load opens files via an FS-open function not yet identified:
+the firmware layers opens — `FUN_40016864` (write wrapper), `0x4001b570` (universal, via
+`*(0x46c8242a)`), plus a third the project load actually uses. `tools/build_openlog.py` logs
+every open path via a hooked open to a DDR ring buffer dumped on CHANGE, but hooking
+`FUN_40016864` then `0x4001b570` both logged nothing → the load's open is elsewhere. NEXT:
+trace the top-down project load (`change_project_handler FUN_40063e48`) to its first file open.
+(Recovered each time via Startup Menu → EMPTY RESET → CF OS UPGRADE of R11 — no sysex needed.)
 
 ## Sequencer clock ✓ — logs `out/ghidra_clock.log`, r2 disasm
 
