@@ -82,14 +82,27 @@ def main():
     assert len(so) == 36, f"state refs {len(so)}"
     for o in so:
         img[o:o + 4] = STATE_B.to_bytes(4, "big")
-    go = find(img, SETT_A)
-    assert len(go) == 43, f"settings refs {len(go)}"
-    reb = 0
-    for o in go:
-        if is_static_access(img, o):
-            img[o:o + 4] = SETT_B.to_bytes(4, "big"); reb += 1
-    assert reb == 36, f"settings rebased {reb}"
-    print(f"STAGE 1: state 36 -> 0x{STATE_B:08x}; settings {reb} -> 0x{SETT_B:08x} (7 flex-end kept)")
+    # settings: range-rebase by DELTA so field accessors with a FOLDED offset (e.g.
+    # addi.l #(base+0x10e),dN for slot*0x448 -> settings[slot].field_0x10e) move too. Missing
+    # these left field 0x10e of every slot reading the boot-zeroed old SRAM -> empty samples/
+    # slices/no sound. cmpa/cmpi bounds (flex-end at exactly 0x100d5b30) are kept.
+    DELTA = SETT_B - SETT_A
+    SETT_END = 0x100f7f30                                # static end / global-above base (exclusive)
+    reb = 0; kept = 0
+    for i in range(2, len(img) - 3):
+        if BASE + i >= 0x400e0000:
+            break
+        v = (img[i] << 24) | (img[i + 1] << 16) | (img[i + 2] << 8) | img[i + 3]
+        if not (SETT_A <= v < SETT_END):
+            continue
+        if is_static_access(img, i):
+            img[i:i + 4] = (v + DELTA).to_bytes(4, "big"); reb += 1
+        elif v == SETT_A:                                # cmpa/cmpi #base -> flex-walk end, keep
+            kept += 1
+    assert reb == 40, f"settings rebased {reb} (want 40 = 36 base + 4 interior field refs)"
+    assert kept == 7, f"settings kept {kept} (want 7 flex-end)"
+    print(f"STAGE 1: state 36 -> 0x{STATE_B:08x}; settings {reb} rebased +0x{DELTA:x} "
+          f"(incl. 4 interior field refs); {kept} flex-end kept")
 
     # STAGE 2: combined-loop trampolines
     p = CAVE
