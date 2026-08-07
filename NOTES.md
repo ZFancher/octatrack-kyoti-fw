@@ -568,6 +568,22 @@ understood, NOT touching pool/DSP). (B) relocate static-256 alone into the verif
 NOTE: option A needs a >=421 KB free DDR window not yet found; option B fits but needs loop edits.
 Decide + design carefully (emu-gate the combined loops) before any settings .bin.
 
+### WINDOW SEARCH: no verifiable >=430 KB window -> Option A is OUT  [2026-08-07]
+DDR reference-gap analysis is dominated by (a) false positives (fourcc constants 0x45464748
+"EFGH", 0x434f4d4d "COMM", 0x464f524d "FORM" decoded as addresses) and (b) sample RAM accessed
+by computed pointers (so gaps inside it look "free" but are not). The ONLY verifiable free hole
+is the 350 KB one near the state tables (137 KB used for state B). No provable >=430 KB window
+exists -> the whole-block relocation (Option A) is not safely doable. Settings must use Option B.
+The "combined" loops are actually TWO ADJACENT loops: loop 1 walks flex (cmpa #0x100d5b30 end),
+loop 2 CONTINUES from a2=0x100d5b30 (relies on static following flex) to cmpa #0x100f7f30. Example
+0x4008f3f8: counts flex+static slots where two predicates (0x400204a8/0x400204cc) hold. Option-B
+rewrite per such loop: before loop 2, reload a2 = static-DDR base (trampoline to cave, since we
+can't insert in place) and change its bound #0x100f7f30 -> static-DDR end. Plus rebase the 31
+random-access static refs 0x100d5b30 -> static-DDR base, rebase the ~5 static-only walk loops,
+keep the flex-end bounds (cmpa #0x100d5b30) as-is, open the static bound guards #128->#256, and
+init static-DDR-256 free flags at boot. Every loop emu-gated (visits all 256 static slots)
+before any .bin. This is the delicate core; design slowly.
+
 ### THE REAL BUG WAS IN PHASE 1, NOT THE ACCESSORS  [2026-08-07]  -> out/OCTATRACK_PHASE1B.*
 STATE1/2/3 all crashed identically because PHASE 1 ITSELF was non-deterministically broken;
 the state accessors were riding a broken foundation. Confirmed by flashing Phase 1 ALONE:
