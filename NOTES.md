@@ -584,6 +584,27 @@ keep the flex-end bounds (cmpa #0x100d5b30) as-is, open the static bound guards 
 init static-DDR-256 free flags at boot. Every loop emu-gated (visits all 256 static slots)
 before any .bin. This is the delicate core; design slowly.
 
+### SETTINGS relocation — definitive 43-ref classification  [2026-08-08]
+Layout in the verified hole (state B dual-table [0x46c96000,0x46c97600) stays):
+  SETTINGS-256 relocated -> [0x46c97600, 0x46c97600+256*0x448=0x46cdbe00), 280 KB, margin to
+  the record array 0x46ceb400 = 0x1d600 (117 KB). Fits.
+The 43 code refs to static-settings base 0x100d5b30 classify as:
+  REBASE (static access -> new DDR base 0x46c97600): 31 product-adds (addi d0/d1/d2/d3, adda
+    a1/a2/a3/a4) at 0x400050d0,0x4000f4b6,0x40021e3e,... + 5 base-loads (3 move.l# @0x4008f8c8/
+    0x400910f6/0x40091340, 2 lea a2 @0x4008fb0a/0x40090854). ~36 total REBASE.
+  KEEP (flex-walk END bound, flex ends at old static base and does NOT move): 5 cmpa #0x100d5b30
+    @0x40086022,0x40086472,0x4008f42c,0x4008f9e2,0x40090f94  (+ verify the 2 cmpi.l d3/d4
+    @0x40089fa6,0x4008f76a: KEEP if they're flex-walk ends).
+  Plus the 3 COMBINED loops (0x4008f45c/0x4008fa54/0x40091024 -- NOT in the 43 refs; loop 2
+    continues from a2=0x100d5b30 implicitly) -> trampoline: before loop 2, load a2 = 0x46c97600
+    and change its end bound #0x100f7f30 -> 0x46cdbe00.
+Then: open static-settings bound guards #128->#256 (subset of the 81 cmpi #128), init the DDR-256
+table free flags at boot, UI caps. EMU-GATE: rebase must produce NO access to old 0x100d5b30 for
+static slots, and every walk/combined loop must visit 256 slots at the new base. NOTE: 0x100d5b30
+serves DOUBLE duty (static base AND flex-end bound) so a blanket byte-replace is WRONG -- must
+rebase only the classified static-access refs. (This is exactly the mistake class that crashed
+Phase 1; the classification above is the guard against it.)
+
 ### THE REAL BUG WAS IN PHASE 1, NOT THE ACCESSORS  [2026-08-07]  -> out/OCTATRACK_PHASE1B.*
 STATE1/2/3 all crashed identically because PHASE 1 ITSELF was non-deterministically broken;
 the state accessors were riding a broken foundation. Confirmed by flashing Phase 1 ALONE:
