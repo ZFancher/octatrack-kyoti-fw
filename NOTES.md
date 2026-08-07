@@ -484,6 +484,32 @@ STATUS: Layer 1 designed, built, and EXHAUSTIVELY audited (all green). Packaged
 out/OCTATRACK_STATE2.bin/.syx (bhi fix). Flash #1 (STATE1, bcc bug) crashed; STATE2 is the fix.
 Flash only after the user finishes sysex recovery + confirms.
 
+### DEFINITIVE ROOT CAUSE: PHASE 1 CLOBBERED THE DSP/AUDIO ENGINE  [2026-08-07]
+After BLK_HI was fixed, PHASE1B STILL crashed non-deterministically (VEC:04 ADDR:0 SR:2700,
+even at EMPTY RESET, sometimes mid boot-animation). The BLK_HI over-reach and the missed pool
+literals were real bugs but NOT the cause. The cause: Phase 1 MISIDENTIFIED the structures it
+changed. At the DSP/voice-engine init routine 0x40096f80..0x40097018 (stock):
+    movel #0x390A,d6 ; movel d6,0x80006920      <- count -> a DSP register
+    lea 0x46c2e9c0,a0 ; movel a0,0x80006914     <- buffer base -> DSP register
+    lea 0x46c2e580,a2 ; lea 0x46c2e780,a3       <- more DSP buffers
+    ... pea 0x40a955e0                          <- the struct Phase 1 "moved" is used HERE
+So `count 0x390A` is a DSP AUDIO-BUFFER size (14602 entries at 0x46c2e9c0, pushed to DSP regs
+0x8000691x), and 0x40a955e0 is a live DSP-engine struct — NEITHER is a "sample-slot pool
+count/base". Phase 1:
+  - reduced 0x390A->0x388A at ONE site only; 0x390A occurs 18x (long) + 23x (word) elsewhere
+    (loop bound 0x390B unchanged) -> the DSP is told 14474 while the buffer is sized 14602 ->
+    out-of-range DSP reads -> NON-DETERMINISTIC audio-ISR crash.
+  - moved 0x40a955e0 +768KB (fragile, missed refs 0x40a96de0/0x40b30916) AND relocated settings
+    ON TOP of 0x40a955e0 AND boot-zeroed that region -> stomps a live DSP struct.
+All five Phase 1 edits stem from this misID. CORRECT BASELINE = STOCK (boots fine). The dual-
+table STATE accessor work (passthrough helpers + build_phase2_state) is sound and was riding a
+broken foundation; it re-bases onto stock unchanged once a CORRECT free-DDR region exists.
+
+NEXT (no more flashing until designed): map DDR properly from stock — locate the true sample-
+slot STATE/SETTINGS tables vs the DSP sample-data buffers, find a provably-unused DDR window
+for table B (state 128*44=0x1600 + settings 128*0x448=0x22400 ~= 143 KB), WITHOUT touching the
+DSP count/buffers or 0x40a955e0. Then re-layer the passthrough accessors + real table B on stock.
+
 ### THE REAL BUG WAS IN PHASE 1, NOT THE ACCESSORS  [2026-08-07]  -> out/OCTATRACK_PHASE1B.*
 STATE1/2/3 all crashed identically because PHASE 1 ITSELF was non-deterministically broken;
 the state accessors were riding a broken foundation. Confirmed by flashing Phase 1 ALONE:
