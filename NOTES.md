@@ -484,6 +484,35 @@ STATUS: Layer 1 designed, built, and EXHAUSTIVELY audited (all green). Packaged
 out/OCTATRACK_STATE2.bin/.syx (bhi fix). Flash #1 (STATE1, bcc bug) crashed; STATE2 is the fix.
 Flash only after the user finishes sysex recovery + confirms.
 
+### CRASH #2 (STATE2, bhi) — ROOT CAUSE: the redirect is NOT dead  [2026-08-07]
+STATE2 crashed AT BOOT, VEC:04 ADDR:00000000. Full byte-audit of the flashed image was
+clean (35 jsr->helper, alloc lea intact, cave = correct helpers, no stray diff, .syx
+round-trips byte-identical). So the ENCODING was perfect — the DESIGN assumption was wrong.
+  - The "table-B branch is dead because no reachable idx>128" claim is FALSE. `bhi` is an
+    UNSIGNED compare (product > 0x1600). Of the 35 sites, 30 sit behind a `cmpi #128; bhi/bls`
+    guard (safe), but 5 are UNGUARDED — index arrives straight from the caller:
+    0x4000f4a6 (voice/IPL7 — the STATE1 site), 0x40024f72, 0x4007809c, 0x40025548, 0x4009307e.
+  - At boot at least one unguarded accessor gets a SENTINEL / out-of-range index (a "no slot"
+    -1 -> product 0xffffffd4; or a default current-slot 255 -> 0x2bf4). Stock does base+idx*44
+    and lands in adjacent INITIALISED memory (flex/settings) -> benign. The helper's unsigned
+    `bhi` catches it -> redirects into table B at 0x40b00000, which bootzero cleared to 0 ->
+    read 0 -> deref 0 -> VEC:04 ADDR:0 at startup. Exactly the symptom.
+  - Lesson: a range redirect can only be behaviour-neutral if (a) table B is a real,
+    initialised table AND (b) the redirect is bounded on BOTH sides to the true new slot range
+    AND (c) sentinel/OOR indices are excluded. All three belong to Layer 2, not Layer 1.
+
+### Layer 1 REVISED -> PURE PASSTHROUGH  [2026-08-07]  -> out/OCTATRACK_STATE3.{syx,bin}
+Helper is now `addi.l/adda.l #0x46c90a78,REG ; rts` — NO compare, NO redirect. Result =
+base+product, identical to the replaced inline op for EVERY input (guarded/unguarded,
+negative, >255), CCR included (addi sets flags like the inline addi; adda leaves them like
+the inline adda; rts touches neither). Provably byte-behaviour-identical to stock => cannot
+reproduce the redirect crash. Its ONLY job: prove the jsr-to-cave plumbing (cave validity,
+jsr/rts in the IPL7 voice path, CCR neutrality) before Layer 2 introduces real table-B
+semantics. Verified: diff vs phase1 = 72 B cave + 35 jsr rewrites, nothing else; .syx and CF
+.bin both decode byte-identical to out/mainos_phase2_state.bin. Flash STATE3, expect
+behaviour identical to Phase 1. THEN Layer 2 does table-B init + two-sided bounded redirect
++ sentinel handling + the ~30 guards / allocator / settings / UI to 256.
+
 ## Sequencer clock ✓ — logs `out/ghidra_clock.log`, r2 disasm
 
 **The sequencer has NO timer of its own: it is clocked by the DSP's audio FRAME interrupt**

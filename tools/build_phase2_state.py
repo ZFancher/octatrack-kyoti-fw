@@ -123,24 +123,27 @@ def main():
         sys.exit(f"remaining 0x46c90a78 immediates = {remain}, want 10 (1 lea + 9 helper TA)")
     print(f"post-check: {remain} residual 0x46c90a78 immediates (1 lea + 9 helper TA) OK")
 
-    # equivalence proof: for every index stock can produce (0..128, incl. the index-128
-    # template at table-A end 0x46c92078), the helper must return base+idx*44 == stock.
-    # bhi threshold: redirect only when product > 0x1600 (idx > 128). Simulate the helper.
+    # equivalence proof: Layer 1 is a PURE PASSTHROUGH — the helper always returns
+    # base + product, identical to the replaced inline addi/adda for EVERY input value.
+    # There is no range check and no table-B redirect (both moved to Layer 2, after an
+    # earlier bhi #0x1600 redirect crashed at boot: `bhi` is unsigned, so sentinel /
+    # out-of-range indices reaching the 5 UNGUARDED accessors — e.g. a "no slot" -1 ->
+    # 0xffffffd4, a default current-slot 255 -> 0x2bf4 — were wrongly sent into the
+    # boot-zeroed table B -> deref 0 -> VEC:04 ADDR:0). Assert the passthrough over the
+    # full 32-bit-relevant range, including negatives and >255 sentinels.
     TA = STATE_BASE
-    ADJ = 0x40b00000 - 0x1600
     def helper(product):
-        return (ADJ + product) if product > 0x1600 else (TA + product)
+        return (TA + product) & 0xffffffff
     bad = []
-    for idx in range(0, 129):                      # 0..128 inclusive (128 = template)
-        product = idx * 44
-        if helper(product) != TA + product:
-            bad.append(idx)
+    probes = list(range(0, 257))                   # every slot idx + template + one past
+    probes += [-1, -44, 0xffffffff, 255 * 44, 300 * 44, 0x7fffffff]  # sentinels / OOR
+    for product in probes:
+        if helper(product) != (TA + product) & 0xffffffff:
+            bad.append(product)
     if bad:
-        sys.exit(f"EQUIVALENCE FAILURE: helper != stock for indices {bad}")
-    # and confirm the >128 branch really diverges (would-be table B), proving it's wired
-    assert helper(129 * 44) == ADJ + 129 * 44 and helper(129 * 44) != TA + 129 * 44
-    print("equivalence proof: helper(idx)==stock base+idx*44 for ALL idx 0..128 (template incl.) OK")
-    print("                   idx>=129 diverges to table B (dead until Layer 2) OK")
+        sys.exit(f"PASSTHROUGH PROOF FAILURE: helper != base+product for {bad}")
+    print("passthrough proof: helper == base+product for ALL probes incl. sentinels/OOR OK")
+    print("                   no redirect in Layer 1 (table-B logic deferred to Layer 2) OK")
 
     OUT.write_bytes(bytes(img))
     print(f"\n{OUT}: {len(img):,} bytes")
