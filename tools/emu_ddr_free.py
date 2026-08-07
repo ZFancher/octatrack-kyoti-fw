@@ -36,10 +36,16 @@ HOLE_LO, HOLE_HI = 0x46c94074, 0x46ceb400
 # Fresh emu RAM is zero, so the free-slot scanners (slot[+8]==1 test) never match and run the
 # FULL 128-iteration sweep, reading the whole table across its declared bound = positive control.
 ROUTINES = [
-    dict(name="static_slot_scan", entry=0x40024098, max_insn=20000,
-         note="sweeps STATE table A [0x46c90a78, +128*44) reading slot[+8]"),
-    dict(name="flex_slot_scan",   entry=0x400240e8, max_insn=20000,
-         note="sweeps FLEX state [0x46c922c4, +..) via flag 0x46105408=0 path"),
+    dict(name="static_slot_scan", entry=0x40024098, regs={}, mem={}, max_insn=20000,
+         note="LOWER neighbour: sweeps STATE table A [0x46c90a78, +128*44) reading slot[+8]"),
+    dict(name="flex_slot_scan",   entry=0x400240e8, regs={}, mem={}, max_insn=20000,
+         note="LOWER neighbour: sweeps FLEX state [0x46c922c4, +..) (flag path)"),
+    # UPPER neighbour: the record-array init at 0x4001bdb4 writes the array AT 0x46ceb400 (top of
+    # the hole). Needs the config magic "EFGH" @0x200000 and a small entry count @0x200004.
+    dict(name="record_array_init", entry=0x4001bdb4,
+         regs={}, mem={0x200000: b"\x45\x46\x47\x48", 0x200004: (4).to_bytes(4, "big")},
+         max_insn=200000,
+         note="UPPER neighbour: inits 28-byte record array at 0x46ceb400 (should write ABOVE the hole)"),
 ]
 
 
@@ -52,7 +58,8 @@ def main():
           f"({(WIN_HI-WIN_LO)//1024} KB) in hole [0x{HOLE_LO:08x}, 0x{HOLE_HI:08x})\n")
     any_hit = False
     for r in ROUTINES:
-        res = emu.call(r["entry"], log_access=True, max_insn=r["max_insn"])
+        res = emu.call(r["entry"], regs=r.get("regs"), mem=r.get("mem"),
+                       log_access=True, max_insn=r["max_insn"])
         cov = res["reads"] | res["wcov"]
         seg = [a for a in cov if 0x46c00000 <= a < 0x46d00000]
         ext = (min(seg), max(seg)) if seg else None

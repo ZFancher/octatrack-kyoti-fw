@@ -159,7 +159,31 @@ def check_count_consistency(stock, patched):
             + ("" if ok else "  <-- COUNT DESYNC"))
 
 
-CHECKS = [check_dsp_init_regs, check_dsp_struct_intact, check_count_consistency]
+def check_state_helpers(stock, patched):
+    """If the image has state-accessor cave helpers, emulate each and confirm it returns
+    base + product (the passthrough contract). Dynamic proof the jsr-to-cave plumbing runs
+    and computes correctly — the thing we could not verify statically."""
+    CAVE = 0x400d7400
+    if not any(patched.img[CAVE - LOAD:CAVE - LOAD + 72]):
+        return ("state_helpers", True, "no cave helpers present (skip)")
+    TA = 0x46c90a78
+    helpers = [(0x400d7400, "d0"), (0x400d7408, "d1"), (0x400d7410, "d2"), (0x400d7418, "d4"),
+               (0x400d7420, "d5"), (0x400d7428, "a0"), (0x400d7430, "a2"), (0x400d7438, "a3"),
+               (0x400d7440, "a5")]
+    bad = []
+    for addr, reg in helpers:
+        for product in (0, 44, 127 * 44, 128 * 44):     # incl. the index-128 template
+            r = patched.call(addr, regs={reg: product}, max_insn=20)
+            got = r["regs"][reg]
+            if got != ((TA + product) & 0xffffffff):
+                bad.append(f"{reg}@0x{addr:x}(prod 0x{product:x})->0x{got:08x}")
+    ok = not bad
+    return ("state_helpers", ok,
+            "all 9 helpers return base+product" if ok else "HELPER WRONG: " + "; ".join(bad[:5]))
+
+
+CHECKS = [check_dsp_init_regs, check_dsp_struct_intact, check_count_consistency,
+          check_state_helpers]
 
 
 def main():
