@@ -164,8 +164,13 @@ def check_state_helpers(stock, patched):
     base + product (the passthrough contract). Dynamic proof the jsr-to-cave plumbing runs
     and computes correctly — the thing we could not verify statically."""
     CAVE = 0x400d7400
+    sig = patched.img[CAVE - LOAD:CAVE - LOAD + 2]
     if not any(patched.img[CAVE - LOAD:CAVE - LOAD + 72]):
         return ("state_helpers", True, "no cave helpers present (skip)")
+    # only the passthrough (addi.l #,d0 = 0x0680) / redirect (cmpi.l #,d0 = 0x0c80) helpers have
+    # this contract; other cave content (e.g. MAX256 loop trampolines) is not a state helper.
+    if sig not in (b"\x06\x80", b"\x0c\x80"):
+        return ("state_helpers", True, "cave present but not state helpers (skip)")
     TA = 0x46c90a78
     helpers = [(0x400d7400, "d0"), (0x400d7408, "d1"), (0x400d7410, "d2"), (0x400d7418, "d4"),
                (0x400d7420, "d5"), (0x400d7428, "a0"), (0x400d7430, "a2"), (0x400d7438, "a3"),
