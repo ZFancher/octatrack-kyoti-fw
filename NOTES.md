@@ -535,6 +535,17 @@ covers only the traced routines; extend ROUTINES as we implement, and emu_check 
 accessors we add.) ADJ for table-B accessors when we resume: helper redirect base for slots
 128..255, product > 0x1600 -> +(0x46c96000 - 0x1600) etc.
 
+### MILESTONE: passthrough-on-stock BOOTS on hardware  [2026-08-07]
+out/OCTATRACK_STATE_STOCK (build_state_stock.py, passthrough helpers on pristine stock,
+emu_check ALL GREEN) flashed and ran PERFECTLY: many reboots, EMPTY RESET, load+play+record
+altre-galassie — zero crashes, behaves exactly like stock. This validates, on the CORRECT
+baseline, all at once: (1) the .bin/CF flash pipeline (first confirmed-booting flash), (2) the
+jsr-to-cave state-accessor plumbing, (3) emu_check as a reliable pre-flash gate (predicted GREEN
+-> booted). The whole crash saga was Phase 1 clobbering the DSP; on stock the accessors are clean.
+NEXT: the REAL table-B (redirect slots 128-255 -> 0x46c96000, init, bounds->256, settings dual-
+table). Open design knot to resolve first: the index-128 TEMPLATE overload (verify + decide
+255-slots-keep-template vs 256-slots-relocate-template). emu_check gate every step.
+
 ### THE REAL BUG WAS IN PHASE 1, NOT THE ACCESSORS  [2026-08-07]  -> out/OCTATRACK_PHASE1B.*
 STATE1/2/3 all crashed identically because PHASE 1 ITSELF was non-deterministically broken;
 the state accessors were riding a broken foundation. Confirmed by flashing Phase 1 ALONE:
