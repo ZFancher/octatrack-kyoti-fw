@@ -618,6 +618,28 @@ END bound is 0x100f7f30 (static end, DOUBLE-DUTY with the global base above -- c
 cmpa/immarith -> rebase to new static end; pea/lea base-loads of the global -> KEEP). Then bounds
 #128->#256 + DDR free-flag init. Each loop emu-gated (visits the right region) before any .bin.
 
+### MAX256 build in progress: relocate BOTH tables (build_max256.py)  [2026-08-08]
+Architecture chosen: relocate state AND settings to contiguous 256-slot DDR tables in the
+verified hole (uniform; walk loops work by rebase). NO 430KB window exists so whole-block is out;
+this puts each table separately-contiguous:
+    STATE-256    [0x46c96000, 0x46c98c00)   (state base 0x46c90a78 -> 0x46c96000; 36 refs, blanket
+      rebase -- template 0x46c92078 has 0 refs, no address-bounded static walk -> clean)
+    SETTINGS-256 [0x46c98c00, 0x46cdd400)   (rebase 36 static-access 0x100d5b30 -> 0x46c98c00,
+      KEEP 7 flex-end cmpa/cmpi)
+DONE + emu-verified: Stage 1 rebase (emu_check GREEN, DSP untouched). The 3 combined-loop
+trampolines (cave 0x400d7400): loop1 patch 0x4008f432, loop2 patch 0x4008fa00 (walk fp->a2),
+loop3 patch 0x40090fc8 (walk d2) -- each resets the walk reg to 0x46c98c00 + retargets its
+0x100f7f30 end bound; emu-verified loop1 (full), loop2 (forced-entry DDR coverage 0x46c98c00..
+0x46cbabb8 no old SRAM), loop3 (d2 reset OK).
+OPEN (must classify before finalizing -- DO NOT touch unclassified): 4 static-END bounds
+0x4008626a,0x4008666c,0x4008a0f8,0x4008f7fa (walk a4/a4/d3/d2, loop starts 0x40086040/0x400864a0/
+0x40089fb4/0x4008f7a8) end at 0x100f7f30 but their walk-reg base is set FAR back -- some may be
+ADDITIONAL combined loops (need trampolines) not static-only (end-rebase). Trace each walk reg's
+base init before finalizing. THEN: emu-verify all 4 + full image, THEN bounds #128->#256 for the
+feature, init free-flags, UI caps. Neutral (bounds 128) flash de-risks the surgery first; feature
+is bounds->256 diff after. build_max256.py currently = Stage 1 only; trampolines applied inline in
+the verification (integrate next).
+
 ### THE REAL BUG WAS IN PHASE 1, NOT THE ACCESSORS  [2026-08-07]  -> out/OCTATRACK_PHASE1B.*
 STATE1/2/3 all crashed identically because PHASE 1 ITSELF was non-deterministically broken;
 the state accessors were riding a broken foundation. Confirmed by flashing Phase 1 ALONE:
