@@ -510,6 +510,16 @@ slot STATE/SETTINGS tables vs the DSP sample-data buffers, find a provably-unuse
 for table B (state 128*44=0x1600 + settings 128*0x448=0x22400 ~= 143 KB), WITHOUT touching the
 DSP count/buffers or 0x40a955e0. Then re-layer the passthrough accessors + real table B on stock.
 
+### PRE-FLASH GATE: tools/emu_check.py (Unicorn)  [2026-08-07]
+Mandatory gate before building ANY .bin. Unit-emulates firmware routines (m68k) and diffs a
+patched image vs pristine stock (out/stock_mainos.bin, decoded once via elektron-firmware-tool
+-d 3). Catches the whole class of bug we hit WITHOUT flashing:
+    python3 tools/emu_check.py out/<patched>.bin      # -> ALL GREEN or FAILURES-DO-NOT-FLASH
+Current checks: dsp_init_regs (emulates 0x40096f80, asserts the DSP-reg writes 0x8000691x match
+stock), dsp_struct_intact (0x40a955e0 + audio buffers unrelocated), count_consistency (all 0x390A
+occurrences unchanged). Verified: FAILs on mainos_phase1.bin (flags all three), PASSes on stock.
+Add a check per new routine we touch (state accessors, table-B init) as the 256-slot work resumes.
+
 ### THE REAL BUG WAS IN PHASE 1, NOT THE ACCESSORS  [2026-08-07]  -> out/OCTATRACK_PHASE1B.*
 STATE1/2/3 all crashed identically because PHASE 1 ITSELF was non-deterministically broken;
 the state accessors were riding a broken foundation. Confirmed by flashing Phase 1 ALONE:
