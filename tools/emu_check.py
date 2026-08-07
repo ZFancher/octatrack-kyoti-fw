@@ -52,21 +52,23 @@ class Emu:
 
     def _fresh(self):
         mu = Uc(UC_ARCH_M68K, UC_MODE_BIG_ENDIAN)
-        for base, size in [(0x10000000, 0x00200000), (0x40000000, 0x01000000),
-                           (0x46000000, 0x01000000), (0x80000000, 0x00010000),
-                           (RET_TRAMP & ~0xfff, 0x1000)]:
+        for base, size in [(0x00000000, 0x00400000), (0x10000000, 0x00200000),
+                           (0x40000000, 0x01000000), (0x46000000, 0x01000000),
+                           (0x80000000, 0x00010000), (RET_TRAMP & ~0xfff, 0x1000)]:
             mu.mem_map(base, size)
         # load the OS image at its link address
         span = min(len(self.img), 0x40000000 + 0x01000000 - LOAD)
         mu.mem_write(LOAD, self.img[:span])
         return mu
 
-    def call(self, entry, regs=None, mem=None, watch_writes=True, max_insn=200000):
-        """Run `entry` as a subroutine. Returns dict(regs_out, writes, stopped, reason).
+    def call(self, entry, regs=None, mem=None, watch_writes=True, log_access=False,
+             max_insn=200000):
+        """Run `entry` as a subroutine. Returns dict(regs_out, writes, reason[, reads, wcov]).
         `regs`: {name:val} initial registers. `mem`: {addr:bytes} pre-writes.
+        `log_access=True` also records read-coverage (`reads`) and write-coverage (`wcov`)
+        as sets of touched addresses — used by the DDR free-region tracer.
         Emulation stops when the routine rts's back to RET_TRAMP or max_insn is hit."""
         mu = self._fresh()
-        mu.reg_write(UC_M68K_REG_A7, STACK_TOP)
         if mem:
             for a, b in mem.items():
                 mu.mem_write(a, b)
@@ -79,10 +81,17 @@ class Emu:
         mu.mem_write(sp, RET_TRAMP.to_bytes(4, "big"))
 
         writes = {}
-        if watch_writes:
+        reads, wcov = set(), set()
+        if watch_writes or log_access:
             def on_write(uc, access, address, size, value, user):
                 writes[address] = (value & ((1 << (size * 8)) - 1), size)
+                if log_access:
+                    for k in range(size): wcov.add(address + k)
             mu.hook_add(UC_HOOK_MEM_WRITE, on_write)
+        if log_access:
+            def on_read(uc, access, address, size, value, user):
+                for k in range(size): reads.add(address + k)
+            mu.hook_add(UC_HOOK_MEM_READ, on_read)
 
         reason = "ret"
         try:
@@ -93,7 +102,10 @@ class Emu:
         if reason == "ret" and pc != RET_TRAMP:
             reason = f"count-exhausted @pc=0x{pc:08x}"
         out = {k: mu.reg_read(REGS[k]) for k in REGS}
-        return {"regs": out, "writes": writes, "reason": reason}
+        res = {"regs": out, "writes": writes, "reason": reason}
+        if log_access:
+            res["reads"], res["wcov"] = reads, wcov
+        return res
 
 
 # ---------------------------------------------------------------------------

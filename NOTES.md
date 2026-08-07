@@ -520,6 +520,21 @@ stock), dsp_struct_intact (0x40a955e0 + audio buffers unrelocated), count_consis
 occurrences unchanged). Verified: FAILs on mainos_phase1.bin (flags all three), PASSes on stock.
 Add a check per new routine we touch (state accessors, table-B init) as the 256-slot work resumes.
 
+### FREE-DDR RECON: table-B window found + verified (static + dynamic)  [2026-08-07]
+STATE A [0x46c90a78,0x46c92078), FLEX [0x46c922c4,0x46c94074), last control ref 0x46c93c28.
+Then a 350 KB hole [0x46c94074, 0x46ceb400) with ZERO operand refs, capped by the 28-byte
+record-array at 0x46ceb400 (base stored in ptr var 0x46c8c5b8, grows UP; init at 0x4001bdb4).
+The hole is dead space between two CONTROL structures, NOT sample RAM (verified: the high
+"refs" 0x47f98000 were false positives = `lea 0x8000xxxx,a3` bytes; 0x4713c0fc is arithmetic).
+PROPOSED table-B window: [0x46c96000, 0x46cb9a00) (~142 KB) = state B [0x46c96000,0x46c97600)
++ settings B [0x46c97600,0x46cb9a00), ~200 KB margin below the record-array, adjacent to table
+A (cache-friendly), touches neither DSP nor sample RAM. tools/emu_ddr_free.py: the state-table
+scanners (0x40024098/0x400240e8) read up to 0x46c92057 (table-A end) and STOP below the hole;
+NONE touches the window -> dynamic corroboration of the static zero-ref finding. (Honest limit:
+covers only the traced routines; extend ROUTINES as we implement, and emu_check re-verifies the
+accessors we add.) ADJ for table-B accessors when we resume: helper redirect base for slots
+128..255, product > 0x1600 -> +(0x46c96000 - 0x1600) etc.
+
 ### THE REAL BUG WAS IN PHASE 1, NOT THE ACCESSORS  [2026-08-07]  -> out/OCTATRACK_PHASE1B.*
 STATE1/2/3 all crashed identically because PHASE 1 ITSELF was non-deterministically broken;
 the state accessors were riding a broken foundation. Confirmed by flashing Phase 1 ALONE:
