@@ -31,7 +31,12 @@ OLD_POOL, NEW_POOL = 0x40a955e0, 0x40b555e0     # +128 pages (768 KB reserved) f
 COUNT_AT, OLD_COUNT, NEW_COUNT = 0x40096f82, 0x390A, 0x388A
 
 BLK_LO = 0x100b14f0                 # flex base = block bottom
-BLK_HI = 0x100f87c0                 # static end = block top (exclusive) == global base above
+# static end = block top (exclusive) == base of the non-moving global above.
+# 264 slots (136 flex + 128 static) * 0x448 = 0x46A40, so 0x100b14f0 + 0x46A40 = 0x100f7f30.
+# NOTE: a previous value 0x100f87c0 over-reached by 0x890 and wrongly relocated 94 operand
+# refs to the SRAM globals at 0x100f7f30/0x100f8378/0x100f8480/0x100f8598(!) (those structs
+# do NOT move) -> DDR garbage -> NON-DETERMINISTIC audio-ISR crash (VEC:04 ADDR:0) at boot.
+BLK_HI = 0x100f7f30
 BLK_DELTA = 0x40a955e0 - 0x100b14f0 # 0x309c40f0
 CODE_END = 0x400e0000
 BASE_LOADS = {"lea", "pea", "movea#", "move.l#", "move.l#abs", "jsr/jmp"}

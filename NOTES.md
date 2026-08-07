@@ -484,6 +484,30 @@ STATUS: Layer 1 designed, built, and EXHAUSTIVELY audited (all green). Packaged
 out/OCTATRACK_STATE2.bin/.syx (bhi fix). Flash #1 (STATE1, bcc bug) crashed; STATE2 is the fix.
 Flash only after the user finishes sysex recovery + confirms.
 
+### THE REAL BUG WAS IN PHASE 1, NOT THE ACCESSORS  [2026-08-07]  -> out/OCTATRACK_PHASE1B.*
+STATE1/2/3 all crashed identically because PHASE 1 ITSELF was non-deterministically broken;
+the state accessors were riding a broken foundation. Confirmed by flashing Phase 1 ALONE:
+it crashed intermittently (sometimes during the boot animation, sometimes at PROJ, even at
+EMPTY RESET, before any keypress) — VEC:04 ADDR:00000000 SR:2700 (audio IPL7). Non-determinism
++ ADDR:0 = uninitialised DDR read as a code/pointer address.
+
+ROOT CAUSE: build_phase1.py had BLK_HI = 0x100f87c0 for the settings-block relocation, but the
+real block is 264 slots * 0x448 = 0x46A40, ending at 0x100b14f0 + 0x46A40 = 0x100f7f30. The
+0x890-byte over-reach swept in the SRAM GLOBALS above the block and relocated 94 of their
+operand refs to DDR (+0x309c40f0) while the structs themselves do NOT move:
+  0x100f7f30 (block-end/global), 0x100f8378 (26 refs), 0x100f8480 (50 refs),
+  0x100f8481 (3), 0x100f8584 (4), 0x100f8598 (2 of 461!).
+Even 2 broken refs into a 461-ref global -> those code paths read DDR garbage as a pointer ->
+intermittent jump-to-0. FIX: BLK_HI = 0x100f7f30. After the fix, step 2 relocates 166 refs
+(was 260), keeps the 2 pea base-loads to 0x100f7f30, and every global above the block is
+byte-for-byte identical to stock (0x100f8480 50/50, 0x100f8598 461/461, ...). Block-internal
+audit clean (only flex/static bases + two base+0x129 field leas are base-loaded inside).
+Lesson: a blind byte-scan relocation MUST have its bounds derived from the exact slot count,
+and a post-check that the NON-moving neighbours above/below are untouched vs stock.
+
+NEXT: flash PHASE1B ALONE, verify STABLE across many reboots + EMPTY RESET + load+play audio.
+Only THEN rebuild STATE3 (passthrough) on the fixed Phase 1 and re-test.
+
 ### CRASH #2 (STATE2, bhi) — ROOT CAUSE: the redirect is NOT dead  [2026-08-07]
 STATE2 crashed AT BOOT, VEC:04 ADDR:00000000. Full byte-audit of the flashed image was
 clean (35 jsr->helper, alloc lea intact, cave = correct helpers, no stray diff, .syx
