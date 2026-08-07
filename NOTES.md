@@ -605,6 +605,19 @@ serves DOUBLE duty (static base AND flex-end bound) so a blanket byte-replace is
 rebase only the classified static-access refs. (This is exactly the mistake class that crashed
 Phase 1; the classification above is the guard against it.)
 
+### COMBINED-LOOP TRAMPOLINE technique PROVEN via emu  [2026-08-08]
+For combined loop 0x4008f3f8 (loop1 flex, loop2 static-by-adjacency): replace the loop-2 entry
+`lea 0x400204a8,a4` @0x4008f432 with `jmp cave`; cave does `lea 0x46c97600,a2` (reset to DDR
+static base) + redo `lea 0x400204a8,a4` + `jmp 0x4008f438` (back into loop 2); and change the
+loop-2 end bound @0x4008f45c `cmpa #0x100f7f30` -> `#0x46cb9a00` (128-slot neutral end; ->
+0x46cdbe00 for 256). EMU PROOF: stock loop2 reads static SRAM 0x100d5b30..0x100f7ae8; patched
+loop2 reads static DDR 0x46c97600..0x46cb95b8 and NOTHING at old SRAM; flex loop1 identical.
+Apply the same pattern to the other 2 combined loops (0x4008fa54 lea fp, 0x40091024 lea a3 -- each
+has its own displaced instr / registers, examine per-loop). Also handle static-ONLY loops whose
+END bound is 0x100f7f30 (static end, DOUBLE-DUTY with the global base above -- classify: loop-end
+cmpa/immarith -> rebase to new static end; pea/lea base-loads of the global -> KEEP). Then bounds
+#128->#256 + DDR free-flag init. Each loop emu-gated (visits the right region) before any .bin.
+
 ### THE REAL BUG WAS IN PHASE 1, NOT THE ACCESSORS  [2026-08-07]  -> out/OCTATRACK_PHASE1B.*
 STATE1/2/3 all crashed identically because PHASE 1 ITSELF was non-deterministically broken;
 the state accessors were riding a broken foundation. Confirmed by flashing Phase 1 ALONE:
