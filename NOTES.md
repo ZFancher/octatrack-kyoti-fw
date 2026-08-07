@@ -546,6 +546,28 @@ NEXT: the REAL table-B (redirect slots 128-255 -> 0x46c96000, init, bounds->256,
 table). Open design knot to resolve first: the index-128 TEMPLATE overload (verify + decide
 255-slots-keep-template vs 256-slots-relocate-template). emu_check gate every step.
 
+### STATE table-B redirect helpers DONE + verified  [2026-08-07]
+tools/patch_state_helpers_b.s: two-sided redirect (idx 0..128 -> table A incl template;
+129..255 -> table B 0x46c96000; >=256/-1 -> table A stock-safe). ADJ_B=0x46c94a00, LO=0x1600,
+HI=0x2bf4. tools/verify_helpers_b.py emu-verifies all 9 helpers x 10 indices = ALL PASS. Decision
+locked: 255 usable slots (idx 128 stays template). blob 288 B.
+
+### SETTINGS is HARD: must be CONTIGUOUS (relocation, not dual-table)  [2026-08-07]
+Static settings base 0x100d5b30 (SRAM, 0x448/slot), 43 code refs = 31 product-adds (d0/d1/d2/d3,
+a1/a2/a3/a4) + 12 base-loads/compares. Unlike STATE, settings is walked CONTIGUOUSLY:
+  - ~5 loops do `lea 0x100d5b30,aN; aN += 0x448; count` (assume contiguous slots), and
+  - >=3 COMBINED flex+static loops walk from flex base 0x100b14f0 to static END 0x100f7f30
+    as ONE array: 0x4008f45c (lea a2), 0x4008fa54 (lea fp), 0x40091024 (lea a3).
+A dual-table (table B at a different address) BREAKS every contiguous/combined walk. Settings
+therefore needs RELOCATION to a contiguous 256-slot region. Flex loops that END at 0x100d5b30
+(cmpa #0x100d5b30: 0x40086020, 0x4008646c, 0x4008f42a...) are flex-only and stay.
+Two options: (A) relocate whole flex+static block with static grown to 256 = 392 slots*0x448 =
+421 KB (needs a 421 KB window; ~150 literal refs; = Phase-1's mechanism done right, BLK_HI bug
+understood, NOT touching pool/DSP). (B) relocate static-256 alone into the verified 137 KB window
+[0x46c97600,0x46cb9a00) + REWRITE the ~3 combined loops to walk flex(SRAM) then static(DDR).
+NOTE: option A needs a >=421 KB free DDR window not yet found; option B fits but needs loop edits.
+Decide + design carefully (emu-gate the combined loops) before any settings .bin.
+
 ### THE REAL BUG WAS IN PHASE 1, NOT THE ACCESSORS  [2026-08-07]  -> out/OCTATRACK_PHASE1B.*
 STATE1/2/3 all crashed identically because PHASE 1 ITSELF was non-deterministically broken;
 the state accessors were riding a broken foundation. Confirmed by flashing Phase 1 ALONE:
