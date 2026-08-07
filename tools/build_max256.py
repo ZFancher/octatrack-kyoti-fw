@@ -111,6 +111,27 @@ def main():
     print(f"STAGE 2: {len(COMBINED)} combined-loop trampolines @ cave 0x{CAVE:08x}..0x{p-1:08x}; "
           f"7 end bounds -> 0x{SETT_END_128:08x}")
 
+    # STAGE 3: boot-zero the relocated DDR region. Stock zeroes the SRAM settings via the boot
+    # SRAM clear [0x10000000,0x100fff00); the DDR destination is not covered, so replicate the
+    # pre-zero for [STATE_B, settings-256 end). Hook 0x4001fa64 (lea 0x10000000,a0) -> stub that
+    # zeroes the region, redoes the displaced lea, and continues to 0x4001fa6a. Targets the
+    # verified-free hole ONLY -- never the DSP (that was Phase 1's fatal mistake).
+    ZLO, ZHI = STATE_B, SETT_B + 256 * 0x448           # [0x46c96000, 0x46cdd400)
+    nlongs = (ZHI - ZLO) // 4
+    STUB_AT = CAVE + 0x80                               # after the 7 trampolines
+    stub = bytes.fromhex(
+        "4fefffc4" + "48d77fff" + "207c" + ZLO.to_bytes(4, "big").hex()
+        + "203c" + nlongs.to_bytes(4, "big").hex() + "7200" + "20c1" + "5380" + "66fa"
+        + "4cd77fff" + "4fef003c" + "41f910000000" + "4ef94001fa6a")
+    assert not any(img[off(STUB_AT):off(STUB_AT) + len(stub)]), "cave overlap (stub)"
+    img[off(STUB_AT):off(STUB_AT) + len(stub)] = stub
+    o = off(0x4001fa64)
+    assert bytes(img[o:o + 6]) == bytes.fromhex("41f910000000"), f"detour site {img[o:o+6].hex()}"
+    img[o:o + 6] = bytes.fromhex("4ef9") + STUB_AT.to_bytes(4, "big")
+    assert ZHI < 0x46ceb400, "bootzero overruns the verified hole"
+    print(f"STAGE 3: boot-zero [0x{ZLO:08x},0x{ZHI:08x}) ({nlongs} longs) stub @0x{STUB_AT:08x}; "
+          f"detour 0x4001fa64")
+
     # residuals: state base gone; settings base only 7 flex-end; static-END 0x100f7f30 only the
     # 2 global-above pea base-loads remain (the 7 loop bounds were retargeted)
     assert img.count(STATE_A.to_bytes(4, "big")) == 0
