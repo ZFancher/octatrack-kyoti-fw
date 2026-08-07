@@ -36,15 +36,23 @@ BLK_B = 0x46c98c00                            # relocated block base (flex_new)
 DELTA = BLK_B - BLK_LO
 CAVE = 0x400d7400
 
-# base-load opcodes: refs to the top boundary 0x100f7f30 with these load the NON-moving global
-# above the block and must be KEPT; cmpa/cmpi/immarith to 0x100f7f30 are block-END bounds -> move.
-def is_base_load(b0, b1):
-    if b1 == 0xf9 and b0 in (0x41, 0x43, 0x45, 0x47, 0x49, 0x4b, 0x4d): return True   # lea
-    if (b0 << 8 | b1) == 0x4879: return True                                          # pea
-    if b1 == 0x7c and b0 in range(0x20, 0x2d, 2): return True                         # movea#
-    if b1 == 0x3c and b0 in range(0x20, 0x2f, 2): return True                         # move.l#
-    if (b0 << 8 | b1) == 0x23fc: return True                                          # move.l#abs
-    return False
+# A value in range is relocated ONLY when it is a real OPERAND (preceded by a load/arith/cmp
+# opcode) -- NOT every coincidental 4-byte window (moving those corrupts unrelated code/data;
+# that regression hung the splash). Same opcode set as build_phase1.py.
+def opname(b0, b1):
+    if b1 == 0xf9 and b0 in (0x41, 0x43, 0x45, 0x47, 0x49, 0x4b, 0x4d): return "lea"
+    if (b0 << 8 | b1) == 0x4879: return "pea"
+    if (b0 << 8 | b1) in (0x4eb9, 0x4ef9): return "jsr/jmp"
+    if b1 == 0x7c and b0 in range(0x20, 0x2d, 2): return "movea#"
+    if b1 == 0x3c and b0 in range(0x20, 0x2f, 2): return "move.l#"
+    if (b0 << 8 | b1) == 0x23fc: return "move.l#abs"
+    if b1 == 0xfc and b0 in (0xd1, 0xd3, 0xd5, 0xd7, 0xd9, 0xdb, 0xdd, 0xdf): return "adda#"
+    if b1 == 0xfc and b0 in (0x91, 0x93, 0x95, 0x97, 0x99, 0x9b, 0x9d, 0x9f): return "suba#"
+    if b1 == 0xfc and b0 in (0xb1, 0xb3, 0xb5, 0xb7, 0xb9, 0xbb, 0xbd, 0xbf): return "cmpa#"
+    if b0 in (0x00, 0x02, 0x04, 0x06, 0x0a, 0x0c) and 0x80 <= b1 <= 0x87: return "immarith"
+    return None
+
+BASE_LOADS = {"lea", "pea", "movea#", "move.l#", "move.l#abs", "jsr/jmp"}
 
 
 def off(a):
@@ -70,28 +78,29 @@ def main():
         if BASE + k >= 0x400e0000:
             break
         v = (img[k] << 24) | (img[k + 1] << 16) | (img[k + 2] << 8) | img[k + 3]
+        op = opname(img[k - 2], img[k - 1])
+        if op is None:
+            continue                                        # not an operand -> leave (coincidence)
         if BLK_LO <= v < BLK_HI:
             img[k:k + 4] = (v + DELTA).to_bytes(4, "big"); moved += 1
         elif v == BLK_HI:
-            if is_base_load(img[k - 2], img[k - 1]):
+            if op in BASE_LOADS:
                 kept += 1                                   # global-above base-load -> keep
             else:
                 img[k:k + 4] = (v + DELTA).to_bytes(4, "big"); moved += 1   # block-END bound
-    print(f"BLOCK : moved {moved} refs +0x{DELTA:08x}; kept {kept} global-above base-loads at 0x{BLK_HI:08x}")
+    print(f"BLOCK : moved {moved} operand refs +0x{DELTA:08x}; kept {kept} global base-loads")
     assert kept == 2, f"expected 2 global base-loads kept, got {kept}"
 
-    # residual: nothing in the old block range remains except the kept globals; block-end bound
-    # value BLK_HI remains only for the 2 kept base-loads
+    # residual: no OPERAND ref left in the old block range (coincidental non-operand values stay)
     left = 0
     for k in range(2, N - 3):
         if BASE + k >= 0x400e0000:
             break
         v = (img[k] << 24) | (img[k + 1] << 16) | (img[k + 2] << 8) | img[k + 3]
-        if BLK_LO <= v < BLK_HI:
+        if BLK_LO <= v < BLK_HI and opname(img[k - 2], img[k - 1]):
             left += 1
-    assert left == 0, f"{left} old-block refs remain"
-    assert img.count(BLK_HI.to_bytes(4, "big")) == 2, img.count(BLK_HI.to_bytes(4, "big"))
-    print("residual: 0 old-block refs; 0x100f7f30 = 2 (kept globals) OK")
+    assert left == 0, f"{left} old-block operand refs remain"
+    print("residual: 0 old-block operand refs OK")
 
     # BOOT-ZERO the relocated region [STATE_B, block end). Hook 0x4001fa64 (lea 0x10000000,a0).
     ZLO, ZHI = STATE_B, BLK_B + (BLK_HI - BLK_LO)          # [0x46c96000, 0x46cdf640)
