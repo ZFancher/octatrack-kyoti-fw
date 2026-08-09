@@ -2528,3 +2528,74 @@ emulatable). But the residual is a transient race in a deeply timing-sensitive s
 needs pinning + gating the early ml-clearer (elusive) or restoring ml before the frame builder
 (un-hookable). Diminishing returns. Options: keep hunting the clearer; productize the partial bridge;
 or pivot to the hardware-proven RELOAD path (no audio stop, but shared samples).
+
+
+================================================================================
+## SESSION STATE + NEXT STEPS  [2026-08-08]  (authoritative current state)
+================================================================================
+
+### WHERE WE ARE
+The 256-static-slot feature is being built by RELOCATING the tables to the verified-free DDR
+hole, on PRISTINE STOCK (out/stock_mainos.bin -- Phase 1 is abandoned: it clobbered the DSP).
+Everything is gated by emulation before flashing (tools/emu_check.py etc.: "green in emu ->
+boots on hardware" has held).
+
+CURRENT IMAGE: out/mainos_max256.bin / out/OCTATRACK_MAX256N.bin  (sha 0ceca542..., built by
+tools/build_max256.py). WHOLE-BLOCK relocation, static still 128 (neutral). READY TO FLASH but
+NOT YET TESTED on hardware (the prior whole-block build hung the splash from a bug now fixed).
+
+Layout in the hole [0x46c94074, 0x46ceb400):
+    STATE-256    [0x46c96000, 0x46c98c00)   state base 0x46c90a78 -> 0x46c96000 (36 refs, blanket)
+    FLEX+STATIC  [0x46c98c00, 0x46cdf640)   whole block [0x100b14f0,0x100f7f30) moved by
+                 DELTA=0x36be7710 (166 OPERAND refs); flex_new=0x46c98c00 static_new=0x46cbd240
+    boot-zero [0x46c96000, 0x46cdf640) via hook @0x4001fa64 (NOT the DSP -- that was Phase 1's bug)
+Above the hole: 28-byte record array @0x46ceb400 (ptr var 0x46c8c5b8; grows up) caps it.
+
+### HARDWARE TEST HISTORY (this feature)
+1. passthrough-on-stock (build_state_stock.py): BOOTED perfectly -> validated pipeline+plumbing+gate.
+2. MAX256N static-only reloc, base only: booted, project loaded, but samples empty/trimmed/no slices.
+3. + settings FIELD refs rebased (folded offset addi #base+0x10e): static slot table EMPTY.
+   -> revealed the leak: flex+static are ONE contiguous 264-slot array (static=flex+136*0x448),
+   accessed flex-relatively; relocating static-only can't catch those.
+4. WHOLE-BLOCK but moved ALL 4-byte values in range (no opname filter): splash-screen HANG
+   (coincidental non-operand values + mid-instruction windows corrupted). 
+5. WHOLE-BLOCK with opname filter (166 refs, == Phase 1's clean count): CURRENT, untested.
+
+### LESSONS (hard-won, do not repeat)
+- Relocation MUST filter by opname (operand position); moving every in-range 4-byte value corrupts
+  code -> hang. build_phase1.py had this; the whole-block rewrite dropped it (bug #4 above).
+- flex+static settings are ONE 264-slot contiguous array -> relocate the WHOLE block by one delta,
+  never static-only (bug #2/#3). Moving everything by one delta preserves ALL relative addressing.
+- Settings has field accessors with the offset FOLDED into the immediate (addi.l #(base+0x10e),dN
+  where dN=slot*0x448) -> not the exact base literal; a range-scan (not exact-match) catches them.
+- Double-duty addresses need classification: 0x100d5b30 = static base AND flex-walk end;
+  0x100f7f30 = static end (block-end bounds MOVE) AND global-above base (2 pea KEEP).
+- emu harness CATCHES: DSP register writes, loop access coverage, helper contracts. MISSES: full
+  boot / project-load / UI, coincidental-value corruption (until opname-filtered), flex-relative
+  semantics. Add checks per new routine.
+- Root cause of the whole early crash saga: Phase 1 mis-identified DSP structs (count 0x390A ->
+  DSP reg 0x80006920; struct 0x40a955e0) as pool slots. STOCK is the only correct baseline.
+
+### NEXT STEPS
+1. FLASH MAX256N (0ceca542) -> expect: boots, altre-galassie loads with static samples, SOUND,
+   correct trim + slices, flex still OK. If yes: the full relocation is proven on hardware = a
+   solid working base (still 128 static, behaviour-identical).
+2. THE 256 FEATURE (the actual goal) -- OPEN PROBLEM: flex(136)+static(256)=392 slots*0x448=430KB
+   does NOT fit the 350KB hole. Options to solve first:
+     (a) enlarge the window: relocate the 28-byte record array @0x46ceb400 too (extend the hole up),
+     (b) find/verify a different >=430KB free DDR region (emu_ddr_free-style),
+     (c) reconsider whether flex must stay 136 or the extra static can live separately.
+   Then: open static bound guards #128->#256 (subset of 81 cmpi #128; classify carefully),
+   free-flag init (falls out of opening the init loop's bound; boot-zero already covers 256),
+   UI caps (AUDIO list, per-track SLOT param).
+3. Every change emu-gated (emu_check + a coverage/access check for the touched routine) before .bin.
+
+### TOOLS
+- tools/build_max256.py       -- current whole-block relocation build (the feature-in-progress)
+- tools/build_state_stock.py  -- passthrough state accessors on stock (the proven de-risk)
+- tools/patch_state_helpers_b.s + verify_helpers_b.py -- dual-table state redirect (if we go that way)
+- tools/emu_check.py          -- pre-flash gate (DSP + state helpers); MANDATORY before any .bin
+- tools/emu_ddr_free.py       -- verify a DDR window is free (neighbour access coverage)
+- Package: EFT_EMIT_CONTAINER=out/x.bin elektron-firmware-tool -i downloads/extracted/
+  OCTATRACK_OS1.40C.syx -c 3 out/mainos_max256.bin -V TAG -o out/NAME.syx ; make_bin.py -> .bin
+- Recovery: sysex OCTATRACK_OS1.40C.syx (slow) ; CF .bin OS UPGRADE needs a booting OS first.
