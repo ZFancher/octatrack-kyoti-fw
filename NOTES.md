@@ -2632,3 +2632,32 @@ NEXT SESSION -- change of plan required:
 3. The current whole-block relocation (build_max256.py) is a DEAD END for settings -- keep as a
    record but do not pursue. State-relocation cleanliness is UNVERIFIED (may share the blob issue).
 The unit is fine on stock; MAX256N boots but is non-functional (empty slots). Revert to stock.
+
+
+### FOLLOW-UP: reloc LOOKS correct but DDR settings don't populate  [2026-08-11 cont.]
+Dug into the loader: there are dozens of `pea 0x100b14f0; jsr <serializer>` (project SAVE/LOAD
+in 0x40085xxx) and a descriptor store `movel #0x100b14f0 -> 0x460bdc8c`. In out/mainos_max256.bin
+ALL of these ARE rebased to 0x46c98c00 (0 remaining 0x100b14f0), and emu confirms the serializers/
+combined loops access the DDR block. So the relocation is byte-correct, yet on hardware flex+static
+slots stay empty. => the failure is NOT a missed ref. Two leading hypotheses for next session:
+  (A) the "free" hole [0x46c96000,0x46cdf640) is NOT actually free at runtime -- stock uses it via
+      COMPUTED pointers (project-load scratch buffer / sample cache / a structure between the flex
+      state table end 0x46c94074 and the record array 0x46ceb400). emu_ddr_free only probed a few
+      routines; it can't prove a 300KB region unused. A collision would let the load write DDR then
+      get overwritten -> empty. VERIFY: trace runtime writes into the hole (broader emulation of
+      project-load / audio init), or pick a window proven free by more than static refs.
+  (B) a load-init/default subtlety (block expected pre-initialised to non-zero defaults, boot-zero
+      gives zeros; or an auto-load timing).
+RELOCATION HAS HIT DIMINISHING RETURNS -- every flash exposes another subtle trap (blob-adjacency,
+now possible hole-collision). STRATEGIC PIVOT for next session:
+  * DUAL-TABLE instead: keep flex+static settings in SRAM (where the loader demonstrably works --
+    static-only test #1 loaded flex fine), add settings-B in DDR ONLY for new slots 128-255,
+    redirect ONLY the random-access playback accessors for idx>=128 (leave all load/save/walk/
+    combined paths on SRAM untouched). Then solve the ONE remaining hard thing: a LOAD ROUTE for
+    slots 128-255 (the project blob is 128-slot; the sibling project's 128-255 need to get into
+    settings-B somehow -- maybe a second load pass, or copy-from-slot-0..127 as a starting point).
+  * OR invest in a fuller project-load emulation to definitively test hypothesis (A) before any
+    more flashing.
+The unit runs fine on stock; MAX256N boots but slots are empty (non-functional). This session
+proved the relocation MECHANICS are byte-correct; the blocker is now runtime data flow, which needs
+either dual-table (sidesteps it) or real load-path tracing.
