@@ -2599,3 +2599,36 @@ Above the hole: 28-byte record array @0x46ceb400 (ptr var 0x46c8c5b8; grows up) 
 - Package: EFT_EMIT_CONTAINER=out/x.bin elektron-firmware-tool -i downloads/extracted/
   OCTATRACK_OS1.40C.syx -c 3 out/mainos_max256.bin -V TAG -o out/NAME.syx ; make_bin.py -> .bin
 - Recovery: sysex OCTATRACK_OS1.40C.syx (slow) ; CF .bin OS UPGRADE needs a booting OS first.
+
+
+### CRITICAL FINDING: settings is a SUB-REGION of a loaded project BLOB  [2026-08-11]
+Whole-block MAX256N (sha 0ceca542) HARDWARE result: boots clean (no hang, no corruption),
+patterns + parts load, but BOTH flex AND static slot tables are EMPTY / do not populate.
+Root cause: the settings block [0x100b14f0,0x100f7f30) is NOT independently loaded -- it sits
+inside a LARGE contiguous SRAM project-data region (52+ distinct struct bases scanned in
+[0x10090000,0x100b14f0), and data continues up through 0x100f7f30+). The project LOAD writes this
+whole region as a BLOB to fixed SRAM (via a base BELOW 0x100b14f0, not a literal we can rebase).
+Relocating only the settings sub-region's 166 code refs moves the READS to DDR, but the LOAD still
+writes the OLD SRAM -> relocated reads see the boot-zeroed DDR = empty slots. (Static-only left
+flex in SRAM so flex loaded; whole-block moved flex too -> both empty. Consistent.)
+
+=> RELOCATION OF SETTINGS IS INFEASIBLE (can't move a sub-region of a blob-loaded structure).
+=> DUAL-TABLE (settings A stays in SRAM, loads fine; B in DDR for slots 128-255) is the only
+   path, BUT has two hard problems to solve: (1) walk/combined loops break at the A/B boundary
+   (need trampolines -- 7 known, technique proven), and (2) slots 128-255 have NO load path (the
+   project blob is 128-slot; the sibling project's 128-255 settings would need a load route into
+   settings-B). State (0x46c90a78, 44B) may have the SAME blob-load issue -- verify before assuming
+   the state relocation "worked" (in test #2 the slot table showed, but that may have been the
+   field-0x10e display path, not real load).
+
+NEXT SESSION -- change of plan required:
+1. FIND + UNDERSTAND THE PROJECT LOADER: where project.work is read from CF and written to the
+   SRAM project region. Identify the blob base + the settings sub-offset + how many slots it loads.
+   (grep for CF read -> SRAM write; the settings live at blob_base + fixed_offset.) This determines
+   EVERYTHING about whether 256 is feasible and how to load slots 128-255.
+2. Given the loader, choose: (a) intercept/extend the loader to also populate settings-B (DDR) for
+   128-255 and redirect random-access reads there (dual-table), OR (b) relocate the WHOLE project
+   blob (huge, likely infeasible), OR (c) reconsider the feature scope with the user.
+3. The current whole-block relocation (build_max256.py) is a DEAD END for settings -- keep as a
+   record but do not pursue. State-relocation cleanliness is UNVERIFIED (may share the blob issue).
+The unit is fine on stock; MAX256N boots but is non-functional (empty slots). Revert to stock.
