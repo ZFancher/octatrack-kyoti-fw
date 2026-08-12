@@ -21,6 +21,13 @@ BASE = 0x40000400
 SRC = pathlib.Path("out/stock_mainos.bin")
 OUT = pathlib.Path("out/mainos_dual256.bin")
 
+# WAVE-0 hardware result [2026-08-12]: getter-only WITH boot-init booted fine but left static slots
+# empty + reset the clock -> the boot-zero of [0x46c96000,0x46cb9e00) clobbers a RUNTIME-LIVE DDR
+# region (register-relative-accessed; invisible to the static scan). So BOOTINIT is a diagnostic
+# toggle: with it OFF, only the getter is migrated (idx<128 byte-identical to stock) -> isolates
+# whether the getter mechanism itself is harmless. The real fix (a genuinely-free B-region) is next.
+BOOTINIT = False
+
 # ---- B-table layout in the verified-free hole [0x46c96000, 0x46cb9e00) ----
 ST_A, ST_B, ST_STRIDE, ST_N = 0x46c90a78, 0x46c96000, 44, 128          # STATE
 S41_A, S41_B = 0x46c920a4, 0x46c97600                                   # stride4 #1
@@ -147,15 +154,19 @@ def main():
     img[off(HELP_AT):off(HELP_AT) + len(blob)] = blob
     print(f"helpers: {len(blob)} B @0x{HELP_AT:08x} ({len(sym)} syms)")
 
-    # 2) boot-init stub + detour
-    stub = build_boot_stub()
-    assert not any(img[off(BOOT_STUB):off(BOOT_STUB) + len(stub)]), "boot-stub cave not empty"
-    img[off(BOOT_STUB):off(BOOT_STUB) + len(stub)] = stub
-    o = off(BOOT_HOOK)
-    assert bytes(img[o:o + 6]) == b"\x41\xf9\x10\x00\x00\x00", img[o:o + 6].hex()
-    img[o:o + 6] = b"\x4e\xf9" + BOOT_STUB.to_bytes(4, "big")   # jmp stub
-    print(f"boot-init: {len(stub)} B @0x{BOOT_STUB:08x}; detour @0x{BOOT_HOOK:08x}; "
-          f"zero+fill [0x{HOLE_LO:08x},0x{HOLE_HI:08x})")
+    # 2) boot-init stub + detour  (toggled: OFF isolates the getter from the boot-zero regression)
+    if BOOTINIT:
+        stub = build_boot_stub()
+        assert not any(img[off(BOOT_STUB):off(BOOT_STUB) + len(stub)]), "boot-stub cave not empty"
+        img[off(BOOT_STUB):off(BOOT_STUB) + len(stub)] = stub
+        o = off(BOOT_HOOK)
+        assert bytes(img[o:o + 6]) == b"\x41\xf9\x10\x00\x00\x00", img[o:o + 6].hex()
+        img[o:o + 6] = b"\x4e\xf9" + BOOT_STUB.to_bytes(4, "big")   # jmp stub
+        print(f"boot-init: {len(stub)} B @0x{BOOT_STUB:08x}; detour @0x{BOOT_HOOK:08x}; "
+              f"zero+fill [0x{HOLE_LO:08x},0x{HOLE_HI:08x})")
+    else:
+        print("boot-init: DISABLED (diagnostic) — no boot-zero, B-tables uninitialised "
+              "(Wave-0 getter path never reads them)")
 
     # 3) migrate the core set
     nsite = nclamp = 0

@@ -2842,3 +2842,21 @@ helper plumbing+clamp) boots on hardware without bricking -- the prerequisite de
 multi-add functions. NEXT (Wave 1): audio-bind + loop-setter functions behind an OOB emu-gate (run
 each migrated fn at idx=200, assert no access into 0x100f7f30+ or flexstate = catches a missed add),
 then the UI slot-param cap so 128-255 are selectable+audible. build_dual256.py CORE dict grows per wave.
+
+
+### ★ WAVE-0 HARDWARE RESULT #1 (boot-init ON): booted, but EMPTY SLOTS + CLOCK RESET  [2026-08-12]
+Flashed OT_dual256_w0 (getter migrated + boot-init zero+fill of [0x46c96000,0x46cb9e00)). Result:
+BOOTED with NO crash (foundation mechanism is boot-safe!), BUT after loading a project the static
+slots are EMPTY and the unit asked to SET THE CLOCK on boot. The getter is byte-identical to stock
+for idx<128, so it cannot cause this -> the BOOT-ZERO of [0x46c96000,0x46cb9e00) clobbers a RUNTIME-
+LIVE DDR region. => HARDWARE PROOF that the "free hole" is NOT free: it holds live data (slots +
+clock/settings) accessed via register-relative/computed pointers, which the static scan (absolute
+refs only) and the limited emu trace could not see. Hypothesis A is resurrected WITH hardware proof.
+Consequence: scan_hole.py / emu_ddr_free.py are necessary but NOT sufficient — a region with zero
+absolute refs can still be a live heap/buffer. Need a DDR region proven free by a stronger method
+(broad runtime write-trace, or place B-tables above the true top of OS DDR usage).
+
+DIAGNOSTIC BUILD (BOOTINIT=False in build_dual256.py) -> OT_dual256_diag: getter migrated, boot-init
+REMOVED (boot hook 0x4001fa64 intact). Only diffs vs stock: getter 2 patches + dormant helper cave.
+Expected: behaves 100% like stock (idx<128 identical; B never read) -> if slots load fine, the getter
+mechanism is proven harmless and the SOLE remaining problem is finding a genuinely-free B-region.
