@@ -2,6 +2,102 @@
 
 Record of findings. Each run of `analyze.sh` leaves evidence in `out/`.
 
+## ★ DUAL-TABLE 256-SLOT ARCHITECTURE — precise plan  [2026-08-12]
+Decision (user, firm): implement 256 static slots via DUAL-TABLE + a parallel/sidecar project file
+for the new slots 128-255 (existing 128-slot format untouched -> retrocompatible). Relocation is
+abandoned (proven dead-end: settings are populated by a path the 166 rebased refs don't cover, and
+the serializer is structurally 128-slot). This section is the authoritative implementation map.
+
+### MEMORY LAYOUT (verified safe — boot cannot be corrupted)
+- Table A (stock, unchanged): STATE 0x46c90a78 (44B*128, ends 0x46c92078=template); static SETTINGS
+  0x100d5b30 (0x448*128, ends exactly 0x100f7f30). Flex settings 0x100b14f0 (0x448*136).
+- Table B (NEW, in the verified-free DDR hole):
+    STATE-B    [0x46c96000, 0x46c97600)   44 * 128   = 5,632 B
+    SETTINGS-B [0x46c97600, 0x46cb9a00)   0x448 * 128 = 140,288 B
+  198 KB slack above (record array caps hole at 0x46ceb400); 16 KB margin below (state tables end
+  0x46c92078). Matches the emu_ddr_free GREEN window [0x46c96000, 0x46cb9a00).
+- HOLE IS FREE — proven three ways: scan_hole.py (0 operand-literal refs in [0x46c94074,0x46ceb400));
+  emu_ddr_free.py (traced scanners/record-init never write the window); clean-empty relocation
+  failure signature. NOT a runtime collision.
+- BOOT MEMORY: the boot SRAM clear loop @0x4001fa64 zeroes [0x10000000, 0x100fff00) — includes the
+  SRAM settings (boot-zero then project-load populates). It does NOT touch DDR. => Table B in DDR is
+  NOT boot-cleared; WE own its init (a boot-zero hook pointed at [0x46c96000,0x46cb9a00) ONLY — never
+  the DSP, never SRAM; that mistake was Phase 1). Nothing at boot reads/writes the hole.
+
+### THE ACCESSOR SURFACE (complete census — tools/census_accessors.py + site_facts.py)
+Static base 0x100d5b30 is referenced from 47 operand-position sites (43 exact + 3 folded base+0x10e
++ 1 folded lea base+0x129). Flex base 0x100b14f0 has 106 sites — FLEX STAYS IN SRAM, context only.
+Split by mnemonic (0x448 is not a power of two, so index scaling is ALWAYS a `muls` -> discriminator):
+  * 33 REDIRECT targets: `addi.l/adda.l #base,reg` preceded by muls (base + idx*0x448). 9 helper
+    variants cover them: reg in {d0,d1,d2,d3,a1,a2,a3,a4} + one folded {d0,+0x10e}.
+      d0x10 d1x1 d2x8 d3x2 a1x1 a2x3 a3x3 a4x2 ; folded d0+0x10e x3.
+  * 14 LEAVE: `cmpa/cmpi/lea/move.l# #base` (loop bounds, walk starts, serializer literals) — no mul.
+
+### PER-SITE PATCH (two same-size in-place edits; NEVER changes byte count)
+At each CLASS-A static site the stock shape is:  cmpi #128,idx ; bhi NULL ; muls #1096 ; addi #base.
+  (1) OPEN THE CLAMP:  `cmpi.l #128,dN` (0c8N 00000080) -> `#256` (…00000100). Same 6 bytes. Only the
+      STATIC clamp (#128); LEAVE the flex clamp (#135 / 0x87) alone.
+  (2) REDIRECT THE ADD: `addi.l #base,dN` (068N …) / `adda.l #base,aN` (dNfc …) -> `jsr helper_reg`
+      (4eb9 <cave>). Same 6 bytes.
+Helper (per reg/const), flag-preserving so it is byte-behaviour-identical to the original add for
+idx<128:
+    add.l  #base,REG              ; (or base+0x10e for the folded trio) — flags as stock add
+    move.w %ccr,-(sp)             ; preserve caller-visible flags
+    cmp.l  #0x100f7f30,REG        ; idx>=128  <=>  ptr>=static_end
+    blo.s  .done
+    add.l  #(TABLE_B-0x100f7f30),REG   ; linear remap; preserves folded field offset too
+  .done: move.w (sp)+,%ccr ; rts
+Why uniform+linear is safe: for idx<128 the helper reproduces the stock pointer AND flags exactly;
+for idx>=128 it lands in SETTINGS-B. The folded +0x10e sites remap correctly because the transform
+is linear (TABLE_B + (idx-128)*0x448 + 0x10e). Threshold 0x100f7f30 is a COMPARE immediate (not a
+relocated pointer), and it is the double-duty static-end/global-base value — fine as a constant.
+
+### ★ INCREMENTAL SAFETY (the key property — every intermediate flash boots)
+A site that is NOT yet migrated keeps its `#128` clamp -> NULLs idx>=128 -> EXACT stock behaviour.
+So migrate in waves, flashing between:
+  Wave 0 (de-risk, no file loader yet): boot-fill SETTINGS-B/STATE-B with a synthetic pattern (e.g.
+    copy slots 0..127) and migrate ONLY the core PLAYBACK path; flash; verify slots 128-255 PLAY.
+  Wave 1: build the sidecar loader (load 128-255 from the parallel file into table B).
+  Wave 2+: migrate UI/display/dialog/serial sites so 128-255 are visible/editable.
+Un-migrated sites are always stock-safe. This is how we avoid the slow sysex-recover cycle.
+
+### SITE CLASSIFICATION (from 5 parallel disasm passes; A=redirect, B=leave/serializer)
+CLASS A (playback/UI/audio random-access — migrate):
+  0x400050d0 0x4000f4b6 0x40021e3e 0x4002263e 0x40023e36 0x40023f4c 0x40024574 0x40024fbc 0x40025000
+  0x400252b4 0x40044df8 0x4004ff2e 0x4006da9a(canonical getter) 0x40077e0a 0x40079450 0x400869ce
+  0x400936cc 0x40093f88 0x40094380 0x40098d0a 0x400991dc 0x40099412 0x40004f54 0x40004ff4 0x4000c6b8
+CLASS B (128-slot serializer / load-save — LEAVE clamped, sidecar handles 128-255):
+  0x40084c6e 0x40084cb4 (project serializer, explicit NULL>=128) ; 0x4008996e (save) ; 0x4008b906
+  (load+magic) ; 0x400939a4 (sample-load path build). Plus the 14 walk/compare/literal sites.
+UNRESOLVED A/B (batch-2 agent wrongly called RTOS; VERIFIED they ARE real dual-table accessors
+  `muls; addi #base; cmp type; cmpi #135`): 0x40027728 0x400277f8 0x40029026 0x4004411a (fn ~0x400256b8).
+  SAFE DEFAULT = leave (B) for now; promote to A only if that op is needed for 128-255. Leaving them
+  cannot break anything (they just NULL>=128).
+
+### CORE PLAYBACK PATH (Wave-0 minimal migration set — from the role analysis)
+  0x4006da9a  canonical (type,idx)->slot-settings getter (clamp #128 here is THE one to open first)
+  0x400936cc / 0x40093f88 / 0x40094380  audio-engine track activation + slice/loop reader
+    (copy slot fields a?@(312)/a?@(1092) into live recorder struct 0x460ba8a4 under interrupt mask)
+  0x400991dc / 0x40099412  loop start/length/window setters (interrupt-masked)
+  0x40004f54 / 0x40004ff4 / 0x4000c6b8  slot+0x10e playback param -> live DSP regs 0x80000110/1850
+Companion tables that travel with settings (may need their own B-table if indexed by slot 128-255):
+  STATE 44-byte 0x46c90a78 (status@8 / refcount@20 / handle@36) -> STATE-B already reserved.
+  stride-4 tables 0x46c920a4 / 0x46c93a24 — CHECK whether playback indexes these by slot idx>=128.
+
+### OPEN QUESTIONS before Wave 0 (must resolve to avoid a bad flash)
+1. Does the core playback path read the STATE 44-byte table (0x46c90a78) by slot idx too? If yes, its
+   #128 clamps must open + redirect to STATE-B in lockstep (census that table separately).
+2. The stride-4 tables 0x46c920a4/0x46c93a24 (per-slot runtime words touched during load) — indexed to
+   128-255? If yes they need B-tables or the sidecar must init them.
+3. Sidecar file: format + WHERE to hook load/save (CLASS B serializer region 0x40084xxx is the anchor).
+4. UI caps (AUDIO pool list length, per-track SLOT param max) — Wave 2, not needed to prove playback.
+
+### TOOLS (this session)
+  tools/scan_hole.py        — occupancy map of a DDR window by operand-position pointer literals
+  tools/census_accessors.py — all static/flex base refs, exact + folded, grouped by function
+  tools/classify_sites.py   — muls-discriminator: random-access vs walk per site
+  tools/site_facts.py       — deterministic reg/const/guard per site -> mechanical patch generation
+
 ## Phase 0 — Static recon of the public OS  [COMPLETED ✓ 2026-07-26]
 
 Goal: decide whether the payload is **compressed** (feasible) or **strongly encrypted** (blocking),
