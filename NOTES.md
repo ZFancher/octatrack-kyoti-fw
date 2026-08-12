@@ -84,13 +84,33 @@ Companion tables that travel with settings (may need their own B-table if indexe
   STATE 44-byte 0x46c90a78 (status@8 / refcount@20 / handle@36) -> STATE-B already reserved.
   stride-4 tables 0x46c920a4 / 0x46c93a24 — CHECK whether playback indexes these by slot idx>=128.
 
-### OPEN QUESTIONS before Wave 0 (must resolve to avoid a bad flash)
-1. Does the core playback path read the STATE 44-byte table (0x46c90a78) by slot idx too? If yes, its
-   #128 clamps must open + redirect to STATE-B in lockstep (census that table separately).
-2. The stride-4 tables 0x46c920a4/0x46c93a24 (per-slot runtime words touched during load) — indexed to
-   128-255? If yes they need B-tables or the sidecar must init them.
-3. Sidecar file: format + WHERE to hook load/save (CLASS B serializer region 0x40084xxx is the anchor).
-4. UI caps (AUDIO pool list length, per-track SLOT param max) — Wave 2, not needed to prove playback.
+### ★ FOUR TABLES TRAVEL PER-SLOT (RESOLVED — all indexed in the playback path)
+census of the companion bases (same byte-scan) confirms slots use FOUR parallel per-slot tables,
+and the CORE PLAYBACK functions index all of them by slot number -> all need a B-table in lockstep
+(settings-B alone would leave 128-255 reading garbage runtime state):
+  SETTINGS  0x100d5b30  stride 0x448  47 refs (33 redirect)      -> SETTINGS-B 0x46c97600
+  STATE     0x46c90a78  stride 44     36 refs                    -> STATE-B    0x46c96000
+  stride4#1 0x46c920a4  stride 4      10 refs                    -> B1 (512 B)  [place above SET-B]
+  stride4#2 0x46c93a24  stride 4      10 refs                    -> B2 (512 B)
+  (flexstate 0x46c922c4 stride44 48refs and tbl 0x46c93c28 are FLEX/other -> untouched, SRAM/A.)
+Evidence the playback path indexes STATE-44: refs 0x40093834/0x400939b8 (activation 0x400936cc),
+0x4009405a/0x40094364 (slice/loop 0x40094380), 0x40098d1a/0x40099170/0x4009939c (loop setters),
+0x4006da40 (getter). stride-4 refs 0x4009935c/0x40099352 sit in the same loop-setter family.
+NUANCE (STATE): stock uses INDEX 128 as the TEMPLATE (0x46c92078). So STATE redirect is idx>=129 ->
+STATE-B (127 new slots) with template preserved at A[128] — exactly patch_state_helpers_b.s
+(ADJ_B=0x46c94a00, LO=0x1600, HI=0x2bf4). => "255 usable" (idx128=template) is the accepted target.
+Revised B-table layout (all in the free hole, record array caps at 0x46ceb400):
+  STATE-B    [0x46c96000, 0x46c97600)   44*128
+  stride4-B1 [0x46c97600, 0x46c97800)   4*128
+  stride4-B2 [0x46c97800, 0x46c97a00)   4*128
+  SETTINGS-B [0x46c97a00, 0x46cb9e00)   0x448*128    (198 KB slack remains)
+
+### OPEN QUESTIONS before Wave 0 (remaining)
+1. Sidecar file: format + WHERE to hook load/save (CLASS B serializer region 0x40084xxx is the anchor).
+   For Wave 0 (playback de-risk) NOT needed — boot-fill B-tables by copying slots 0..127.
+2. Census the STATE-44 / stride-4 REDIRECT sites (as done for settings via site_facts.py) to get the
+   exact clamp+add pairs for those tables (their strides differ: 44 and 4). Mechanical, next step.
+3. UI caps (AUDIO pool list length, per-track SLOT param max) — Wave 2, not needed to prove playback.
 
 ### TOOLS (this session)
   tools/scan_hole.py        — occupancy map of a DDR window by operand-position pointer literals
