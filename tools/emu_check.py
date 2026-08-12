@@ -159,12 +159,43 @@ def check_count_consistency(stock, patched):
             + ("" if ok else "  <-- COUNT DESYNC"))
 
 
+def check_dual256_helpers(stock, patched):
+    """DUAL-256 build: the redirect helper family (tools/patch_dual256.s) is installed at 0x400d7400.
+    Re-assemble it and assert the image bytes byte-match the assembled+emu-verified blob (the return
+    contract itself is proven by tools/verify_dual256.py). If the family isn't present, skip."""
+    import subprocess, pathlib
+    CAVE = 0x400d7400
+    try:
+        subprocess.run(["m68k-elf-as", "-mcpu=5407", "-o", "out/_dg.o", "tools/patch_dual256.s"],
+                       check=True, capture_output=True)
+        subprocess.run(["m68k-elf-ld", "-Ttext=0x%x" % CAVE, "-o", "out/_dg.elf", "out/_dg.o"],
+                       capture_output=True)
+        subprocess.run(["m68k-elf-objcopy", "-O", "binary", "out/_dg.elf", "out/_dg.bin"],
+                       check=True, capture_output=True)
+        blob = pathlib.Path("out/_dg.bin").read_bytes()
+    finally:
+        for f in ("out/_dg.o", "out/_dg.elf", "out/_dg.bin"):
+            pathlib.Path(f).unlink(missing_ok=True)
+    got = bytes(patched.img[CAVE - LOAD:CAVE - LOAD + len(blob)])
+    # signature: the family begins with cmpi.l #0x22400,d0 (SET_LO) — the folded settings helper.
+    is_family = got[:6] == b"\x0c\x80\x00\x02\x24\x00"
+    if not is_family:
+        return ("dual256_helpers", True, "no dual256 family present (skip)")
+    ok = got == blob
+    return ("dual256_helpers", ok,
+            f"installed family byte-matches assembled+verified blob ({len(blob)} B)" if ok
+            else "INSTALLED FAMILY DIFFERS from assembled patch_dual256.s")
+
+
 def check_state_helpers(stock, patched):
     """If the image has state-accessor cave helpers, emulate each and confirm it returns
     base + product (the passthrough contract). Dynamic proof the jsr-to-cave plumbing runs
     and computes correctly — the thing we could not verify statically."""
     CAVE = 0x400d7400
     sig = patched.img[CAVE - LOAD:CAVE - LOAD + 2]
+    # the DUAL-256 family also starts with 0c80; it is validated by check_dual256_helpers -> skip here.
+    if patched.img[CAVE - LOAD:CAVE - LOAD + 6] == b"\x0c\x80\x00\x02\x24\x00":
+        return ("state_helpers", True, "dual256 family (validated by dual256_helpers, skip)")
     if not any(patched.img[CAVE - LOAD:CAVE - LOAD + 72]):
         return ("state_helpers", True, "no cave helpers present (skip)")
     # only the passthrough (addi.l #,d0 = 0x0680) / redirect (cmpi.l #,d0 = 0x0c80) helpers have
@@ -188,7 +219,7 @@ def check_state_helpers(stock, patched):
 
 
 CHECKS = [check_dsp_init_regs, check_dsp_struct_intact, check_count_consistency,
-          check_state_helpers]
+          check_dual256_helpers, check_state_helpers]
 
 
 def main():
