@@ -2828,3 +2828,17 @@ product decision with the user about whether the underlying goal (fast switch be
 128-slot projects with different slot->sample maps) is better served by stock's existing project-
 switch (zero firmware risk) than by a 256-slot format.
 New tool: tools/scan_hole.py -- occupancy map of a DDR window by operand-position pointer literals.
+
+
+### WAVE 0 STATUS — getter-only foundation, EMU-GREEN, PACKAGED  [2026-08-12]
+tools/build_dual256.py -> out/mainos_dual256.bin -> out/OT_dual256_w0.{syx,bin} (round-trip verified).
+Contents: helper family @0x400d7400 (emu-verified 170/170); boot-init stub @0x400d64e0 (assembler-
+generated zero+fill of the 4 B-tables, detour @0x4001fa64); ONE migrated function -- the canonical
+settings getter 0x4006da78 (clamp 0x4006da88 #128->#255; add 0x4006da98 -> jsr h_set_d0).
+Emu proof: boot stub zeros hole + fills all 4 B-tables + returns to boot seq; getter idx 0-127->A,
+128-255->B, 256+->NULL; emu_check ALL GREEN (DSP untouched). Boot-safe by construction; NOT user-
+observable yet (getter-only). Purpose of this flash: confirm the FOUNDATION (B-tables+boot-init+
+helper plumbing+clamp) boots on hardware without bricking -- the prerequisite de-risk before adding
+multi-add functions. NEXT (Wave 1): audio-bind + loop-setter functions behind an OOB emu-gate (run
+each migrated fn at idx=200, assert no access into 0x100f7f30+ or flexstate = catches a missed add),
+then the UI slot-param cap so 128-255 are selectable+audible. build_dual256.py CORE dict grows per wave.
