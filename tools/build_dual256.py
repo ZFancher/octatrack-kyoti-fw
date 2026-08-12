@@ -91,8 +91,17 @@ def build_boot_stub():
     bne.s displacement bug that spun the loops was caught by the boot-stub emu-gate)."""
     import subprocess, pathlib
     nz = (HOLE_HI - HOLE_LO) // 4
+    # REGISTER-TRANSPARENT: the detour point 0x4001fa64 sits between `d0 = a0+514` (0x4001fa5c) and
+    # `cmpl 0x100fff00,d0` (0x4001fa6a) -- the boot code USES d0 (and a1) after the detour. Clobbering
+    # them broke system init -> clock reset + empty boot state (seen on w0 AND hiregion). So save every
+    # register the stub touches and restore before the displaced instruction. (a0 is overwritten by the
+    # displaced `lea` anyway, but we save/restore it too for cleanliness.)
+    # ColdFire movem has no predecrement mode -> save d0/a1 (the regs the boot code uses after the
+    # detour) with individual pushes. a0 is overwritten by the displaced `lea`, so it needs no save.
     asm = f"""    .cpu 5407
     .text
+    move.l  %d0,-(%sp)
+    move.l  %a1,-(%sp)
     movea.l #0x{HOLE_LO:x},%a0
     move.l  #0x{nz:x},%d0
 1:  clr.l   (%a0)+
@@ -108,7 +117,9 @@ def build_boot_stub():
     subq.l  #1,%d0
     bne.s   2b
 """
-    asm += f"""    lea     0x10000000,%a0
+    asm += f"""    move.l  (%sp)+,%a1
+    move.l  (%sp)+,%d0
+    lea     0x10000000,%a0
     jmp     0x{BOOT_HOOK + 6:x}
 """
     pathlib.Path("out/_bs.s").write_text(asm)
