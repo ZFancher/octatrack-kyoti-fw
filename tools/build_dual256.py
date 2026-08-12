@@ -26,20 +26,22 @@ OUT = pathlib.Path("out/mainos_dual256.bin")
 # region (register-relative-accessed; invisible to the static scan). So BOOTINIT is a diagnostic
 # toggle: with it OFF, only the getter is migrated (idx<128 byte-identical to stock) -> isolates
 # whether the getter mechanism itself is harmless. The real fix (a genuinely-free B-region) is next.
-BOOTINIT = False
+BOOTINIT = True
 # Diagnostic 2: keep the getter clamp at #128 (do NOT open to #255). With RAISE_CLAMPS=False the
 # migrated getter is BEHAVIOURALLY STOCK-EQUIVALENT (idx<128 -> A via helper == stock add; idx>=128
 # -> NULL via the unchanged clamp, before the jsr). Isolates whether OPENING the clamp (a sentinel
 # collision: many things encode "no static slot" as an idx>127 that stock NULLs) is what emptied the
 # static slots -- vs the jsr-to-helper plumbing on this specific function.
-RAISE_CLAMPS = False
+RAISE_CLAMPS = True
 
-# ---- B-table layout in the verified-free hole [0x46c96000, 0x46cb9e00) ----
-ST_A, ST_B, ST_STRIDE, ST_N = 0x46c90a78, 0x46c96000, 44, 128          # STATE
-S41_A, S41_B = 0x46c920a4, 0x46c97600                                   # stride4 #1
-S42_A, S42_B = 0x46c93a24, 0x46c97800                                   # stride4 #2
-SET_A, SET_B, SET_STRIDE = 0x100d5b30, 0x46c97a00, 0x448                # SETTINGS
-HOLE_LO, HOLE_HI = 0x46c96000, 0x46cb9e00
+# ---- B-table layout ABOVE the OS working-DDR region [0x46025de0, 0x4763d580) ----
+# (the OS boot-clears exactly [0x46025de0, 0x4763d580) at 0x40000518/0x4000f984 and manages it;
+#  putting B-tables inside it is what corrupted the project. 0x47700000 is above that boundary.)
+ST_A, ST_B, ST_STRIDE, ST_N = 0x46c90a78, 0x47700000, 44, 128          # STATE
+S41_A, S41_B = 0x46c920a4, 0x47701600                                   # stride4 #1
+S42_A, S42_B = 0x46c93a24, 0x47701800                                   # stride4 #2
+SET_A, SET_B, SET_STRIDE = 0x100d5b30, 0x47701a00, 0x448                # SETTINGS
+HOLE_LO, HOLE_HI = 0x47700000, 0x47723e00
 
 HELP_AT = 0x400d7400          # helper family base (matches patch_dual256.s .text)
 BOOT_STUB = 0x400d64e0        # boot-init stub (in the 0x400d64da.. free cave)

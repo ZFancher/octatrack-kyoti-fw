@@ -14,9 +14,11 @@
 |    STRIDE4#2(stride 4,     base 0x46c93a24): idx<=128 -> A ; 129..255 -> B ; >=256 -> A
 |
 |  Two-sided product bounds send OOR/sentinel indices back to A = stock-safe; the redirect fires only
-|  for real new slots. B-table layout in the verified-free hole [0x46c96000, 0x46cb9e00):
-|    STATE-B    0x46c96000 (+0x1600)   STRIDE4-B1 0x46c97600 (+0x200)   STRIDE4-B2 0x46c97800 (+0x200)
-|    SETTINGS-B 0x46c97a00 (+0x22400 -> ends 0x46cb9e00)
+|  for real new slots. B-table layout ABOVE the OS working-DDR region (which the OS itself boot-clears
+|  as [0x46025de0, 0x4763d580) -- putting B-tables inside it is what corrupted the project). New base
+|  0x47700000 is above that boundary, so the OS never touches it and B cannot corrupt project state.
+|    STATE-B    0x47700000 (+0x1600)   STRIDE4-B1 0x47701600 (+0x200)   STRIDE4-B2 0x47701800 (+0x200)
+|    SETTINGS-B 0x47701a00 (+0x22400 -> ends 0x47723e00)
 |  ADJ = B_base - idx0*stride, so B addr = product + ADJ = B_base + (idx-idx0)*stride.
 | =====================================================================
 
@@ -24,26 +26,26 @@
     .equ SET_A,    0x100d5b30
     .equ SET_LO,   0x22400            | 128*0x448  (product < LO -> A)
     .equ SET_HI,   0x44800            | 256*0x448  (product >= HI -> A, OOR)
-    .equ SET_ADJ,  0x46c75600         | SETTINGS_B(0x46c97a00) - 128*0x448
+    .equ SET_ADJ,  0x476df600         | SETTINGS_B(0x47701a00) - 128*0x448
 |  folded +0x10e field accessors:
     .equ SETF_A,   0x100d5c3e         | SET_A + 0x10e
-    .equ SETF_ADJ, 0x46c7570e         | SET_ADJ + 0x10e
+    .equ SETF_ADJ, 0x476df70e         | SET_ADJ + 0x10e
 
 |  ---- STATE: A=0x46c90a78, redirect idx 129..255 (template A[128]) ----
     .equ ST_A,     0x46c90a78
     .equ ST_LO,    0x1600             | 128*44   (product <= LO -> A, incl template)
     .equ ST_HI,    0x2bf4             | 255*44   (product > HI -> A, OOR)
-    .equ ST_ADJ,   0x46c94a00         | STATE_B(0x46c96000) - 128*44
+    .equ ST_ADJ,   0x476fea00         | STATE_B(0x47700000) - 128*44
 
 |  ---- STRIDE4#1: A=0x46c920a4, redirect idx 129..255 ----
     .equ S41_A,    0x46c920a4
     .equ S4_LO,    0x200              | 128*4
     .equ S4_HI,    0x3fc              | 255*4
-    .equ S41_ADJ,  0x46c97400         | STRIDE4B1(0x46c97600) - 128*4
+    .equ S41_ADJ,  0x47701400         | STRIDE4B1(0x47701600) - 128*4
 
 |  ---- STRIDE4#2: A=0x46c93a24, redirect idx 129..255 ----
     .equ S42_A,    0x46c93a24
-    .equ S42_ADJ,  0x46c97600         | STRIDE4B2(0x46c97800) - 128*4
+    .equ S42_ADJ,  0x47701600         | STRIDE4B2(0x47701800) - 128*4
 
 | SETTINGS data helpers (blo=below LO ->A, bhs HI ->A):
     .macro SETD reg

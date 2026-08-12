@@ -22,11 +22,11 @@ REG = {"d0": UC_M68K_REG_D0, "d1": UC_M68K_REG_D1, "d2": UC_M68K_REG_D2, "d3": U
        "a4": UC_M68K_REG_A4}
 
 # table params: base_A, stride, adj_B, lo_incl (idx where B starts), field
-SET_A, SET_ADJ = 0x100d5b30, 0x46c75600
-SETF_A, SETF_ADJ = 0x100d5c3e, 0x46c7570e
-ST_A, ST_ADJ = 0x46c90a78, 0x46c94a00
-S41_A, S41_ADJ = 0x46c920a4, 0x46c97400
-S42_A, S42_ADJ = 0x46c93a24, 0x46c97600
+SET_A, SET_ADJ = 0x100d5b30, 0x476df600
+SETF_A, SETF_ADJ = 0x100d5c3e, 0x476df70e
+ST_A, ST_ADJ = 0x46c90a78, 0x476fea00
+S41_A, S41_ADJ = 0x46c920a4, 0x47701400
+S42_A, S42_ADJ = 0x46c93a24, 0x47701600
 
 
 def exp_settings(idx, A=SET_A, ADJ=SET_ADJ, stride=0x448):
