@@ -2860,3 +2860,33 @@ DIAGNOSTIC BUILD (BOOTINIT=False in build_dual256.py) -> OT_dual256_diag: getter
 REMOVED (boot hook 0x4001fa64 intact). Only diffs vs stock: getter 2 patches + dormant helper cave.
 Expected: behaves 100% like stock (idx<128 identical; B never read) -> if slots load fine, the getter
 mechanism is proven harmless and the SOLE remaining problem is finding a genuinely-free B-region.
+
+
+### ★ WAVE-0 HARDWARE RESULTS #2/#3 + ROOT CAUSE: boot-zero CORRUPTS THE PROJECT  [2026-08-12]
+Flashed getter-only diag builds (boot-init OFF): #2 clamp opened #128->#255, #3 clamp KEPT #128
+(getter emu-identical to stock for every real input). BOTH still showed empty static slots -> looked
+like the getter was guilty. It was NOT. Ground-truth reflash of STOCK ALSO showed empty slots ->
+the PROJECT FILE was corrupted. Proof: universi/altre-galassie/project.work = 2877 B (truncated),
+vs the good sibling altre-galassie_2/project.work = 15034 B; project.strd was intact/identical.
+=> ROOT CAUSE: Wave-0 #1 (boot-init ON) boot-zeroed [0x46c96000,0x46cb9e00), which is RUNTIME-LIVE
+DDR used by project load/save; that corrupted the in-memory project, and on power-off the OT
+auto-saved a TRUNCATED project.work. Every later flash then loaded the already-broken project.
+FIXED by copying project.work from altre-galassie_2 -> altre-galassie (corrupt saved to scratchpad
+altre-galassie_project.work.w0corrupt as evidence).
+
+LESSONS (critical):
+- NEVER re-flash a boot-init build that zeroes a not-proven-free DDR region: it silently corrupts
+  the LOADED PROJECT on the CF (persisted on auto-save), not just RAM. Cost us 3 flashes + a project.
+- The getter migration is now PLAUSIBLY INNOCENT (empty slots were the corrupted project, not the
+  getter) but NOT yet confirmed -- must retest a getter-migrated build on the RESTORED project.
+- [0x46c96000,0x46cb9e00) is LIVE (hardware-proven): the B-tables need a genuinely-free region,
+  found by a stronger method than static scan / limited emu (both said "free" and were WRONG twice).
+
+NEXT:
+1. On STOCK (currently flashed), load altre-galassie -> confirm slots restored (validates the fix).
+2. Retest getter-innocence: flash OT_dual256_noclamp (boot-init OFF, getter jsr, clamp #128) and
+   load the RESTORED project. Slots present -> getter mechanism cleared. Slots empty -> getter guilty.
+3. REAL blocker: a truly-free DDR region for the 4 B-tables. Options: trace runtime writes broadly
+   during project-load+audio to map used DDR; or place B-tables ABOVE the top of OS DDR usage
+   (the record array 0x46ceb400 is the last known fixed structure -- probe well above it); or use a
+   region the OS demonstrably never touches (needs a runtime-write census, not a static one).
