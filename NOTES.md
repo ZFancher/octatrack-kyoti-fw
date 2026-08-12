@@ -105,11 +105,31 @@ Revised B-table layout (all in the free hole, record array caps at 0x46ceb400):
   stride4-B2 [0x46c97800, 0x46c97a00)   4*128
   SETTINGS-B [0x46c97a00, 0x46cb9e00)   0x448*128    (198 KB slack remains)
 
+### CONFIRMED FACTS for the patch generator  [2026-08-12 cont.]
+- TEMPLATE: literal 0x46c92078 appears 0x in the image => the STATE template is reached ONLY via
+  idx==128 (getter clamp `cmpil #128,d0; bhi NULL` lets idx==128 through to base+128*44). Therefore:
+    SETTINGS redirect threshold = idx>=128  (settings A has no template; A[128]=0x100f7f30 is OOB)
+    STATE    redirect threshold = idx>=129  (keep template at A[128]); slot 128 reserved => 255 usable.
+  Per-table B index formula: SETTINGS-B[idx-128], STATE-B[idx-129], stride4-B[idx-129 or idx-128 —
+  match STATE since they share the same clamp/index d6).
+- stride-4 tables ARE slot-indexed (NOT track): in fn 0x40099148, arg d6=slot, `cmpil #128,d6; bhi
+  bail` guards STATE-44 (d6*44), stride4#1 (d6*4) AND stride4#2 (d6*4) — ALL three share ONE clamp
+  and the SAME index d6. They cache a per-slot POINTER (store `movel a3,a0@`). => opening that clamp
+  REQUIRES redirecting all three adds together or d6=255 writes 0x46c920a4+255*4 into flexstate
+  (0x46c922c4) = corruption. 4 B-tables stand.
+- STATE-44 core-playback redirect sites (addal/addil #0x46c90a78, muls=Y, guard 128):
+    0x40077e18(a2) 0x400794fc(d0) 0x40093834(a2) 0x400939b8(a3) 0x4009405a(a0) 0x40094364(a3)
+    0x40098d1a(a2,guard135) 0x40099170(a0) 0x4009939c(a0)
+- stride-4 core sites (addal, lsl#2 scaled, share clamp): #1 0x4009935c(a0) 0x40099658(d0);
+    #2 0x40099352(a0) 0x40099648(d0).
+- Companion NOTE: flexstate 0x46c922c4 (stride44, 136) and tbl 0x46c93c28 are flex/other — stay on A.
+
 ### OPEN QUESTIONS before Wave 0 (remaining)
 1. Sidecar file: format + WHERE to hook load/save (CLASS B serializer region 0x40084xxx is the anchor).
-   For Wave 0 (playback de-risk) NOT needed — boot-fill B-tables by copying slots 0..127.
-2. Census the STATE-44 / stride-4 REDIRECT sites (as done for settings via site_facts.py) to get the
-   exact clamp+add pairs for those tables (their strides differ: 44 and 4). Mechanical, next step.
+   For Wave 0 (playback de-risk) NOT needed — boot-fill B-tables by copying slots 0..127 (incl the
+   stride-4 pointer caches, just to prove plumbing; real per-slot pointers come with the sidecar).
+2. Full clamp census: each migrated function has ONE upstream `cmpi #128` (bhi/bhs NULL) that gates
+   ALL its per-slot table adds — census these clamp instructions (one per fn) to open them 128->255.
 3. UI caps (AUDIO pool list length, per-track SLOT param max) — Wave 2, not needed to prove playback.
 
 ### TOOLS (this session)
