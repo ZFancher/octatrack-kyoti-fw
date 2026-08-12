@@ -27,6 +27,12 @@ OUT = pathlib.Path("out/mainos_dual256.bin")
 # toggle: with it OFF, only the getter is migrated (idx<128 byte-identical to stock) -> isolates
 # whether the getter mechanism itself is harmless. The real fix (a genuinely-free B-region) is next.
 BOOTINIT = False
+# Diagnostic 2: keep the getter clamp at #128 (do NOT open to #255). With RAISE_CLAMPS=False the
+# migrated getter is BEHAVIOURALLY STOCK-EQUIVALENT (idx<128 -> A via helper == stock add; idx>=128
+# -> NULL via the unchanged clamp, before the jsr). Isolates whether OPENING the clamp (a sentinel
+# collision: many things encode "no static slot" as an idx>127 that stock NULLs) is what emptied the
+# static slots -- vs the jsr-to-helper plumbing on this specific function.
+RAISE_CLAMPS = False
 
 # ---- B-table layout in the verified-free hole [0x46c96000, 0x46cb9e00) ----
 ST_A, ST_B, ST_STRIDE, ST_N = 0x46c90a78, 0x46c96000, 44, 128          # STATE
@@ -171,9 +177,12 @@ def main():
     # 3) migrate the core set
     nsite = nclamp = 0
     for fn, spec in CORE.items():
-        for cva in spec["clamps"]:
-            nb = raise_clamp(img, cva); nclamp += 1
-            print(f"  clamp 0x{cva:08x} #128 -> #{nb}   [{fn}]")
+        if RAISE_CLAMPS:
+            for cva in spec["clamps"]:
+                nb = raise_clamp(img, cva); nclamp += 1
+                print(f"  clamp 0x{cva:08x} #128 -> #{nb}   [{fn}]")
+        else:
+            print(f"  clamps KEPT at #128 (diagnostic, stock-equivalent)   [{fn}]")
         for imm_va, hn in spec["sites"]:
             assert hn in sym, f"helper {hn} missing"
             redirect_site(img, imm_va, sym[hn])
