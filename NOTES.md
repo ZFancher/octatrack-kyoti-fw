@@ -2661,3 +2661,34 @@ now possible hole-collision). STRATEGIC PIVOT for next session:
 The unit runs fine on stock; MAX256N boots but slots are empty (non-functional). This session
 proved the relocation MECHANICS are byte-correct; the blocker is now runtime data flow, which needs
 either dual-table (sidesteps it) or real load-path tracing.
+
+
+### HYPOTHESIS A RESOLVED: the hole is FREE -- it is NOT a runtime collision  [2026-08-12]
+Ran two independent no-flash tests (tools/scan_hole.py + tools/emu_ddr_free.py):
+  1. STATIC: scan every operand-position pointer literal in stock for a value inside the hole
+     [0x46c96000, 0x46cdf640). RESULT: ZERO hits. The DDR neighbourhood [0x46c90000,0x46cf0000)
+     occupancy map is: state tables (0x46c90a78 x36, 0x46c920a4 x10, 0x46c922c4 x48, 0x46c93a24
+     x10, 0x46c93c28 x14) all BELOW 0x46c94000, then NOTHING until the record array 0x46ceb400 x2.
+     The hole is a genuine gap -- no statically-addressed structure lives in it.
+  2. EMU TRACE: static_slot_scan / flex_slot_scan read the state tables and stop below 0x46c94074;
+     record_array_init writes only at/above 0x46ceb400. No traced routine writes into the hole.
+=> Hypothesis A (stock overwrites the relocated DDR at runtime -> empty) is FALSE with good
+   confidence. The clean-EMPTY, stable failure signature (patterns/parts load, no crash, no
+   garbage, just zeros) corroborates: a collision would show corruption/instability, not pristine
+   zeros. Pristine zeros = the loader NEVER WROTE the DDR = it wrote the OLD SRAM base.
+
+=> Therefore the blocker is the LOAD-BYPASS, not the hole. The project loader populates settings
+   through a path that is NOT one of the 166 rebased refs. The pea-0x100b14f0 cluster (0x40084xxx)
+   is a generic TOKEN serializer framework (primitives 0x400204a8/cc scan slot names for '/' '.';
+   walker 0x4008f3f0 = read-only count of flex+static). The real per-slot resolver at 0x40084c8e
+   HARD-CAPS at 128: `cmpil #128,d2; blss; clrl d1 (=NULL for idx>=128); else #0x448*idx+0x100d5b30`.
+   So the settings serializer is structurally 128-slot AND a stock project file only stores 128.
+
+BOTTOM LINE for 256: relocation is a dead end for a reason deeper than the hole -- even done
+perfectly, the loader writes SRAM. And 256 real slots = a FILE-FORMAT change (serializer capped at
+128, project files store 128). Confirmed the ONLY viable path is DUAL-TABLE with a bespoke load
+route for 128-255, AND that requires changing what a project file contains. Big scope; needs a
+product decision with the user about whether the underlying goal (fast switch between sibling
+128-slot projects with different slot->sample maps) is better served by stock's existing project-
+switch (zero firmware risk) than by a 256-slot format.
+New tool: tools/scan_hole.py -- occupancy map of a DDR window by operand-position pointer literals.
