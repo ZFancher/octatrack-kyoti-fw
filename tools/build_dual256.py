@@ -58,12 +58,45 @@ BOOT_HOOK = 0x4001fa64        # detour point: `lea 0x10000000,a0` (6 bytes) in t
 # proves the ENTIRE foundation is boot-safe (helpers installed, 4 B-tables zeroed+filled at boot, boot
 # detour intact, a real redirect site live) with zero risk of the "opened-clamp + missed-add -> OOB"
 # hazard that multi-table functions carry. Later waves add multi-add functions behind an OOB emu-gate.
+# Each entry: entry/end (TRUE extent, next-prologue), clamps to open, and EVERY per-slot add in the
+# function (settings+state+stride4). The OOB gate asserts no per-slot base-add remains in [entry,end)
+# after redirect -- a missed one would OOB-write the working region at runtime = project corruption.
 CORE = {
     "getter_0x4006da78": {
-        "clamps": [0x4006da88],
-        "sites": [(0x4006da9a, "h_set_d0")],          # settings ptr
+        "entry": 0x4006da78, "end": 0x4006decc, "clamps": [0x4006da88],
+        "sites": [(0x4006da9a, "h_set_d0")],
+    },
+    "activation_0x4009367c": {
+        "entry": 0x4009367c, "end": 0x400937d4, "clamps": [0x400936b2],
+        "sites": [(0x400936cc, "h_set_a3")],
+    },
+    "trackenable_0x40093e9c": {
+        "entry": 0x40093e9c, "end": 0x400940ac, "clamps": [0x40093f6e, 0x40094044],
+        "sites": [(0x40093f88, "h_set_a2"), (0x4009405a, "h_st_a0")],
+    },
+    "slice_0x40094334": {
+        "entry": 0x40094334, "end": 0x400947c0, "clamps": [0x40094350],
+        "sites": [(0x40094364, "h_st_a3"), (0x40094380, "h_set_a1"), (0x400946f8, "h_st_d0")],
     },
 }
+
+# per-slot table base immediates (exact + folded) used by the OOB completeness gate
+SLOT_BASES = {0x100d5b30, 0x100d5c3e, 0x100d5c59, 0x46c90a78, 0x46c920a4, 0x46c93a24}
+
+
+def scan_slot_adds(img, lo, hi):
+    """every per-slot BASE-ADD (addi.l/adda.l of a SLOT_BASES immediate, muls-scaled) in [lo,hi)."""
+    hits = []
+    for k in range(off(lo) + 2, off(hi) - 3):
+        v = int.from_bytes(img[k:k + 4], "big")
+        if v not in SLOT_BASES:
+            continue
+        b0, b1 = img[k - 2], img[k - 1]
+        is_addi = (b0 == 0x06 and 0x80 <= b1 <= 0x87)
+        is_adda = (b1 == 0xfc and b0 in (0xd1, 0xd3, 0xd5, 0xd7, 0xd9, 0xdb, 0xdd, 0xdf))
+        if is_addi or is_adda:
+            hits.append(BASE + k)
+    return hits
 
 
 def off(a):
@@ -190,18 +223,32 @@ def main():
     # 3) migrate the core set
     nsite = nclamp = 0
     for fn, spec in CORE.items():
+        for imm_va, hn in spec["sites"]:
+            assert hn in sym, f"helper {hn} missing"
+            redirect_site(img, imm_va, sym[hn])
+            print(f"  site  0x{imm_va-2:08x} add -> jsr {hn}(0x{sym[hn]:08x})   [{fn}]")
+            nsite += 1
         if RAISE_CLAMPS:
             for cva in spec["clamps"]:
                 nb = raise_clamp(img, cva); nclamp += 1
                 print(f"  clamp 0x{cva:08x} #128 -> #{nb}   [{fn}]")
         else:
             print(f"  clamps KEPT at #128 (diagnostic, stock-equivalent)   [{fn}]")
-        for imm_va, hn in spec["sites"]:
-            assert hn in sym, f"helper {hn} missing"
-            redirect_site(img, imm_va, sym[hn])
-            print(f"  site  0x{imm_va-2:08x} add -> jsr {hn}(0x{sym[hn]:08x})   [{fn}]")
-            nsite += 1
     print(f"migrated: {nsite} sites, {nclamp} clamps")
+
+    # 3b) OOB completeness gate: no un-redirected per-slot base-add may remain in ANY opened-clamp
+    # function -- else idx 128..255 would flow to a stock add and OOB-write the working region.
+    if RAISE_CLAMPS:
+        bad = []
+        for fn, spec in CORE.items():
+            rem = scan_slot_adds(img, spec["entry"], spec["end"])
+            if rem:
+                bad += [(fn, va) for va in rem]
+        if bad:
+            for fn, va in bad:
+                print(f"  OOB-GATE FAIL: un-redirected per-slot add 0x{va:08x} in opened fn [{fn}]")
+            sys.exit("OOB GATE FAILED — a per-slot add is still stock in an opened function; DO NOT FLASH")
+        print("OOB-gate: every opened function has 0 remaining per-slot base-adds OK")
 
     OUT.write_bytes(bytes(img))
     print(f"\n{OUT}: {len(img):,} bytes")
