@@ -47,6 +47,18 @@ HELP_AT = 0x400d7400          # helper family base (matches patch_dual256.s .tex
 BOOT_STUB = 0x400d64e0        # boot-init stub (in the 0x400d64da.. free cave)
 BOOT_HOOK = 0x4001fa64        # detour point: `lea 0x10000000,a0` (6 bytes) in the boot mem-clear
 
+# --- Wave 4: SIDECAR persistence of SETTINGS-B (128-255) to <projectdir>/project.256 ---
+SIDECAR = True
+SIDECAR_AT = 0x400d6600       # sidecar code+data (between boot stub and helper cave)
+SETB_LO, SETB_HI = 0x47701a00, 0x47723e00     # SETTINGS-B extent = 128*0x448 = 140288 B
+# verified CF I/O primitives + project-dir composer (from the save/load recon):
+IO_OPEN, IO_READ, IO_WRITE, IO_CLOSE = 0x40016864, 0x40016564, 0x400166b8, 0x4001677c
+IO_SPRINTF, DIR_OF = 0x40013a08, 0x40025230
+IO_BUF, IO_BUFSZ = 0x460a8f60, 0x10000
+MODE_W, MODE_R = 0x400b328b, 0x400b3289       # "w" / "r" C strings
+SAVE_HOOK = 0x4008ff44        # 6B: tstl a3(4a8b) beqs+2(6702) jsr a3@(4e93) -> replicate after write
+LOAD_HOOK = 0x4009021a        # 6B: moveml fp@(-576),d2-d6/a2-a4 (4cee1c7cfdc0) -> replicate after read
+
 # helper VAs are resolved from the assembled ELF symbol table (name -> VA).
 
 # ---- migration set: function -> {clamps:[(va,)], sites:[(imm_va, helper_name)]} ----
@@ -92,6 +104,12 @@ CORE = {
     "ui_0x400796a4": {
         "entry": 0x400796a4, "end": 0x40079920, "clamps": [0x400797aa],
         "sites": [(0x400797ba, "h_st_d0")],
+    },
+    # --- Wave 3: runtime load-request/status -- sets STATE@(8) load status; maintains STATE-B for
+    # 128+ so the selected-slot browser no longer shows a stale "LOAD..." (the "L"). ---
+    "loadreq_0x40093984": {
+        "entry": 0x40093984, "end": 0x40093e9c, "clamps": [0x4009398c],
+        "sites": [(0x400939a4, "h_set_a4"), (0x400939b8, "h_st_a3")],
     },
 }
 
@@ -162,15 +180,9 @@ def build_boot_stub():
     subq.l  #1,%d0
     bne.s   1b
 """
-    for src, dst, nb in [(ST_A, ST_B, ST_STRIDE * ST_N), (S41_A, S41_B, 4 * ST_N),
-                         (S42_A, S42_B, 4 * ST_N), (SET_A, SET_B, SET_STRIDE * ST_N)]:
-        asm += f"""    movea.l #0x{src:x},%a0
-    movea.l #0x{dst:x},%a1
-    move.l  #0x{nb//4:x},%d0
-2:  move.l  (%a0)+,(%a1)+
-    subq.l  #1,%d0
-    bne.s   2b
-"""
+    # ZERO-ONLY: the 4 B-tables start empty. SETTINGS-B is then populated by the sidecar on project
+    # load (real 128-255 data); STATE-B/stride4-B are runtime state (zero = idle/empty is correct).
+    # (Earlier waves COPY-filled 0..127 as a visible placeholder; the sidecar makes that obsolete.)
     asm += f"""    move.l  (%sp)+,%a1
     move.l  (%sp)+,%d0
     lea     0x10000000,%a0
@@ -185,6 +197,138 @@ def build_boot_stub():
     for f in ("out/_bs.s", "out/_bs.o", "out/_bs.elf", "out/_bs.bin"):
         pathlib.Path(f).unlink(missing_ok=True)
     return blob
+
+
+def build_sidecar():
+    """Assemble the sidecar save+load routines (persist SETTINGS-B to <projectdir>/project.256).
+    Register-safe: saves the caller-saved regs it uses and REPLICATES the displaced hook bytes.
+    Returns (blob, {name:VA}). Save hook replaces 6 bytes at SAVE_HOOK (tstl a3;beqs;jsr a3@) and
+    the routine re-runs that logic; load hook replaces the 6-byte moveml at LOAD_HOOK and the routine
+    re-emits it verbatim (raw bytes) so register restore is byte-identical."""
+    import subprocess, pathlib
+    ln = SETB_HI - SETB_LO
+    asm = f"""    .cpu 5407
+    .text
+sidecar_save:
+    move.l  %d0,-(%sp)
+    move.l  %d1,-(%sp)
+    move.l  %d2,-(%sp)
+    move.l  %a0,-(%sp)
+    move.l  %a1,-(%sp)
+    move.l  %a3,-(%sp)
+    lea     stream,%a0
+    move.l  #16,%d1
+1:  clr.l   (%a0)+
+    subq.l  #1,%d1
+    bne.b   1b
+    clr.l   -(%sp)
+    clr.l   -(%sp)
+    jsr     0x{DIR_OF:x}
+    addq.l  #8,%sp
+    move.l  %d0,-(%sp)
+    pea     fmt256
+    pea     pathbuf
+    jsr     0x{IO_SPRINTF:x}
+    lea     12(%sp),%sp
+    move.l  #0x{IO_BUFSZ:x},-(%sp)
+    move.l  #0x{IO_BUF:x},-(%sp)
+    pea     0x{MODE_W:x}
+    pea     pathbuf
+    pea     stream
+    jsr     0x{IO_OPEN:x}
+    lea     20(%sp),%sp
+    tst.l   %d0
+    bmi.b   2f
+    move.l  #0x{ln:x},-(%sp)
+    move.l  #0x{SETB_LO:x},-(%sp)
+    pea     stream
+    jsr     0x{IO_WRITE:x}
+    lea     12(%sp),%sp
+    pea     stream
+    jsr     0x{IO_CLOSE:x}
+    addq.l  #4,%sp
+2:  move.l  (%sp)+,%a3
+    move.l  (%sp)+,%a1
+    move.l  (%sp)+,%a0
+    move.l  (%sp)+,%d2
+    move.l  (%sp)+,%d1
+    move.l  (%sp)+,%d0
+    tst.l   %a3
+    beq.b   3f
+    jsr     (%a3)
+3:  jmp     0x{SAVE_HOOK + 6:x}
+
+sidecar_load:
+    move.l  %d0,-(%sp)
+    move.l  %d1,-(%sp)
+    move.l  %a0,-(%sp)
+    move.l  %a1,-(%sp)
+    | zero ALL 4 B-tables first so a project WITHOUT a project.256 loads clean (no stale 128-255 from
+    | the previously-loaded project); the read below then restores SETTINGS-B if the sidecar exists.
+    movea.l #0x{HOLE_LO:x},%a0
+    move.l  #0x{(HOLE_HI - HOLE_LO) // 4:x},%d1
+6:  clr.l   (%a0)+
+    subq.l  #1,%d1
+    bne.b   6b
+    lea     stream,%a0
+    move.l  #16,%d1
+4:  clr.l   (%a0)+
+    subq.l  #1,%d1
+    bne.b   4b
+    clr.l   -(%sp)
+    clr.l   -(%sp)
+    jsr     0x{DIR_OF:x}
+    addq.l  #8,%sp
+    move.l  %d0,-(%sp)
+    pea     fmt256
+    pea     pathbuf
+    jsr     0x{IO_SPRINTF:x}
+    lea     12(%sp),%sp
+    move.l  #0x{IO_BUFSZ:x},-(%sp)
+    move.l  #0x{IO_BUF:x},-(%sp)
+    pea     0x{MODE_R:x}
+    pea     pathbuf
+    pea     stream
+    jsr     0x{IO_OPEN:x}
+    lea     20(%sp),%sp
+    tst.l   %d0
+    bmi.b   5f
+    move.l  #0x{ln:x},-(%sp)
+    move.l  #0x{SETB_LO:x},-(%sp)
+    pea     stream
+    jsr     0x{IO_READ:x}
+    lea     12(%sp),%sp
+    pea     stream
+    jsr     0x{IO_CLOSE:x}
+    addq.l  #4,%sp
+5:  move.l  (%sp)+,%a1
+    move.l  (%sp)+,%a0
+    move.l  (%sp)+,%d1
+    move.l  (%sp)+,%d0
+    .byte   0x4c,0xee,0x1c,0x7c,0xfd,0xc0     | moveml %fp@(-576),%d2-%d6/%a2-%a4 (verbatim)
+    jmp     0x{LOAD_HOOK + 6:x}
+
+    .align 2
+fmt256:
+    .asciz  "%s/project.256"
+    .align 2
+pathbuf:
+    .space  320
+    .align 2
+stream:
+    .space  64
+"""
+    pathlib.Path("out/_sc.s").write_text(asm)
+    subprocess.run(["m68k-elf-as", "-mcpu=5407", "-o", "out/_sc.o", "out/_sc.s"], check=True)
+    subprocess.run(["m68k-elf-ld", "-Ttext=0x%x" % SIDECAR_AT, "-o", "out/_sc.elf", "out/_sc.o"],
+                   capture_output=True)
+    subprocess.run(["m68k-elf-objcopy", "-O", "binary", "out/_sc.elf", "out/_sc.bin"], check=True)
+    nm = subprocess.run(["m68k-elf-nm", "out/_sc.elf"], capture_output=True, text=True).stdout
+    sym = {p[2]: int(p[0], 16) for p in (l.split() for l in nm.splitlines()) if len(p) == 3}
+    blob = pathlib.Path("out/_sc.bin").read_bytes()
+    for f in ("out/_sc.s", "out/_sc.o", "out/_sc.elf", "out/_sc.bin"):
+        pathlib.Path(f).unlink(missing_ok=True)
+    return blob, sym
 
 
 def raise_clamp(img, va):
@@ -240,6 +384,23 @@ def main():
     else:
         print("boot-init: DISABLED (diagnostic) — no boot-zero, B-tables uninitialised "
               "(Wave-0 getter path never reads them)")
+
+    # 2b) sidecar: persist SETTINGS-B to <projectdir>/project.256 (save + load hooks)
+    if SIDECAR:
+        sc, scsym = build_sidecar()
+        assert not any(img[off(SIDECAR_AT):off(SIDECAR_AT) + len(sc)]), "sidecar cave not empty"
+        assert SIDECAR_AT + len(sc) <= HELP_AT, "sidecar overruns into helper cave"
+        img[off(SIDECAR_AT):off(SIDECAR_AT) + len(sc)] = sc
+        # SAVE hook: 6 bytes tstl a3(4a8b) beqs+2(6702) jsr a3@(4e93) -> jmp sidecar_save
+        o = off(SAVE_HOOK)
+        assert bytes(img[o:o + 6]) == b"\x4a\x8b\x67\x02\x4e\x93", img[o:o + 6].hex()
+        img[o:o + 6] = b"\x4e\xf9" + scsym["sidecar_save"].to_bytes(4, "big")
+        # LOAD hook: 6 bytes moveml fp@(-576),d2-d6/a2-a4 (4cee 1c7c fdc0) -> jmp sidecar_load
+        o = off(LOAD_HOOK)
+        assert bytes(img[o:o + 6]) == b"\x4c\xee\x1c\x7c\xfd\xc0", img[o:o + 6].hex()
+        img[o:o + 6] = b"\x4e\xf9" + scsym["sidecar_load"].to_bytes(4, "big")
+        print(f"sidecar: {len(sc)} B @0x{SIDECAR_AT:08x}; save-hook 0x{SAVE_HOOK:08x}->0x{scsym['sidecar_save']:08x}"
+              f"; load-hook 0x{LOAD_HOOK:08x}->0x{scsym['sidecar_load']:08x}; persists [0x{SETB_LO:08x},0x{SETB_HI:08x})")
 
     # 3) migrate the core set
     nsite = nclamp = 0
