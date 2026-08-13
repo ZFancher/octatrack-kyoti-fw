@@ -105,6 +105,18 @@ CORE = {
         "entry": 0x400796a4, "end": 0x40079920, "clamps": [0x400797aa],
         "sites": [(0x400797ba, "h_st_d0")],
     },
+    # --- Wave 5: ASSIGN-WRITE path so assigning a sample to slot 128+ WRITES SETTINGS-B (filename at
+    # struct offset 0). Without this the assign wrote nowhere for idx>=128 -> project.256 saved all-
+    # zero. 0x40022614 = set-slot-name/filename writer (sprintf to slotptr+0); 0x40021d94 = the
+    # browser-assign orchestrator (my ui_apply already jsr's it at 0x40079678/8a). ---
+    "assignname_0x40022614": {
+        "entry": 0x40022614, "end": 0x4002291c, "clamps": [0x40022628],
+        "sites": [(0x4002263e, "h_set_d2")],
+    },
+    "assignorch_0x40021d94": {
+        "entry": 0x40021d94, "end": 0x400220a0, "clamps": [0x40021dbe, 0x40021e2a, 0x40021ede],
+        "sites": [(0x40021dce, "h_st_d0"), (0x40021e3e, "h_set_d2"), (0x40021ef2, "h_st_d0")],
+    },
     # NOTE: Wave-3 attempt to migrate load-request 0x40093984 was REVERTED -- on HW it did NOT fix the
     # "L" and it BROKE assign-to-128 ("INVALID FILENAME"): 0x40093984 validates the slot filename
     # (jsr 0x400204cc @0x40093a74) and, run for idx128 (STATE resolves to the TEMPLATE via the idx>=129
