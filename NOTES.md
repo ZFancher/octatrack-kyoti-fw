@@ -2890,3 +2890,40 @@ NEXT:
    during project-load+audio to map used DDR; or place B-tables ABOVE the top of OS DDR usage
    (the record array 0x46ceb400 is the last known fixed structure -- probe well above it); or use a
    region the OS demonstrably never touches (needs a runtime-write census, not a static one).
+
+
+### ★ DUAL-256 FOUNDATION WORKING ON HARDWARE  [2026-08-13]
+Full chain of hardware results this session resolved every blocker:
+1. B-tables must live ABOVE the OS working-DDR region. The OS boot-clears [0x46025de0, 0x4763d580)
+   (loop at 0x40000518/0x4000f984); putting B inside it corrupted the project. Moved B to 0x47700000
+   (STATE-B 0x47700000, STRIDE4-B1 0x47701600, B2 0x47701800, SETTINGS-B 0x47701a00, end 0x47723e00).
+   HARDWARE: project loads perfectly, zero corruption. Region is SAFE.
+2. The boot-init stub must be REGISTER-TRANSPARENT: the detour point 0x4001fa64 sits between
+   `d0=a0+514` and `cmpl 0x100fff00,d0` -- clobbering d0/a1 reset the clock + emptied boot state.
+   Fixed with individual move.l push/pops (ColdFire movem has no predecrement). HARDWARE: no clock
+   reset, boots normally.
+3. The getter migration is INNOCENT -- the earlier "empty slots" were a CORRUPTED PROJECT
+   (altre-galassie/project.work truncated to 2877 B by the w0 boot-zero; restored from _2's 15034 B).
+4. WAVE-1 (4-function playback migration: getter+activation 0x4009367c+trackenable 0x40093e9c+slice
+   0x40094334; 7 per-slot adds redirected, 5 clamps opened) loads + plays altre-galassie perfectly.
+   Multi-function migration mechanism VALIDATED on hardware. (Stock-identical for 0-127 -- no track
+   references 128+ yet, so no visible change; this was the de-risk checkpoint.)
+
+Static OOB GATE (build_dual256.py scan_slot_adds): after redirect, asserts ZERO un-redirected
+per-slot base-adds remain in any opened-clamp function [entry,end). enum_fn.py gives TRUE extents
+(next-prologue, not first-rts which undercounts -- it missed slice's 3rd add 0x400946f8). This makes
+adding more functions safe: a missed add = OOB write into the working region = corruption, and the
+gate catches it before flashing.
+
+CURRENT STATE: OT_dual256_wave1 flashed + working. B boot-filled with copies of slots 0-127
+(placeholder). Redirect helpers emu-verified 170/170.
+
+NEXT -- OBSERVABILITY (the blocker to SEE/HEAR 128-255): a normal 128-slot project never sends
+idx>=128 to the migrated functions (slots 0-127, sentinel -1 -> NULL), so nothing is visible yet.
+To reach idx 128 need EITHER (a) open the per-track STATIC SLOT UI cap 127->255 (agent hunting it),
+OR (b) edit a project/bank to reference slot 128 on a track. Then a track at slot 128 plays B[0]
+(= placeholder copy of slot 0) -> the end-to-end proof. After that: the SIDECAR loader for real
+128-255 data (the actual feature).
+
+TOOLS added: enum_fn.py (true function extents + per-slot add census), scan_slot_adds OOB gate in
+build_dual256.py. Packaged builds: OT_dual256_wave1.{syx,bin} (current), OT_stock.bin (recovery).
