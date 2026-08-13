@@ -2975,3 +2975,27 @@ boot zero + reg safety; helpers 170/170; OOB-gate clean (8 fns); all diffs in ex
 Expected on HW: 128-255 start EMPTY (---); assign sample to 128 -> SAVE (writes project.256) ->
 reload -> 128 PERSISTS. Selected 128+ no longer stuck "LOAD". NOTE: the wave2 ephemeral slot-128
 assignment is GONE (never persisted); re-assign + save to test the sidecar.
+
+
+### ★ CRITICAL: persistence needs the ASSIGN-WRITE + SERIALIZER layers, not just the sidecar  [2026-08-13]
+Wave-4 HW: project.256 IS written (140288 B = 128*0x448, sidecar save/load mechanically work) BUT it
+is 100% ZERO -> SETTINGS-B was all-zero at save time. Two consequences that reframe the whole thing:
+1. The ASSIGN/copy-sample-to-slot path does NOT write SETTINGS-B[0] (0x47701a00) for idx128. The
+   wave2 "assigned sample plays with slices" was the boot COPY-FILL PLACEHOLDER (a copy of slot 0)
+   being displayed/played -- an ILLUSION. The assign never populated the B-table. => must find +
+   migrate the assign/sample-load WRITE path so idx>=128 writes SETTINGS-B (currently un-migrated ->
+   writes to SRAM-A OOB or NULL, leaving B zero).
+2. "reload points to the first slot": the TRACK->slot reference (which static slot a track plays) is
+   stored in the bank/project and the serializer CAPS slot refs at 128 -> a track set to 128 reverts
+   to 0 on save/reload. This is the on-disk FORMAT cap (the "file-format change" flagged at project
+   start). The sidecar persists SETTINGS-B (slot data) but NOT the bank's track->slot references.
+Also: the boot COPY-FILL is unreliable (copies SETTINGS-A which is zero/garbage at the 0x4001fa64
+detour, before/around the SRAM clear) -- it produced zero here, "drumz" in wave2 (SRAM retention).
+
+=> The persistence stack has THREE layers; only the sidecar (settings-B I/O) is done:
+   (a) ASSIGN-WRITE: migrate the assign/sample-assign path so idx>=128 writes SETTINGS-B.  [TODO]
+   (b) SIDECAR: persist SETTINGS-B to project.256.  [DONE, mechanically verified]
+   (c) TRACK-REF SERIALIZATION: bank/project stores track->static-slot; serializer caps at 128 ->
+       must extend (or sidecar the bank refs) so a track referencing 128-255 survives save/reload. [TODO]
+FOUNDATION REMAINS SOLID: browse/display 0-255, DDR/boot/memory, redirect helpers, OOB gate, sidecar
+I/O -- all proven. The remaining work is (a) assign-write and (c) the on-disk track-ref cap.
