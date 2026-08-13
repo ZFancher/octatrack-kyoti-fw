@@ -105,17 +105,21 @@ CORE = {
         "entry": 0x400796a4, "end": 0x40079920, "clamps": [0x400797aa],
         "sites": [(0x400797ba, "h_st_d0")],
     },
-    # --- Wave 5: ASSIGN-WRITE path so assigning a sample to slot 128+ WRITES SETTINGS-B (filename at
-    # struct offset 0). Without this the assign wrote nowhere for idx>=128 -> project.256 saved all-
-    # zero. 0x40022614 = set-slot-name/filename writer (sprintf to slotptr+0); 0x40021d94 = the
-    # browser-assign orchestrator (my ui_apply already jsr's it at 0x40079678/8a). ---
-    "assignname_0x40022614": {
-        "entry": 0x40022614, "end": 0x4002291c, "clamps": [0x40022628],
-        "sites": [(0x4002263e, "h_set_d2")],
-    },
-    "assignorch_0x40021d94": {
-        "entry": 0x40021d94, "end": 0x400220a0, "clamps": [0x40021dbe, 0x40021e2a, 0x40021ede],
-        "sites": [(0x40021dce, "h_st_d0"), (0x40021e3e, "h_set_d2"), (0x40021ef2, "h_st_d0")],
+    # --- Wave 5: SLOT COPY/PASTE (FUNC+COPY / FUNC+PASTE). HW confirmed the user's "copy sample to
+    # slot 128" is a slot COPY/PASTE (not a pool-assign) -> function 0x40024f00 moves a full slot
+    # (settings + STATE + stride4 pointer entries) between two slot indices. Migrating it makes PASTE
+    # into idx>=128 write SETTINGS-B/STATE-B/stride4-B (so project.256 gets real data). 16 sites.
+    "copypaste_0x40024f00": {
+        "entry": 0x40024f00, "end": 0x40025288,
+        "clamps": [0x40024f14, 0x40024f60, 0x40024fa8, 0x40024fea],
+        "sites": [(0x40024f24, "h_st_d5"), (0x40024f72, "h_st_d4"),
+                  (0x40024fbc, "h_set_d3"), (0x40025000, "h_set_d2"),
+                  (0x4002504e, "h_s42_a0"), (0x40025058, "h_s41_a0"),
+                  (0x4002506a, "h_s42_a0"), (0x40025074, "h_s41_a0"),
+                  (0x40025086, "h_s42_a0"), (0x40025090, "h_s41_a0"),
+                  (0x400250a2, "h_s42_a0"), (0x400250ac, "h_s41_a0"),
+                  (0x40025118, "h_s42_a0"), (0x40025122, "h_s41_a0"),
+                  (0x40025134, "h_s42_a0"), (0x4002513e, "h_s41_a0")],
     },
     # NOTE: Wave-3 attempt to migrate load-request 0x40093984 was REVERTED -- on HW it did NOT fix the
     # "L" and it BROKE assign-to-128 ("INVALID FILENAME"): 0x40093984 validates the slot filename
@@ -351,10 +355,12 @@ def raise_clamp(img, va):
     """cmpi.l #128,dN (0c8N 00000080) -> raise bound so idx..255 pass but OOR still bails.
     bhi(>128,0x62) -> #255 ; bhs/bcc(>=128,0x64) -> #256. Returns the new bound used."""
     o = off(va)
-    assert img[o] == 0x0c and 0x80 <= img[o + 1] <= 0x87, f"not cmpi.l #imm,dN @0x{va:x}: {img[o]:02x}{img[o+1]:02x}"
+    is_cmpi = img[o] == 0x0c and 0x80 <= img[o + 1] <= 0x87                 # cmpi.l #imm,dN
+    is_cmpa = img[o] in (0xb1, 0xb3, 0xb5, 0xb7, 0xb9, 0xbb, 0xbd, 0xbf) and img[o + 1] == 0xfc  # cmpa.l #imm,aN
+    assert is_cmpi or is_cmpa, f"not cmpi/cmpa #imm @0x{va:x}: {img[o]:02x}{img[o+1]:02x}"
     imm = int.from_bytes(img[o + 2:o + 6], "big")
     assert imm == 128, f"clamp @0x{va:x} imm={imm} != 128"
-    br = img[o + 6]                                          # branch opcode byte after the cmpi
+    br = img[o + 6]                                          # branch opcode byte after the cmp
     if br == 0x62:            # bhi.s  (idx > 128 bails)   -> allow up to 255
         newbound = 255
     elif br in (0x64, 0x63):  # bcc/bhs / bls variants     -> allow up to 256 (>=256 bails)

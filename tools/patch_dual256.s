@@ -153,6 +153,8 @@ h_s42_\reg: cmpa.l #S4_LO,%\reg
     SETA a3
     SETA a4
     STD  d0
+    STD  d4
+    STD  d5
     STA  a0
     STA  a2
     STA  a3

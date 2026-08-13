@@ -18,6 +18,7 @@ from unicorn import *
 from unicorn.m68k_const import *
 
 REG = {"d0": UC_M68K_REG_D0, "d1": UC_M68K_REG_D1, "d2": UC_M68K_REG_D2, "d3": UC_M68K_REG_D3,
+       "d4": UC_M68K_REG_D4, "d5": UC_M68K_REG_D5,
        "a0": UC_M68K_REG_A0, "a1": UC_M68K_REG_A1, "a2": UC_M68K_REG_A2, "a3": UC_M68K_REG_A3,
        "a4": UC_M68K_REG_A4}
 
@@ -57,7 +58,8 @@ HELPERS = {
     "h_set_a1": ("a1", 0x448, exp_settings), "h_set_a2": ("a2", 0x448, exp_settings),
     "h_set_a3": ("a3", 0x448, exp_settings), "h_set_a4": ("a4", 0x448, exp_settings),
     "h_setf_d0": ("d0", 0x448, lambda i: exp_settings(i, SETF_A, SETF_ADJ)),
-    "h_st_d0": ("d0", 44, exp_state), "h_st_a0": ("a0", 44, exp_state),
+    "h_st_d0": ("d0", 44, exp_state), "h_st_d4": ("d4", 44, exp_state),
+    "h_st_d5": ("d5", 44, exp_state), "h_st_a0": ("a0", 44, exp_state),
     "h_st_a2": ("a2", 44, exp_state), "h_st_a3": ("a3", 44, exp_state),
     "h_s41_a0": ("a0", 4, lambda i: exp_stride4(i, S41_A, S41_ADJ)),
     "h_s41_d0": ("d0", 4, lambda i: exp_stride4(i, S41_A, S41_ADJ)),
