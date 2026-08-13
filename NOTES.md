@@ -2927,3 +2927,34 @@ OR (b) edit a project/bank to reference slot 128 on a track. Then a track at slo
 
 TOOLS added: enum_fn.py (true function extents + per-slot add census), scan_slot_adds OOB gate in
 build_dual256.py. Packaged builds: OT_dual256_wave1.{syx,bin} (current), OT_stock.bin (recovery).
+
+
+### ★★★ WAVE-2 HARDWARE: 256 SLOTS WORK END-TO-END  [2026-08-13]
+OT_dual256_wave2 (7 functions migrated: 4 playback + popup browser render 0x40077b04/apply
+0x40079428/0x400796a4; 14 adds redirected, 11 clamps opened; list-length cap 0x40079238 128->256).
+HARDWARE RESULT: scroll to slot 255 works; LOADED a real sample into slot 128 -- it loaded with ALL
+settings (name, SLICES, etc.) and PLAYS; project loads fine, all slots sound. The dual-256 feature
+is FUNCTIONAL end-to-end (browse + assign + display + slices + playback). (Slot numbering is 1-based
+in UI, so "129" on screen = index 128.)
+
+TWO polish items found:
+1. "L" on selected 128+ slots: the browser render reads the slot LOAD-STATUS from STATE@(8) and,
+   when "loading", uses format "%d%sLOAD..." (0x400b7267) -> shows an L. STATE-B holds RUNTIME state
+   (load status/refcount/handle @8/@20/@24/@36) that is NOT maintained for 128+ yet -- the sample
+   load/status path is still 128-capped (CLASS B fns e.g. 0x400939a4 load-request, 0x4008b906 load).
+   settings-B (name/slices, from CF) is fine; only the runtime STATE-B flag is stale -> cosmetic
+   LOADING indicator on the SELECTED item. FIX = migrate the load-status/STATE-maintenance path for
+   128+ (next wave; makes STATE-B first-class, not just boot-filled).
+2. Tempo showed 106 vs expected 121: almost certainly from the project.work RESTORE (we copied
+   altre-galassie_2's project.work, which was saved at 106). NOT a firmware effect (migrations/boot-
+   fill don't touch project tempo). Verify: set tempo 121 + SAVE; if it reloads as 121 -> confirmed
+   (just re-set it). If it reverts to 106 on reload -> real bug, investigate.
+
+NEXT WAVES:
+- Wave 3: migrate the load-status / STATE-maintenance functions so STATE-B is runtime-maintained for
+  128+ (fixes the "L"; makes 128+ fully first-class for status/refcount/streaming).
+- Wave 4: the SIDECAR loader -- load real 128-255 slot data from a parallel project file (replaces
+  the boot-fill placeholder = copies of 0-127). This is the actual feature the user wants.
+- Remaining accessor census still un-migrated (the other ~17 functions touching settings/state) --
+  migrate as needed behind the OOB gate for full 0-255 consistency (save/serialize stays 128 unless
+  the sidecar handles 128-255 persistence).
