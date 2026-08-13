@@ -78,6 +78,27 @@ CORE = {
         "entry": 0x40094334, "end": 0x400947c0, "clamps": [0x40094350],
         "sites": [(0x40094364, "h_st_a3"), (0x40094380, "h_set_a1"), (0x400946f8, "h_st_d0")],
     },
+    # --- popup static-slot browser (render + apply): makes 128-255 browsable/selectable ---
+    "ui_render_0x40077b04": {
+        "entry": 0x40077b04, "end": 0x40078850,
+        "clamps": [0x40077dee, 0x40077f62, 0x400787c8],
+        "sites": [(0x40077e0a, "h_set_a3"), (0x40077e18, "h_st_a2"),
+                  (0x40077f76, "h_st_d0"), (0x4007809c, "h_st_d0")],
+    },
+    "ui_apply_0x40079428": {
+        "entry": 0x40079428, "end": 0x400796a0, "clamps": [0x4007943a, 0x400794e8],
+        "sites": [(0x40079450, "h_set_d0"), (0x400794fc, "h_st_d0")],
+    },
+    "ui_0x400796a4": {
+        "entry": 0x400796a4, "end": 0x40079920, "clamps": [0x400797aa],
+        "sites": [(0x400797ba, "h_st_d0")],
+    },
+}
+
+# UI LIST-LENGTH caps (pea #len) that limit how far the slot cursor can scroll. Not clamps -- raw
+# immediates. popup static-slot browser: pea 0x80 (128) -> pea 0x100 (256). (found via UI-cap agent)
+CAPS = {
+    0x40079238: (b"\x48\x78\x00\x80", b"\x48\x78\x01\x00"),   # popup browser static list length 128->256
 }
 
 # per-slot table base immediates (exact + folded) used by the OOB completeness gate
@@ -249,6 +270,14 @@ def main():
                 print(f"  OOB-GATE FAIL: un-redirected per-slot add 0x{va:08x} in opened fn [{fn}]")
             sys.exit("OOB GATE FAILED — a per-slot add is still stock in an opened function; DO NOT FLASH")
         print("OOB-gate: every opened function has 0 remaining per-slot base-adds OK")
+
+    # 3c) UI list-length caps (only meaningful when clamps are open)
+    if RAISE_CLAMPS:
+        for va, (old, new) in CAPS.items():
+            o = off(va)
+            assert bytes(img[o:o + 4]) == old, f"cap @0x{va:x} = {img[o:o+4].hex()} != {old.hex()}"
+            img[o:o + 4] = new
+            print(f"  cap   0x{va:08x} {old.hex()} -> {new.hex()} (list length ->256)")
 
     OUT.write_bytes(bytes(img))
     print(f"\n{OUT}: {len(img):,} bytes")
