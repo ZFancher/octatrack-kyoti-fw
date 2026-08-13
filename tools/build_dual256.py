@@ -105,12 +105,11 @@ CORE = {
         "entry": 0x400796a4, "end": 0x40079920, "clamps": [0x400797aa],
         "sites": [(0x400797ba, "h_st_d0")],
     },
-    # --- Wave 3: runtime load-request/status -- sets STATE@(8) load status; maintains STATE-B for
-    # 128+ so the selected-slot browser no longer shows a stale "LOAD..." (the "L"). ---
-    "loadreq_0x40093984": {
-        "entry": 0x40093984, "end": 0x40093e9c, "clamps": [0x4009398c],
-        "sites": [(0x400939a4, "h_set_a4"), (0x400939b8, "h_st_a3")],
-    },
+    # NOTE: Wave-3 attempt to migrate load-request 0x40093984 was REVERTED -- on HW it did NOT fix the
+    # "L" and it BROKE assign-to-128 ("INVALID FILENAME"): 0x40093984 validates the slot filename
+    # (jsr 0x400204cc @0x40093a74) and, run for idx128 (STATE resolves to the TEMPLATE via the idx>=129
+    # rule + a settings ptr whose name field it rejects), it errors. The "L" is NOT this function; it
+    # needs a separate, correctly-diagnosed fix. Left un-migrated (128-capped, stock-safe).
 }
 
 # UI LIST-LENGTH caps (pea #len) that limit how far the slot cursor can scroll. Not clamps -- raw
@@ -180,9 +179,18 @@ def build_boot_stub():
     subq.l  #1,%d0
     bne.s   1b
 """
-    # ZERO-ONLY: the 4 B-tables start empty. SETTINGS-B is then populated by the sidecar on project
-    # load (real 128-255 data); STATE-B/stride4-B are runtime state (zero = idle/empty is correct).
-    # (Earlier waves COPY-filled 0..127 as a visible placeholder; the sidecar makes that obsolete.)
+    # COPY-FILL 0..127 into each B-table (as wave2, which had a working assign-to-128). Zero-init was
+    # tried but reverted alongside the load-zeroing: the assign path wants a valid-ish slot struct in
+    # SETTINGS-B to overwrite. The sidecar overwrites SETTINGS-B on load when a project.256 exists.
+    for src, dst, nb in [(ST_A, ST_B, ST_STRIDE * ST_N), (S41_A, S41_B, 4 * ST_N),
+                         (S42_A, S42_B, 4 * ST_N), (SET_A, SET_B, SET_STRIDE * ST_N)]:
+        asm += f"""    movea.l #0x{src:x},%a0
+    movea.l #0x{dst:x},%a1
+    move.l  #0x{nb//4:x},%d0
+2:  move.l  (%a0)+,(%a1)+
+    subq.l  #1,%d0
+    bne.s   2b
+"""
     asm += f"""    move.l  (%sp)+,%a1
     move.l  (%sp)+,%d0
     lea     0x10000000,%a0
@@ -263,13 +271,9 @@ sidecar_load:
     move.l  %d1,-(%sp)
     move.l  %a0,-(%sp)
     move.l  %a1,-(%sp)
-    | zero ALL 4 B-tables first so a project WITHOUT a project.256 loads clean (no stale 128-255 from
-    | the previously-loaded project); the read below then restores SETTINGS-B if the sidecar exists.
-    movea.l #0x{HOLE_LO:x},%a0
-    move.l  #0x{(HOLE_HI - HOLE_LO) // 4:x},%d1
-6:  clr.l   (%a0)+
-    subq.l  #1,%d1
-    bne.b   6b
+    | (No B-zeroing on load: keep the boot copy-fill so assign-to-128 sees a valid slot struct. A
+    | project WITHOUT a project.256 keeps the boot placeholder; the read below overwrites SETTINGS-B
+    | when the sidecar exists. Stale-on-project-switch is a known minor follow-up.)
     lea     stream,%a0
     move.l  #16,%d1
 4:  clr.l   (%a0)+
