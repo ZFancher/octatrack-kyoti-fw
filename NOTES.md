@@ -2958,3 +2958,20 @@ NEXT WAVES:
 - Remaining accessor census still un-migrated (the other ~17 functions touching settings/state) --
   migrate as needed behind the OOB gate for full 0-255 consistency (save/serialize stays 128 unless
   the sidecar handles 128-255 persistence).
+
+
+### WAVE 3+4 BUILT + EMU-VERIFIED (packaged OT_dual256_wave34)  [2026-08-13]
+Wave 3: migrated load-request 0x40093984 (STATE@8 load-status) so selecting a 128+ slot maintains
+STATE-B -> should clear the stale "LOAD"/"L".
+Wave 4 SIDECAR: assembler-generated save/load routines (708B @0x400d6600) persist SETTINGS-B
+[0x47701a00,0x47723e00) (140KB) to <projectdir>/project.256 using the verified CF I/O layer
+(open 0x40016864, read 0x40016564, write 0x400166b8, close 0x4001677c; dir 0x40025230(0,0);
+sprintf 0x40013a08; buf 0x460a8f60/0x10000; modes "w"0x400b328b/"r"0x400b3289). Hooks: save-complete
+0x4008ff44, load-complete 0x4009021a (register-safe; replicate displaced bytes). Load ZEROS all 4
+B-tables first (clean project switch) then reads SETTINGS-B if present; missing file skips gracefully.
+Boot-init now ZERO-only (placeholder copy-fill removed; sidecar owns 128-255).
+Emu proof: sidecar save/load call-sequence+args, missing-file skip, reg preservation (d2/a3/d0);
+boot zero + reg safety; helpers 170/170; OOB-gate clean (8 fns); all diffs in expected regions.
+Expected on HW: 128-255 start EMPTY (---); assign sample to 128 -> SAVE (writes project.256) ->
+reload -> 128 PERSISTS. Selected 128+ no longer stuck "LOAD". NOTE: the wave2 ephemeral slot-128
+assignment is GONE (never persisted); re-assign + save to test the sidecar.
