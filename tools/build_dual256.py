@@ -49,6 +49,14 @@ BOOT_HOOK = 0x4001fa64        # detour point: `lea 0x10000000,a0` (6 bytes) in t
 
 # --- Wave 4: SIDECAR persistence of SETTINGS-B (128-255) to <projectdir>/project.256 ---
 SIDECAR = True
+# TRACE mode: instrument memcpy 0x40020898 to capture the caller PC of whatever writes the paste's
+# dest slot (dst == 0x100f7f30 = SETTINGS-A[128]). The capture lands at 0x47701a00 (SETTINGS-B[0]),
+# which the sidecar already dumps to project.256[0:16]. Needs zero-init boot so the capture slot
+# starts empty. Read project.256[0:16] after COPY 57 -> PASTE 129 -> SAVE to get the paste function.
+TRACE = True
+TRACE_STUB = 0x400d6900       # trace stub (after the sidecar, before the helper cave)
+TRACE_CAP = 0x47701a00        # capture: [caller_PC][dst][src][len] at SETTINGS-B[0] -> project.256[0:16]
+MEMCPY = 0x40020898
 SIDECAR_AT = 0x400d6600       # sidecar code+data (between boot stub and helper cave)
 SETB_LO, SETB_HI = 0x47701a00, 0x47723e00     # SETTINGS-B extent = 128*0x448 = 140288 B
 # verified CF I/O primitives + project-dir composer (from the save/load recon):
@@ -206,8 +214,9 @@ def build_boot_stub():
     # COPY-FILL 0..127 into each B-table (as wave2, which had a working assign-to-128). Zero-init was
     # tried but reverted alongside the load-zeroing: the assign path wants a valid-ish slot struct in
     # SETTINGS-B to overwrite. The sidecar overwrites SETTINGS-B on load when a project.256 exists.
-    for src, dst, nb in [(ST_A, ST_B, ST_STRIDE * ST_N), (S41_A, S41_B, 4 * ST_N),
-                         (S42_A, S42_B, 4 * ST_N), (SET_A, SET_B, SET_STRIDE * ST_N)]:
+    # TRACE mode skips the copy-fill so the capture slot SETTINGS-B[0] starts zero.
+    for src, dst, nb in ([] if TRACE else [(ST_A, ST_B, ST_STRIDE * ST_N), (S41_A, S41_B, 4 * ST_N),
+                         (S42_A, S42_B, 4 * ST_N), (SET_A, SET_B, SET_STRIDE * ST_N)]):
         asm += f"""    movea.l #0x{src:x},%a0
     movea.l #0x{dst:x},%a1
     move.l  #0x{nb//4:x},%d0
@@ -359,6 +368,45 @@ stream:
     return blob, sym
 
 
+def build_trace_stub():
+    """Hook memcpy 0x40020898 (movel d2,-(sp); moveal sp@(8),a1 = 6 bytes displaced). Capture the
+    FIRST memcpy whose dst is the paste's slot-128 target [0x100f7f30,0x100f8378) -> store
+    [caller_PC][dst][src][len] at TRACE_CAP (once). Register-safe; replicates the displaced insns."""
+    import subprocess, pathlib
+    asm = f"""    .cpu 5407
+    .text
+trace_mc:
+    move.l  %d0,-(%sp)
+    move.l  %a0,-(%sp)
+    move.l  %sp@(12),%d0            | dst (caller sp@(4), +8)
+    cmp.l   #0x100f7f30,%d0
+    blo.b   9f
+    cmp.l   #0x100f8378,%d0
+    bhs.b   9f
+    movea.l #0x{TRACE_CAP:x},%a0
+    tst.l   (%a0)
+    bne.b   9f
+    move.l  %sp@(8),(%a0)+          | caller_PC (caller sp@(0), +8)
+    move.l  %d0,(%a0)+              | dst
+    move.l  %sp@(16),(%a0)+         | src (caller sp@(8), +8 -> sp@16)
+    move.l  %sp@(20),(%a0)          | len (caller sp@(12) -> sp@20)
+9:  move.l  %sp@+,%a0
+    move.l  %sp@+,%d0
+    move.l  %d2,-(%sp)
+    movea.l %sp@(8),%a1
+    jmp     0x{MEMCPY + 6:x}
+"""
+    pathlib.Path("out/_tr.s").write_text(asm)
+    subprocess.run(["m68k-elf-as", "-mcpu=5407", "-o", "out/_tr.o", "out/_tr.s"], check=True)
+    subprocess.run(["m68k-elf-ld", "-Ttext=0x%x" % TRACE_STUB, "-o", "out/_tr.elf", "out/_tr.o"],
+                   capture_output=True)
+    subprocess.run(["m68k-elf-objcopy", "-O", "binary", "out/_tr.elf", "out/_tr.bin"], check=True)
+    blob = pathlib.Path("out/_tr.bin").read_bytes()
+    for f in ("out/_tr.s", "out/_tr.o", "out/_tr.elf", "out/_tr.bin"):
+        pathlib.Path(f).unlink(missing_ok=True)
+    return blob
+
+
 def raise_clamp(img, va):
     """cmpi.l #128,dN (0c8N 00000080) -> raise bound so idx..255 pass but OOR still bails.
     bhi(>128,0x62) -> #255 ; bhs/bcc(>=128,0x64) -> #256. Returns the new bound used."""
@@ -431,6 +479,17 @@ def main():
         img[o:o + 6] = b"\x4e\xf9" + scsym["sidecar_load"].to_bytes(4, "big")
         print(f"sidecar: {len(sc)} B @0x{SIDECAR_AT:08x}; save-hook 0x{SAVE_HOOK:08x}->0x{scsym['sidecar_save']:08x}"
               f"; load-hook 0x{LOAD_HOOK:08x}->0x{scsym['sidecar_load']:08x}; persists [0x{SETB_LO:08x},0x{SETB_HI:08x})")
+
+    # 2c) TRACE: hook memcpy to capture the paste's writer PC (dst == SETTINGS-A[128] 0x100f7f30)
+    if TRACE:
+        tr = build_trace_stub()
+        assert not any(img[off(TRACE_STUB):off(TRACE_STUB) + len(tr)]), "trace cave not empty"
+        img[off(TRACE_STUB):off(TRACE_STUB) + len(tr)] = tr
+        o = off(MEMCPY)
+        assert bytes(img[o:o + 6]) == b"\x2f\x02\x22\x6f\x00\x08", img[o:o + 6].hex()  # movel d2,-(sp); moveal sp@(8),a1
+        img[o:o + 6] = b"\x4e\xf9" + TRACE_STUB.to_bytes(4, "big")
+        print(f"TRACE: {len(tr)} B @0x{TRACE_STUB:08x}; memcpy hook 0x{MEMCPY:08x}->0x{TRACE_STUB:08x}; "
+              f"capture @0x{TRACE_CAP:08x} -> project.256[0:16]")
 
     # 3) migrate the core set
     nsite = nclamp = 0
