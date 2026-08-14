@@ -2999,3 +2999,27 @@ detour, before/around the SRAM clear) -- it produced zero here, "drumz" in wave2
        must extend (or sidecar the bank refs) so a track referencing 128-255 survives save/reload. [TODO]
 FOUNDATION REMAINS SOLID: browse/display 0-255, DDR/boot/memory, redirect helpers, OOB gate, sidecar
 I/O -- all proven. The remaining work is (a) assign-write and (c) the on-disk track-ref cap.
+
+
+### PERSISTENCE INVESTIGATION: copy/paste writer still elusive  [2026-08-14]
+Feature WORKS for browse/display/playback of 0-255 (wave2). Persistence of a copy/pasted 128+ slot
+is blocked: project.256 (sidecar file, 140288 B) saves ALL-ZERO -> SETTINGS-B is zero at save time
+-> the slot COPY/PASTE (user: FUNC+COPY slot 57 -> FUNC+PASTE slot 129) does NOT write SETTINGS-B[0]
+for idx>=128. The writer/accessor it uses is un-migrated (clamps idx>=128 -> NULL, or writes SRAM-A
+OOB). Sidecar save/load I/O is mechanically verified; bank stores track->slot as a full byte (no
+format change needed, per agent). project.256 mtimes run ~5h behind wall clock (OT RTC offset).
+
+RULED OUT as the copy/paste writer (migrated, project.256 still zero):
+- 0x40024f00 SWAP (two-slot exchange, clipboard bufs 0x460beca8/7c are swap-local; NOT copy/paste)
+- 0x40022614 rename / 0x40021d94 orchestrator (pool-assign path, reverted)
+- 0x40086800 [/SAMPLE] parser (project-load filename writer)
+- 0x40024514 = "SAVE SAMPLE SETTINGS" (.ot writer), 0x4006a2f4 = display helper -- both not it
+No "COPY SLOT"/"PASTE SLOT" strings exist (copy/paste strings are PART/LFO/PAGE only). Browser action
+handlers (0x40078b1a etc.) call 0x40021d94 + 0x4006a2f4 (select/display), not a slot-struct writer.
+
+NEXT: (waiting on user for the exact copy/paste SCREEN + whether paste shows a message + whether slot
+129 VISUALLY shows the 57 sample after paste). If visually-works-but-project.256-zero => paste writes
+SETTINGS-B but sidecar/save mismatch; if visually-empty => wrong writer. Backup plan = HARDWARE TRACE:
+hook memcpy 0x40020898, log (caller_PC,dst,src) for slot-region copies to a DDR ring buffer, persist
+via a debug file, read back to identify the copy/paste function definitively (the COPY of slot 57 is
+a valid <128 read that always fires memcpy, revealing the handler even if PASTE is clamped/no-op).
