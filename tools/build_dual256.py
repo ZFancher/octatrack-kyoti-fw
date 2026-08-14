@@ -121,6 +121,14 @@ CORE = {
                   (0x40025118, "h_s42_a0"), (0x40025122, "h_s41_a0"),
                   (0x40025134, "h_s42_a0"), (0x4002513e, "h_s41_a0")],
     },
+    # --- Wave 5c: the [/SAMPLE] serializer/parser 0x40086800 -- the strongest arbitrary-filename ->
+    # slot-offset-0 writer (loads slots from project.work text AND likely the route the slot COPY/PASTE
+    # uses to write the dest slot). Migrating it makes PASTE to idx>=128 write SETTINGS-B (offset-0
+    # filename) + STATE-B. Only 2 slot sites in the whole 5KB fn. ---
+    "sampleparser_0x40086800": {
+        "entry": 0x40086800, "end": 0x40086a80, "clamps": [0x40086956, 0x400869bc],
+        "sites": [(0x40086968, "h_st_d1"), (0x400869ce, "h_set_d0")],
+    },
     # NOTE: Wave-3 attempt to migrate load-request 0x40093984 was REVERTED -- on HW it did NOT fix the
     # "L" and it BROKE assign-to-128 ("INVALID FILENAME"): 0x40093984 validates the slot filename
     # (jsr 0x400204cc @0x40093a74) and, run for idx128 (STATE resolves to the TEMPLATE via the idx>=129
