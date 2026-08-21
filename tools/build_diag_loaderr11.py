@@ -214,6 +214,22 @@ l_probe:
 
 """
 
+# Probe-block layout, declared ONCE here so the decoder cannot drift from the build.
+# tools/read_probe.py imports this. Offsets are from PROBE (= project.256 offset 0x21000).
+#   counter: byte offset of the ring's count      entry:   bytes per record
+#   fields:  (name, offset-within-record, kind)   kind: "u32" | "s32" | "hex" | "ptr" | "str"
+LAYOUT = {
+    "B":   {"counter": 0x04, "array": 0x040, "entry": 12, "cap": 8,
+            "fields": [("result", 0, "s32"), ("callerPC", 4, "hex"), ("a2", 8, "hex")]},
+    "L":   {"counter": 0x0c, "array": 0x0a0, "entry": 28, "cap": 8, "total": 0x18,
+            "fields": [("slot", 0, "u32"), ("result", 4, "s32"), ("path", 8, "ptr"),
+                       ("pathstr", 12, "str")]},
+    "P":   {"counter": 0x1c, "array": 0x180, "entry": 12, "cap": 8, "total": 0x20,
+            "fields": [("slot", 0, "u32"), ("type", 4, "u32"), ("handle", 8, "hex")]},
+    "AED": {"counter": 0x24, "array": 0x1e0, "entry": 12, "cap": 8, "total": 0x2c,
+            "fields": [("settings", 0, "ptr"), ("slicecount", 4, "u32"), ("slice0", 8, "hex")]},
+}
+
 HOOKS = [
     (0x40022b50, "4aaf00046c18",             "b_probe"),
     (0x40089940, "4fefffec48d70c1c",         "p_probe"),
