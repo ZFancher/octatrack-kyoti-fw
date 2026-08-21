@@ -78,7 +78,17 @@ def main():
     if pad:
         payload += b"\x00" * pad
     words = list(struct.unpack(f">{len(payload)//4}I", payload))
+    tag = elek[8:18].decode("ascii", "replace")
     print(f"container : {len(elek):,} bytes  ({elek[:18].decode('ascii', 'replace')})")
+    # The elektron-firmware-tool version field is EXACTLY 10 chars. A longer -V is silently DROPPED and
+    # the base container's version survives, so the device reports e.g. STOCK140C while running a patched
+    # payload -- indistinguishable on the unit, and it breaks the one-unique-name-per-flash rule. The
+    # payload itself is unaffected (verified: only the 10 version bytes differ), but refuse to emit an
+    # unlabelled image rather than let it reach the CF.
+    if not tag.startswith("DUAL"):
+        sys.exit(f"REFUSING: container version is {tag!r}, not a DUAL256* tag. The -V string passed to "
+                 f"elektron-firmware-tool was probably longer than 10 chars and got dropped. Re-run the "
+                 f"packaging step with a <=10 char version.")
     print(f"payload   : {len(payload):,} bytes"
           + (f"  (+{pad} pad bytes to a word boundary)" if pad else ""))
 
