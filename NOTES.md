@@ -3023,3 +3023,722 @@ SETTINGS-B but sidecar/save mismatch; if visually-empty => wrong writer. Backup 
 hook memcpy 0x40020898, log (caller_PC,dst,src) for slot-region copies to a DDR ring buffer, persist
 via a debug file, read back to identify the copy/paste function definitively (the COPY of slot 57 is
 a valid <128 read that always fires memcpy, revealing the handler even if PASTE is clamped/no-op).
+
+### WAVE 6 — ROOT CAUSE of non-persistence: STATIC slots use POINTER-WALKS, not base-adds  [2026-08-14]
+Three independent HW traces (memcpy hook, settings base-add logger, full accessor-log) ALL returned
+count=0 for idx>=128 during COPY 57 -> PASTE 129 -> SAVE. Conclusion + disasm proof:
+- STATIC slot sample assignment lives in the SETTINGS table (base 0x100d5b30, stride 0x448, filename
+  at slot offset 0). Proven by disassembling the STATIC serializer at 0x40089420.
+- Serializer walks the table by POINTER: `lea 0x100d5c59,%a3` (=SET+0x129) then `lea %a3@(0x448),%a3`
+  each iter; reads PATH from a3-0x129 (=SET[idx]+0). Counter d4, cap `cmpil #137,%d4` (FLEX) then
+  STATIC loop d4=1.. capped at 128. So base-add/memcpy redirects (all my Wave1-5 work) NEVER touch the
+  walk -> invisible to those traces, and the serializer emits only SLOT=001..128.
+- SET-A is EXACTLY 128 slots [0x100d5b30, 0x100f7f30); slot 129 would land at 0x100f8378 (SRAM overlap).
+- project.work already writes FLEX SLOT=129..136 (3-digit slots are format-OK). STATIC caps at 128.
+- Format-string refs: [SAMPLE] 0x400b85de; TYPE=STATIC 0x400b868f; SLOT= 0x400b85f5; PATH= 0x400b8601.
+  FLEX serializer ~0x4008920c; STATIC serializer ~0x40089420 (walk-base 0x100d5c59 @0x400893f0, UNIQUE).
+  Parser/loader ~0x4008f000-0x40091000 (refs lea/move #0x100d5b30 @0x4008fb0a,0x40090854,0x4008f8c8).
+  Serializer I/O regs: a4=0x40013db0(strlen), a5=0x400166b8(IO_WRITE), fp=0x40013a08(sprintf),
+  d5=0x40020554 d6=0x400204a8 d7=0x400204cc (path-string helpers), d3=stream handle, a2=sprintf buf.
+- CRASH: build_dumpA dumped 140KB SRAM from 0x100f7f30 via IO_WRITE -> that region is NOT contiguous
+  settings (live globals + gaps) -> hung audio + "syncing project". DO NOT bulk-read SRAM windows.
+- altre-galassie verified INTACT after the crash (project.work 15034 B, valid; crash was post-work,
+  during the sidecar project.256 dump). Deleted the all-zero partial project.256.
+PLAN (user-approved): EMULATE serializer+parser round-trip of a 256-slot project in Unicorn, verify
+byte-identical, THEN one prepared flash. Restore build ready: OCTATRACK_W6.bin (DUAL256W6) = proven
+256 browse/play + safe B-dump sidecar.
+
+### WAVE 6b — SERIALIZER 256-extension PROVEN IN EMULATION (no flash)  [2026-08-14]
+tools/emu_serializer.py runs the STATIC [SAMPLE] serializer loop in Unicorn (enter 0x400893ee, exit
+0x40089612; only IO_WRITE 0x400166b8 hooked to capture text; sprintf/strlen/path-helpers run native).
+- STOCK: populated A slots 0,1,56,127 -> emits SLOT=001,002,057,128 (empty slots skipped via strlen==0
+  guard at loop head; display N = storage SET[N-1]). Reproduces real project.work. VERIFIED.
+- PATCH(256): at loop tail 0x40089608 replace `cmpi.l #129,d4`(0c84 00000081)+`bnew 0x40089420`(6600
+  fe10) [10 bytes] with `jmp CAVE`(4ef9+addr)+2 nops. CAVE routine:
+      cmpi.l #129,%d4 ; bne 1f ; lea SET_B+0x129,%a3 ; 1: cmpi.l #257,%d4 ; beq 2f ;
+      jmp 0x40089420 ; 2: jmp 0x40089612
+  Result: SLOT=128->A[127], SLOT=129->SET_B[0], SLOT=256->SET_B[127]. Boundary exact. VERIFIED.
+  (SET_B = 0x47701a00, same as build_dual256 SETTINGS-B.)
+NEXT: map the PARSER (subagent) and mirror-emulate the round-trip (serialize 256 -> parse -> compare
+SET-A/SET-B byte-identical) before authoring the combined flash.
+
+### WAVE 6c — PARSER mapped + PERSIST256 build EMU-PROVEN (no flash yet)  [2026-08-14]
+PARSER (subagent map): char/line state machine, entry 0x400866c4, end 0x40088284. STATIC dest addr =
+base-add `movew #1096,d0; mulsl d1,d0; addil #0x100d5b30,d0` @0x400869c4-cc -> stored 0x460fab50; PATH
+written at slot_base+0. Working build ALREADY migrates 0x400869ce->h_set_d0 (B for idx>=128) and raised
+the addr-bound 0x400869bc to #255. Slot index from SLOT= line (atoi-1). ONLY remaining gate: cap
+0x40086922 `movel #129,d1` (STATIC) / +7 (FLEX). Globals: 0x400d166c TYPE(0=STATIC), 0x400d1668 idx,
+0x460fab50 slot ptr. Callers 0x4008ffdc/0x400900cc/0x400901aa (jsr 0x400866c4, args stream,flag).
+PERSIST256 build (tools/build_persist256.py) = working image + (A) serializer 256-ext (cave@0x400d6900,
+tail 0x40089608 -> jmp cave; A->B reload a3=SET_B+0x129 at d4==129, cap 257) + (B) parser cap
+0x40086922 #129->#256 + boot COPYFILL_SET=False (SETTINGS-B zeroed -> no phantom high slots; STATE/
+stride4-B still filled). EMU-VERIFIED on the FINAL image out/mainos_persist256.bin:
+ - serializer: SLOT=001..128 from SET-A, 129..256 from SET-B; empty B slots skipped (no phantoms).
+ - parser: cap PASS 1..256 / REJECT 257; dest SLOT 1..128->SET-A[0..127], 129..256->SET-B[0..127], 257->NULL.
+ - emu_check ALL GREEN. Sidecar dumps SET-B (safe DDR) to project.256; NO SRAM bulk-dump (avoids the
+   build_dumpA crash). Non-destructive for projects with no high slots (serializer skips empty B).
+OPEN QUESTION (HW-only, not a corruption risk): does the interactive PASTE write SET-B[idx-1]? If yes,
+save -> STATIC SLOT=129 block -> full persist. If no (paste walks A base), SLOT=129 absent -> must find
+the paste's walk base next (infra now ready). Package: OCTATRACK_P256_1.bin (DUAL256P1).
+
+### WAVE 6d — ROOT CAUSE of empty high slots: reset-slot 0x40099148 UN-MIGRATED  [2026-08-14]
+Full-parser Unicorn trace (tools/emu_parser_full.py) proved the parser DOES write PATH to SET-B[0]
+for STATIC SLOT=129 (idx128) in the REAL pass -- but ONLY because the harness skipped reset-slot
+0x40099148 (jsr'd @0x40086940 before the settings write; faults in emu on hardware). reset-slot is the
+slot INITIALISER and had its OWN un-migrated base-adds (STATE 0x46c90a78 @0x40099170, SETTINGS
+0x100d5b30 @0x400991dc, stride4 @0x40099352/5c) + its own #128 STATIC clamps (0x4009915c, 0x400991c4).
+For idx>=128 it inited the OOB SET-A[128]/STATE-A[128] struct while the parser wrote PATH to SET-B ->
+slot SPLIT across A and B -> shows EMPTY. FIX: added resetslot_0x40099148 to CORE (sites h_st_a0/
+h_set_a2/h_s42_a0/h_s41_a0; clamps raised). Emu-verified reset-slot settings dest now: idx128->SET-B[0]
+.. idx255->SET-B[127], idx256 bails. Build P256_2 (DUAL256P2). Also learned: the OT LOAD reads BOTH
+project.work AND project.strd (both text, %s/project.work @0x400b5cd0); a text edit must be in .strd too.
+
+### WAVE 6e — LOAD path completed offline (reset-slot + sample-loader), audit of remaining fns  [2026-08-14]
+Added to CORE: resetslot_0x40099148 (slot initialiser) + sampleloader_0x4008445c ("Couldn't load
+STATIC[%d]" -- loads the sample file into the slot). Both had un-migrated STATIC settings base-adds ->
+idx>=128 hit OOB SET-A. Now 38 sites / 21 clamps, OOB-gate green, emu_check green. Build: P256_3
+(DUAL256P3). Reset-slot callers = the slot-init sites: 0x40086940(parser), 0x40084b66/c34(sample-
+loader), 0x400255a0 (fn 0x40025288 -- FLEX-range slot mgr, NOT yet migrated). Full audit: 51 un-migrated
+slot base-add sites remain across ~25 functions (most are other features: 0x40021d94/0x40022614 assign,
+0x40027716, 0x40029004, 0x4004xxxx, 0x4006-0x40073 STATE readers, 0x40098xxx, etc.). NOT migrating them
+blindly (wave-3 risk). PASTE still unidentified as a single fn; the ACC trace showed 0 settings base-add
+access for idx>=128 during paste -> paste reaches its dest via a pointer it already holds (cursor slot
+ptr from a getter) or index 129 (1-based) which bails reset-slot's #128 clamp. Needs HW to test P256_3:
+if load of a project with STATIC SLOT=129 now populates slot 129, the LOAD path is DONE; then chase paste.
+
+### P30 PACKAGED — full fix set, all gates green (ready to flash)  [2026-08-20]
+Rebuilt `build_dual256.py` -> `build_persist256.py` -> out/mainos_persist256.bin (1,112,560 B), then
+packaged: `EFT_EMIT_CONTAINER=out/elek_p30.bin elektron-firmware-tool -i out/OT_stock.syx -c 3
+out/mainos_persist256.bin -V DUAL256P30 -o out/OT_p30.syx` + `make_bin.py out/elek_p30.bin
+-o out/OCTATRACK_P256_30.bin` (446,484 B, sha256 c844aec8…c69b7b17, checksum 0x05a3e770).
+Build: 70 migrated sites / 44 clamps; OOB-gate OK; serializer-ext 34 B @0x400d6900 (A->B @ d4=129,
+cap 257); parser cap 0x40086922 #129->#256.
+GATES (all GREEN on the final image): emu_check (DSP regs/pool intact) · verify_dual256 (200/200) ·
+audit_dual256 (CLEAN, 3 reviewed-safe whitelist entries) · emu_serializer (SLOT=001..256, B slots
+emitted) · emu_header_name (idx128 STATIC -> SET-B[0]) · emu_parser_full (REAL pass writes
+'../yok-b.aif' -> SET-B[0]@0; the DRY pass legitimately writes nothing) · emu_sidecar_load (skip-empty:
+populated restores / empty survives / missing untouched) · emu_aed_state (6 resolvers -> STATE-B) ·
+emu_aed_write (load-sample -> SET-B+STATE-B) · emu_allocator (A full + B[10] free -> slot 138).
+Contents beyond P29 (HW-confirmed slot-129 playback): AED tab-body STATE resolvers + wavestream,
+AED load-sample WRITE path, skip-empty sidecar_load, latent-OOB fix (assign type-1 0x40023f1c),
+extended allocator + boot STATE-B free-init.
+CAVEAT: the boot STATE-B free-init (status@8=1 on 128 slots) is NEW boot behavior, emulator-only —
+for a minimal-risk flash set MIGRATE_ALLOC=False + STATEB_FREEINIT=False and rebuild.
+NOT COPIED: no CF mounted at build time. HW test plan: RELOAD -> slot 129 -> AED (waveform/slices?)
++ track header NAME; also read altre-galassie_2 project.work for SLOT=129 blocks and project.256 SET-B[0].
+
+### WAVE 14 — the OFF-BY-ONE clamp class; track->slot mapped; P31 packaged  [2026-08-20]
+HW result on P30 (user): AED FILE-menu load into slot 129 WORKS (waveform + slices + playable slices).
+Broken: slot-list selection doesn't load; track-header name blank; SAVE+RELOAD reverts the track's slot.
+
+**TRACK->SLOT REFERENCE FULLY MAPPED** (was NOTES item (c), open since 2026-08-13):
+  addr = bank_base + pattern*0x18b2 + track*5 + type + 0x8F04A     (one byte, 0-based slot)
+  type = bank_base + pattern*0x18b2 + track     + 0x8EDA2          (0 = STATIC)
+  bank_base = *0x46c82456. Disassembled from the sequencer resolver FUN_40005030 (0x40005048-0x4000507e).
+  Validated against real files: track 4 (UI track 5) slot byte 128 == UI slot 129, neighbours 49..57.
+  Both writers ALSO mirror the value into an SRAM shadow table at 0x100A5198 (type shadow 0x100a4ef0) --
+  a copy NOT previously in NOTES. Only 2 literal writers exist: 0x40027ebe, 0x400795bc; neither clamps.
+
+**SAVE WORKS, RELOAD IS THE BUG** (hard evidence from the CF, fresh mount):
+  bank01.strd (saved)      track4 = 128   <- SAVE writes the high slot correctly
+  bank01.work (post-reload) track4 =   0   <- RELOAD substitutes 0 (= UI slot 1)
+  Diff strd vs work = EXACTLY 2 bytes: that field + the file's last byte (checksum). A targeted
+  single-byte write, not a bulk clear. Control test: a LOW slot (11) survives the same SAVE+RELOAD,
+  so this is a genuine high-slot bug, not Octatrack part-save semantics.
+  Author of the 0 NOT yet identified: writer A (0x40027ebe) is gated on command==26 in 0x460c80f0 and
+  NO code path in the image emits 26 (emitters found: 5,7,9,11,12,13,14,15,16,17,21,22,23,24); the load
+  path that feeds writer B (0x40083c60: mvzb slot -> set_selection 0x4006de34 -> ui_apply) preserves 128
+  cleanly. So a third, pointer-based route remains to be found. project.work/.256 persistence is FINE
+  (TYPE=STATIC SLOT=129 PATH=yok-vox.aif present; project.256 carries the name).
+  CAUTION: macOS FAT caching served STALE bank contents while the OT wrote the card (dd read 0 bytes from
+  a 636 KB file) and produced one wrong intermediate conclusion. ALWAYS unmount+remount before reading
+  files the OT has just written.
+
+**THE OFF-BY-ONE CLASS (the real find).** Every site the earlier census filed as "SAFE/leave (clamp
+closed)" is NOT closed for idx=128: the guard is `cmpi.l #128,dN` + **bhi**, which bails only on
+idx > 128, so idx == 128 falls through into the stock add -> SETTINGS-A[128]/STATE-A[128], one stride
+past table A. Stock-safe (slot 128 unreachable there), reachable here. idx=128 is UI slot 129 -- exactly
+the slot under test, and the ONLY value that slips through (129..255 do bail).
+  => Testable prediction for the next HW session: slot 130 should behave BETTER than 129 in these
+     features. If 130 fails identically, the cause is elsewhere and we learn that unambiguously.
+Migrated in wave 14 (MIGRATE_OFFBYONE toggle, 9 functions / 10 sites / 9 clamps): slotclear 0x40025288,
+unresolved 0x400276fa + 0x40027772, cfmount 0x40028fec, plockdesc 0x4003193c, trigdisp 0x40044050,
+dspcount 0x40044d88 + 0x4004fe00, renamed 0x4006da16. Chose MIGRATE over closing the guards: two of them
+are DSP per-voice readers on the audio path for the playing high slot, so NULLing them risks re-introducing
+the P29 silence; migrating keeps idx<128 byte-identical and gives idx>=128 the real B record.
+DELIBERATELY HELD: 0x4008b904 (CLASS-B bank serializer -- it writes a file and the save path is proven
+working on HW, needs its own analysis) and 0x4008e638 (guard is `bls`, polarity not the bail idiom).
+
+**TOOLING (both blind spots were causing wrong conclusions):**
+- audit_dual256.py CHECK 1 counted `cmpi #128` as closed regardless of branch type -> that is why the
+  audit reported CLEAN. Now distinguishes bhi (>) from bhs/bcc (>=) and reports the off-by-one as a
+  first-class finding; `bls` guards are reported as REVIEW instead of assumed. The old "0 un-migrated
+  adds safely closed" count is now literally 0 -- every one of them was off-by-one.
+- xref.py only scanned absolute jsr/jmp + bsr.w, so PC-relative `jsr %pc@(d16)` / `bra.w` / short
+  bra/bsr callers were invisible -> the 0x40027e4c dispatcher looked uncalled when it has 2 callers.
+  Any earlier "no callers" conclusion in this project is suspect. Fixed + verified.
+
+BUILD: 80 sites / 53 clamps (was 70/44). OOB-gate OK. ALL GATES GREEN on the final image: emu_check,
+verify_dual256 (200/200), audit (only the 2 deliberate holds), emu_serializer, emu_header_name,
+emu_parser_full, emu_sidecar_load, emu_aed_state, emu_aed_write, emu_allocator, emu_seq_slot, emu_seq_plock.
+PACKAGE: out/OCTATRACK_P256_31.bin (DUAL256P31, 446,452 B, sha256 4de0b03c..., checksum 0x14fab470).
+
+### WAVE 15 + P32 HW RESULTS — crash fixed, high slots play; spurious load error remains  [2026-08-20]
+HW on P32 (DUAL256P32, sha256 ef7c406b...):
+- **Slot 130 exception GONE.** Wave 15 (`loadhandle_0x4008e608`: clamp 0x4008e620 #128->#256, add
+  0x4008e63a -> h_st_a3) was the fix. The site was `cmpi #128 + bls` -> `subal a3,a3` (NULL) ->
+  `movel %a3@(36)` (the file handle) -> bus error for idx>=129. `bls` is why slot 129 survived and 130 died.
+- **ALL high slots now show the waveform and play** (129 and beyond). Name shows on the track header.
+- REMAINING: slices never load, and slots >=130 print "SAMPLE LOAD ERRORS!" after selecting the sample
+  even though the load visibly succeeds (waveform + playback fine) -> a spurious negative result code.
+- `STATEB_FREEINIT = False` CONFIRMED the @8 hypothesis: @8==1 means FREE (allocator tests it at
+  0x400240a2) and the AED's "has content?" predicate (0x4006db32) is true only when @8==0. Boot-marking
+  all 128 B slots free made every high slot read as empty -> no waveform. THIS IS A DIAGNOSTIC, NOT THE
+  FIX: the proper repair is to clear @8 on load so the extended allocator keeps working. TODO.
+- "SAMPLE LOAD ERRORS!" = 0x400b37f0, emitted at 0x40022b60 / 0x40022bee. Both live in
+  `finish_load(result)` 0x40022b70 -- an ASYNC COMPLETION CALLBACK (its address is stored into a request
+  struct, e.g. 0x460e735a in the slot-list path at 0x40079372) that only REPORTS a negative result; the
+  failure happens upstream. Note 0x40022bd0: `cmpi #128,d2` treats 128 as a SENTINEL (jmp 0x4007927c) --
+  another stock "128 can never be a real slot" assumption, not yet assessed.
+- Ruled out as the cause (verified ON THE BUILT IMAGE): no #128 slot guard remains anywhere except the
+  held-back serializer 0x4008b8ee; no cmpa.l #128/#129 guards remain; 0x400802e2 is a FALSE POSITIVE of
+  the off-by-one scan (`addi #-128,d2` + `cmpi #128` is a 128-block copy loop, not a slot clamp); the
+  STATIC loader guards 0x40084c56/0x40084c9c are ALREADY migrated (clamps #256, adds -> helpers).
+
+**PROCESS FIX (this cost three wrong conclusions in one session):** `tools/otdis.py` defaulted to
+out/stock_mainos.bin, so reasoning about the patched build silently read stock -- where a guard still
+shows #128 that the build has already raised to #256. otdis now DEFAULTS TO out/mainos_persist256.bin,
+honours OTDIS_IMG=<path>, and prints `[otdis] disassembling <file>` once per image. When a finding
+depends on whether something is patched, verify on the BUILT image and say which image was read.
+Related earlier fixes: xref.py was blind to PC-relative callers; audit_dual256.py counted `cmpi #128`
+as closed regardless of branch. All three were producing confident wrong answers.
+
+NEXT: the 129-vs-130 difference may NOT be an index boundary at all -- slot 129 was already populated
+from an earlier save while 130+ are FRESH loads. Test: load a fresh sample into 129 on P32; if it also
+errors, the split is "fresh load into any high slot", not idx>=129.
+
+## P36 — the P34/P35 brick: hook padding off-by-one (NOT the code cave) [2026-08-20]
+
+**Symptom:** P34 threw an exception on project load and hung on empty boot; P35 crashed with
+`VEC:04  ADDR:0x4009937E` (illegal instruction) on the device screen.
+
+**Root cause, byte-exact.** The slice probe hooks `0x40099374`, whose stock prologue is an 8-byte hole
+`4fefffd8 48d73cfc`. The builder wrote a 6-byte `jmp` plus `pad_nops=2` — and that field means *two
+NOPs*, i.e. 4 bytes. 6+4=10 into an 8-byte hole:
+
+```
+P32  0x40099374: 4f ef ff d8  48 d7 3c fc  28 6f 00 2c     moveal %sp@(44),%a4
+P35  0x40099374: 4e f9 40 0d 6a 58  4e 71 4e 71  00 2c     <- 28 6f clobbered
+```
+
+`002c` at `0x4009937e` is not an instruction → VEC:04, exactly the address on the photo. The same
+overrun was present in P34, so **both bricks were this one bug** — my earlier attribution of P34 to the
+relocated cave `0x400d6c00` was wrong.
+
+**Why three gates all said GREEN.**
+- `emu_probes.py` stopped *at* the landing address without executing it, so it never reached the
+  corrupted instruction. Hardened: it now runs 8 instructions past the landing. Verified against the
+  reconstructed bricking image — it FAILS it (UC_ERR_EXCEPTION on probe S) and passes the corrected one.
+  Also: it took `--img` only, and silently ignored a bare positional path, so a gate run could report on
+  a *different* image than intended. It now accepts a positional arg and REFUSES unrecognized ones.
+- `emu_check.py` checks DSP regs/pool/helpers — never the hook sites.
+
+**Structural fixes in `build_diag_loaderr3.py`** (so this cannot recur by inattention):
+1. The pad count is *derived*: `hole = len(expected_bytes)//2`, `(hole-6)//2` nops, asserted
+   `hole >= 6 and hole % 2 == 0`. Nothing is hand-counted. It now prints `(hole 8 B, 1 nop)`.
+2. **Hard byte invariant**: the build refuses to emit if a single byte outside the hook holes and the
+   cave differs from the base image. This alone would have stopped P34 and P35.
+3. `VALIDATED_CAVES` — only extents that have carried working code on hardware.
+
+**P36** = P32 + the two probes, `DUAL256P36`, sha256 `56a0120c…`. Repackaged from
+`out/mainos_diag_loaderr3.bin` and confirmed byte-identical to the earlier P36 artifact. Byte diff vs
+base: exactly `0x40022b50..0x40022b56` (6 B), `0x40099374..0x4009937c` (8 B), cave
+`0x400d6a00..0x400d6ab0`. Copied to CF and hash-verified after a `diskutil unmount`+`mount` cycle.
+
+**Lesson (same class as otdis-reads-stock, xref-blind-to-pc-relative, audit-counts-#128-as-closed):**
+every one of these gates returned a confident GREEN while measuring the wrong thing. A gate that does
+not execute the patched bytes is not a gate.
+
+## P36 HW MEASUREMENT — the load error is code -2 on a dispatched callback [2026-08-20]
+
+Read from `altre-galassie/project.256` @0x21000 after the P36 run (CF remounted first):
+
+```
+magic=0x10ade111  cntB=1  cntS=16
+B[0] result=0xfffffffe (-2)   PC=0x40062462
+S[0..15] slot=128..135, arg1=1, twice
+```
+
+**Probe B (the live emitter) fired once with result -2.** `PC=0x40062462` is the return address of
+`jsr %a0@` at `0x40062460`, i.e. the generic message-pump case:
+
+```
+40062454: moveal %a2@(2),%a0     ; callback
+4006245c: movel  %a2@(6),%sp@-   ; its argument = the -2
+40062460: jsr    %a0@
+40062462: addql  #4,%sp          ; <- captured PC
+```
+
+So the popup rides a queued message whose `+2 == 0x40022b0c` and `+6 == -2`. The callback itself
+(`0x40022b0c`) tests `sp@(4)` at `0x40022b50` and, if negative, calls `0x40080844` and draws
+`"SAMPLE LOAD ERRORS!"` (`0x400b37f0`).
+
+**Probe A never fired**, which rules out a whole branch: `FUN_40028fec` installs `finish_load
+0x40022b70` for **type==0 (STATIC)** and `0x40022b0c` only for **type==1**. The STATIC loader is not
+the path. `0x40022b0c` is also installed unconditionally by `FUN_40022610` — the assign/paste writer
+migrated in Wave 5 — which is what the AED "load sample into slot" actually runs.
+
+**Where static analysis stops.** The literal `0x40022b0c` is stored at exactly two places in the whole
+image, both at *record+18* (`0x460bd8fe` by `FUN_40022610`, `0x460d1010` by `FUN_40028fec`), and there
+is no PC-relative reference either. Neither record has a callback at `+2`, and neither `+6` can hold -2
+(each has a single writer, `clrl` and `moveq #1`). So the dispatched message is a THIRD object,
+assembled at runtime by generic code that copies the callback out of `record+18`. Enumerating all 44
+records posted to queue `0x460d17ce` found no candidate. This cannot be resolved by scanning.
+
+**Probe S was contaminated — my filter was wrong.** `slot >= 128` also matches the 8 RECORDER entries
+of the FLEX table (that table is bounded by `#135` everywhere in the code). The 16-entry ring filled
+with 128..135 twice during project load, before the user ever touched a slot. The captured range
+stopping exactly at 135 is the proof. **No slice data was obtained.** v3 filters `slot >= 136`, so the
+HW test must use a STATIC slot **>= 137**, not 130.
+
+### Two candidate producers of -2 (the image's only direct `moveq #-2 ; rts` returns)
+- `FUN_400148d4` — handle validation: `-2` if the pointer is NULL **or** `(*handle)-1 >u 510`
+  (valid ids 1..511). Generic I/O; reached via `0x46c8241e` dispatch.
+- `FUN_4008fa68` — path classification (compares against `"../"`, `0x400b36a4`): `-2` if the path
+  pointer is NULL, `0` if the string is empty. **Nothing in the image references it** — neither
+  absolute nor PC-relative — so it is called through a function-pointer table or is dead.
+
+Note the loop just above it (`0x4008fa0c..0x4008fa5a`) walks SETTINGS by `0x448` from `SETTINGS-A[0]`
+to `#0x100f7f30` = `SETTINGS-A[128]` — a **128-bounded** bulk path check that sets a per-slot error
+byte. One of the "walk-start" sites the census parked; high slots are never visited by it.
+
+## P37 = measuring build v3 (`DUAL256P37`, sha256 `c9bba72c…`)
+`tools/build_diag_loaderr4.py`, blob 436 B at cave `0x400d7100` (768 B free), four probes:
+- **B** `0x40022b50` -> `[result][caller_PC][a2]`. `%a2` at callback entry still holds the pump's
+  message pointer — one long that names the poster outright. This is the measurement that cannot miss.
+- **S** `0x40099374` -> `[slot][arg1][caller_PC]`, **slot >= 136**.
+- **N1** `0x400148d4` -> `[handle][caller_PC]`, only on the paths that return -2.
+- **N2** `0x4008fa68` -> `[caller_PC]`, only when the path pointer is NULL.
+
+Byte diff vs base: `0x400148d4`(8) `0x40022b50`(6) `0x4008fa68`(8) `0x40099374`(8) + cave(436). Nothing else.
+
+**Gate hardening (`tools/emu_probes.py`):** it now (1) refuses to run without an explicit image — the
+old implicit default meant a bare positional path was silently ignored and the WRONG image got gated;
+(2) asserts what each probe **wrote** into the PROBE block, not just where it landed. Verified the
+assertions bite: gating the P36 image reports the missing N1/N2 records as FAIL. 13/13 green on P37.
+
+## P37 HW MEASUREMENT — `-2` means EMPTY PATH; slices reach the high slot [2026-08-20]
+
+```
+magic=0x10ade111  cntB=1  cntS=4  cntN1=0  cntN2=0
+B[0]  result=-2  PC=0x40062462  a2=0x460364e4
+S[0..3] slot=139 arg1=0 PC=0x4009968e     (four calls)
+```
+
+### 1. The error code -2 = "the sample path string is empty"
+`a2=0x460364e4` is entry 0 of a **32-entry x 26-byte request pool** owned by the project/bank loader
+(`lea 0x460364e4,%a0` at 0x400840b4 / 0x40084138 / 0x400841cc / 0x40085ace; the allocator scans
+entry+22 for a free marker, `moveq #32` bound at 0x40085afc). So the failing job was posted by the
+**loader**, not by the AED assign.
+
+Its four `-2` exits (0x4008498c / 0x400849de / 0x40084a80 / 0x40084b20) are all branch targets, and the
+two guards that reach them are identical:
+
+```
+movel %fp@(-470),%d0 ; addql #1,%d0 ; beq  -> -2      ; pointer == -1
+movel %d0,%sp@-      ; jsr 0x40013db0 ; tstl %d0 ; ble -> -2
+```
+
+`0x40013db0` is **strlen**, not a file open:
+`moveal sp@(4),a0 ; clrl d0 ; 1: addql #1,d0ptr ; tstb a0@(0,d0:l) ; bne 1b ; rts`.
+So the second guard is **strlen(path) == 0 -> -2**. The same idiom guards the STATIC assign path at
+`0x400290a4` inside `FUN_40028fec`. **-2 is an EMPTY PATH, not a missing/unreadable file.**
+
+That fits the symptom exactly: the sample the user picked loads fine (waveform + audio), and a
+*separate* request carrying an empty path fails alongside it.
+
+**Leading hypothesis — this is the STATEB_FREEINIT debt.** With `STATEB_FREEINIT=False`, STATE-B is
+never initialised, so `@8` reads 0 for every high slot — and `@8==0` means "has content" (1 == FREE,
+per the allocator test at 0x400240a2 and the AED predicate 0x4006db32). Every empty high slot therefore
+advertises content with an empty path; the loader enumerates it and strlen fails -> -2. It also
+explains why turning FREEINIT off is what made the waveform appear at all. Proper fix stays the one
+already written down: clear `@8` when a sample is loaded into a high slot, then re-enable FREEINIT.
+NEXT: find who clears STATE@8 on a successful low-slot load and check whether that write is migrated —
+P31 had FREEINIT=True and high slots read as empty, which says that write is NOT reaching STATE-B.
+
+### 2. N1/N2 both zero — clean negative
+Neither `FUN_400148d4` (handle validate) nor `FUN_4008fa68` (path classify) fired. Both leads dead;
+the -2 is the loader's own, as above.
+
+### 3. Slices: the function IS reached for the high STATIC slot
+`FUN_40099374(type, slot, flag)` — **my probe's field labels were swapped**: `sp@(4)` is the machine
+TYPE and `sp@(8)` is the slot (confirmed at 0x4009937c: `moveal sp@(44),a4` = type, `movel sp@(48),d7`
+= slot, after the 40-byte frame). So P37 recorded **type=0 (STATIC), slot=139**, four times, all from
+the wrapper at 0x40099680 (which passes flag=0; its twin 0x40099668 passes 1).
+
+This retroactively PROVES the P36 contamination reading: those `slot=128..135, arg1=1` records were
+**type=1 (FLEX)**, i.e. the 8 recorders — exactly as diagnosed.
+
+Both per-slot resolutions inside the function are already migrated and clamped at #255
+(`jsr 0x400d75c0` for STATE at 0x4009939a, `jsr 0x400d74c0` for SETTINGS at 0x40099410), and the
+STATE@8 content test at 0x400993d8 is on the migrated pointer. So the missing slices are **not** an
+addressing miss in this function — the failure is downstream (slice DATA / the shared high-slot scratch
+`SLICE_SCRATCH 0x40aba000`, which all high slots share), or STATE@8/@20 not being populated.
+Note 0x400993f2 reads `%a0@(20)` into a5 right after the @8 test — that is the slice-table pointer.
+
+## STATE@8 semantics NAILED, and the bulk load loop is NOT the source [2026-08-20]
+
+Helper map (from the assembled ELF, `assemble_helpers()`): `0x400d74c0 h_set_a2`, `0x400d74e0 h_set_a3`,
+`0x400d75c0 h_st_a0`, `0x400d7600 h_st_a3`, `0x400d76c0 h_slice_d0`. Reading a `jsr 0x400d7xxx` without
+this map is how `a3` got mistaken for a STATE pointer in one function and a SETTINGS pointer in another
+— they genuinely differ per function.
+
+**`STATE@8` is the occupancy field, confirmed on both consumers:**
+- allocator `0x400240a2`: `movel %a0@(8),%d0 ; moveq #1,%d2 ; cmpl %d0,%d2 ; beq found` -> **1 == FREE**
+- AED has-content `0x4006db38`: `movel %a0@(8),%d0 ; seq` -> **0 == HAS CONTENT**
+- `0x400939da` writes 2 on another path, so `@8` is an enum, not a flag.
+
+Every write to `@8` in the image that follows a STATE helper is already migrated (only three exist:
+`0x40093856`, `0x400939da`, `0x40094070` — and all three SET 1 or 2, i.e. release). The write that
+marks a slot LOADED (`@8 = 0`) is `0x40093df4 clrl %a3@(8)`, whose `a3` comes from `h_st_a3` at
+`0x400939b6` — **migrated**. So the "clear @8 on load" half of the FREEINIT debt may already be in
+place; what P31 showed (FREEINIT=True -> high slots read empty) still needs explaining before
+re-enabling it. Do NOT flip STATEB_FREEINIT on that basis alone.
+
+**The STATIC bulk load loop is exonerated.** Its body head at `0x4009087a` is
+`tstb %a2@ ; beq skip` — the FIRST instruction skips a slot whose path is empty, and a second filter at
+`0x40090886` skips again. Our LOADLOOP_STUB extension walks 128..255 through SET-B, so empty B slots
+are skipped, not errored. Its own error path logs `"Couldn't load STATIC[%d] with '%s' (%s)"`
+(`0x400b7933`) vs `"Successfully loaded STATIC[%d] with '%s'"` (`0x400b8af1`) — worth capturing later.
+
+## P38 = measuring build v4 (`DUAL256P38`, sha256 `40930cc2…`)
+`tools/build_diag_loaderr5.py`, blob 298 B at cave `0x400d7100`, three probes:
+- **B** `0x40022b50` -> `[result][callerPC][a2]` (the anchor, unchanged)
+- **G1** `0x40084a12`, **G2** `0x40084ab8` -> `[strptr][a2][16 bytes of the string]`. Both replace a
+  `jsr 0x40013db0` (strlen): the stub records, performs the same `jsr`, then jumps past the original
+  call, so `d0` and the stack are untouched. **The captured pointer names the slot**:
+  SET-A -> `(p-0x100d5b30)/0x448`, SET-B -> `128 + (p-SET_B)/0x448`.
+
+Byte diff vs base: `0x40022b50`(6) `0x40084a12`(6) `0x40084ab8`(6) + cave(298). Nothing else.
+
+**Gate**: `emu_probes.py` now detects which hooks an image actually has and runs only those suites, so
+one gate serves every diag build and old images stay re-gateable. It also classifies post-landing
+faults: a DATA read/write to unmapped memory after the landing is a gate artifact (synthetic registers),
+but an illegal instruction or an unmapped FETCH is a real defect and still fails — the P35 brick mode.
+Added a `strlen passthrough` check asserting `d0 == 2` after the probe, i.e. the probe is transparent.
+10/10 green on P38; re-gating P37 still runs B/S/N1/N2 and is green.
+
+## P38 result + P39 = WIDE instrumentation [2026-08-21]
+
+P38: `cntB=1 result=-2 a2=0x460364e4` again, but **cntG1=0 cntG2=0**. The strlen guards were never
+reached, so the -2 comes from `0x4008498c` or `0x400849de`, not from `0x40084a80`/`0x40084b20`.
+Also in that save: `SET-B[15]` = UI slot 144 = `'../AUDIO/afo-melero.aif'` — **high-slot persistence
+works**; the sidecar wrote the right path. So the -2 is NOT about the slot being loaded.
+
+**Lesson: probe SITES and DECISION POINTS, not guards.** G1/G2 covered two of four exits and returned a
+pure negative for a whole flash cycle. Four exits reached by six branches, only two sharing the strlen
+shape — picking two of them was a coin flip.
+
+### P39 (`DUAL256P39`, sha256 `cca5ded3…`) — `tools/build_diag_loaderr7.py`, 650 B at cave 0x400d7100
+Eight probes, chosen to answer every open question in ONE flash:
+
+| probe | site | hole | records |
+|---|---|---|---|
+| B  | 0x40022b50 | 6  | `[result][callerPC][a2]` — popup emitter (anchor) |
+| E1 | 0x4008498c | 10 | `[site][rec][32 raw bytes of rec]`, rec = `a2` |
+| E2 | 0x400849de | 12 | same, rec = `a2` |
+| E3 | 0x40084a80 | 10 | same, rec = `-470(fp)` |
+| E4 | 0x40084b20 | 10 | same, rec = `-482(fp)` |
+| L  | 0x400908ac | 6  | bulk load-loop outcome, slot >= 128: `[slot][result][pathptr][str16]`, + `cntLall` counts every pass |
+| C  | 0x400993d8 | 6  | slice-fn decision, type==0 && slot>=128: `[type][slot][STATE@8][STATE@20]` |
+| A  | 0x4006db38 | 6  | AED has-content, slot>=128: `[slot][STATE@8][type]` |
+
+**Why C is the slice answer.** At `0x400993d8` the slice function proceeds only if `STATE@8 == 0`, or
+if `@8 == 2` AND the third argument is non-zero. P37 proved the call arrives from the wrapper at
+`0x40099680`, which passes **flag = 0**. So any high slot whose `@8 != 0` bails to `0x4009965e` and
+draws nothing. C reads `@8` at the exact deciding instruction; A reads what the AED concludes.
+
+Probe block is now 1008 B and spans **SET-B[123..124] -> UI slots 252 AND 253 are reserved.**
+
+### Boot-safety review (the failure mode that cost two sysex recoveries)
+- **Byte invariant**: diff vs base is exactly the eight holes (6/6/10/12/10/10/6/6) + 650 B of cave.
+  Nothing else. The build refuses to emit otherwise.
+- **Register safety**: disassembled the whole cave and grepped for any write outside the saved set
+  `{d0-d3,a0,a1}` — none (the only match is a `cmpi` reading d7). Every value the replaced instructions
+  left live is re-established AFTER the register restore (E3/E4 `d2` and `a0`, L `d2`).
+- **No fallthrough**: every stub ends in `jmp`; the cave's last instruction is a `jmp`.
+- **CCR discipline**: L's branch depends on the flags from `move.l %d0,%d2` and A's `seq` on the Z from
+  `move.l 8(%a0),%d0`; both replays reproduce that ordering, and `addq.l #N,%sp` (An) sets no flags.
+- **Width check**: `a_probe` reads global `0x46c8d19c` as a long — confirmed that is how all ~100
+  references in the image read it.
+- **Bounded loops**: `rawcopy` is a fixed 16/32-byte count; `rec_alloc` is capped per ring.
+- **Stack**: max 24 (frame) + 12 (rec_err spill) + 8 (two nested bsr) = 44 B added, no ISR involved.
+- Gates: `emu_probes` 17/17 GREEN across all 8 suites (it auto-detects installed hooks);
+  `emu_check` GREEN; `verify_dual256` 200/200; `audit_dual256` output byte-identical to the base image
+  (its one flagged item is the pre-existing `0x4008b904` CLASS-B serializer, held back on purpose).
+
+## P39 threw VEC:04 at 0x4008498E -- hook holes with INTERIOR branch targets [2026-08-21]
+
+Loading a sample into slot 144 raised `VEC:04 ADDR:0x4008498E`. That address is two bytes into the
+6-byte `jmp` that probe E1 wrote at `0x4008498c`. Cause: replacing N bytes at a site silently assumes
+the whole run is entered only at its FIRST address. For all four `-2` sites that is false:
+
+```
+0x40084912 / 0x4008491e / 0x40084966 / 0x4008498a  bra.b -> 0x4008498e   (the SUCCESS path,
+0x400849d8 blt.b / 0x400849dc bra.b                      -> 0x400849e0    which skips the moveq #-2)
+0x40084a76 bge.b / 0x40084a7a ble.b / 0x40084a7e bra.b   -> 0x40084a82
+0x40084b1a ble.b / 0x40084b1e bra.b                      -> 0x40084b22
+```
+
+Eleven branches land inside holes I consumed, each one mid-`jmp`. The only safe hole at those sites is
+the 2-byte `moveq` itself -- too small for a 6-byte jmp. **Those four sites are simply not hookable.**
+
+**New permanent gate: `tools/hookcheck.py`.** `check_holes(img, [(va, n), ...])` refuses the build if
+any branch (Bcc.b/.w, bra, bsr, jmp/jsr abs, jmp/jsr pc@) or any stored 4-byte pointer targets an
+address strictly inside a hole -- odd addresses included, since a target mid-word is worse. It is
+called from the diag build before any byte is written. Run retroactively against P39's hook set, it
+prints all eleven offenders. This is the fourth tool in the family whose absence produced a confident
+wrong answer (otdis-reads-stock, xref-blind-to-pc-relative, audit-counts-#128-as-closed,
+emu_probes-stops-before-the-landing).
+
+## P40 (`DUAL256P40`, sha256 `8fbda79c…`) -- `tools/build_diag_loaderr8.py`, 532 B at cave 0x400d7100
+The four E probes are replaced by ONE strictly better probe:
+
+| probe | site | hole | records |
+|---|---|---|---|
+| B | 0x40022b50 | 6 | `[result][callerPC][a2]` |
+| **X** | **0x40013db0 (strlen)** | 6 | `[callerPC][strptr][str16]`, only when caller PC is in `[0x40084800,0x40084c00)` |
+| L | 0x400908ac | 6 | `[slot][result][pathptr][str16]`, slot >= 128, + `cntLall` |
+| C | 0x400993d8 | 6 | `[type][slot][STATE@8][STATE@20]`, type==0 && slot >= 128 |
+| A | 0x4006db38 | 6 | `[slot][STATE@8][type]`, slot >= 128 |
+
+X covers **all six** strlen guards in the loader function at once instead of two of four exits, and
+needs no register saving on its fast path: the replaced `moveal sp@(4),a0 ; clrl d0` writes both d0 and
+a0, so both are dead on entry. The gate asserts the replay still leaves `a0 = arg` and `d0 = 0`.
+
+All five holes are 6 bytes, all verified free of interior targets. Layout (976 B, one slot):
+`+0x004 cntB +0x008 cntX +0x00c cntL +0x010 cntC +0x014 cntA +0x018 cntLall`,
+`+0x020 B[8]x12  +0x080 X[12]x24  +0x1a0 L[12]x28  +0x2f0 C[8]x16  +0x370 A[8]x12`.
+
+Gates: hookcheck OK; emu_probes 17/17 across B/X/L/C/A; emu_check GREEN; audit identical to base;
+byte diff = five 6-byte holes + 532 B cave; no cave write outside `{d0-d3,a0,a1}`; cave ends in `jmp`.
+
+## P40 HW RESULTS -- three corrections and one clean answer [2026-08-21]
+
+```
+magic ok  cntB=1  cntX=5  cntL=0  cntC=5  cntA=8  cntLall=88
+B[0] result=-2 PC=0x40062462 a2=0x460364e4
+X[0..4] callerPC=0x400848e0  ptr=0x460bd00d  str='/universi/AUDIO/'   (all five identical)
+C: type=0 slot=128 @8=1 @20=1 | type=0 slot=143 @8=2 @20=5 | slot=143 @8=0 @20=5  (x3)
+A: slot=143 @8=0 type=0  (x8)
+SET-B[15] = UI slot 144 = '../AUDIO/afo-melero.aif'
+```
+
+### CORRECTION 1: `-2` is NOT an empty path string
+X caught every strlen call inside the loader: **five, all from `0x400848e0`** (block A's guard), all on
+`a2+1 = 0x460bd00d` holding `'/universi/AUDIO/'` — length 16. **strlen never returned 0.** So the
+earlier "-2 == EMPTY PATH" conclusion, drawn from reading the guard statically, is wrong. The only
+other route to `0x4008498c` is the NULL-field test right after it:
+
+```
+400848e2: tstl %d0            ; strlen result -- PASSED all 5 times
+400848e4: blew 0x4008498c
+400848e8: movel %a2@(262),%d0
+400848ec: beqw 0x4008498c     ; <-- a2@(262) == 0  ==> -2      (or block B's 0x4008493a, same field)
+```
+
+So **-2 means field `+262` of the request record is NULL**. `a2 = 0x460bd00c` (X's pointer minus 1),
+which is the record posted at `0x4002213e`. Next probe: `0x400848e8` (8 B hole) and/or `0x4008493a`
+(6 B) recording `a2`, `a2@(262)` and 32 bytes of the record — run hookcheck on both first.
+
+### CORRECTION 2: `FUN_40099374` is trim/loop-points, not slices
+Its `%a5 = STATE@20` is only ever written back at `0x4009964e`; the body clamps `SETTINGS+300/304/308`
+(trim start / length / loop point). `STATE@20` is a refcount (`movel @20,d0; addq #1,d0; bne; moveb #1`
+at 0x4009405e), not a slice-table pointer. The "sampleslice" label from the earlier session is wrong,
+so probe C does NOT answer the slices question — it does confirm the high slot reaches this code with
+`@8 == 0`.
+
+### CORRECTION 3: the AED is not the slice blocker
+A recorded slot 143 with `@8 = 0`, `type = 0`, eight times: **the AED's has-content predicate correctly
+sees the high slot as occupied.** That path is fine.
+
+### L recorded nothing -- and that is a TIMING result, not a probe failure
+`cntLall = 88` (88 slots with non-empty paths went through the bulk loader) but `cntL = 0`: **no slot
+>= 128 ever reached it.** Expected for this run — project.256 was deleted, so SET-B was empty at
+project-load time and the loop's first instruction (`tstb %a2@ ; beq skip`) skipped every high slot.
+The path only arrived later, from the UI assign.
+
+**But `project.work` DOES contain `TYPE=STATIC SLOT=144 PATH='../AUDIO/afo-melero.aif'`** — the
+serializer writes high slots correctly, and the parser runs BEFORE the bulk load loop. So a RELOAD
+should make the loop walk SET-B[15] with the path present, and L will record slot/result/path.
+**That measurement needs NO new flash.** Test: delete project.256, RELOAD the project, then SAVE.
+
+## RELOAD WORKS -- high-slot persistence is closed end-to-end [2026-08-21]
+
+P40, after `RELOAD` with project.256 deleted (so SET-B came only from the project.work parser):
+
+```
+cntLall=266  cntL=2
+L[0] slot=143 result=1 ptr=0x40a99618 [SET-B[15]=UI slot 144] path='../AUDIO/afo-mel'
+L[1] slot=143 result=1  (same)
+```
+
+`0x40a99618 - SET_B = 0x4038 = 15 * 1096` exactly -> **SET-B[15] = UI slot 144**, and `result = 1` =
+success. The LOADLOOP_STUB's A->B redirection works: the bulk STATIC loader walks past idx 127 into
+SET-B, finds the high slot's path and loads it. HW-confirmed by the user: **slot 144 loads after
+RELOAD, the AED draws the waveform, and it plays from the trigs.**
+
+Full chain now proven: assign -> SAVE (serializer writes `TYPE=STATIC SLOT=144
+PATH='../AUDIO/afo-melero.aif'` to project.work; sidecar dumps SET-B to project.256) -> RELOAD (parser
+writes SET-B[15]; bulk loader loads it) -> waveform + playback. That closes the "RELOAD reverts the
+slot" item open since P30.
+
+## SLICES ROOT-CAUSED: SETTINGS+1092 (slice count) is 0 while the .ot says 11
+
+The .ot sidecar parser `FUN_40089940` reads the file field-by-field into `d3 + N`, where d3 is the
+**migrated** SETTINGS pointer (clamp raised to #255 at 0x40089958, site 0x4008996c -> h_set_d3 --
+verified on the BUILT image). Its layout:
+
+```
+40089cc8: subal %a2,%a2                 ; i = 0
+40089cca: pea 0xc                       ; read 12 bytes per slice
+  ...     dest = d3 + 300 + i*12        ; slice array = SETTINGS[300 .. 1068)
+40089d10: moveq #64,%d2 ; cmpl %a2,%d2 ; bne  -> 64 iterations
+40089d16: lea %a2@(1092),%a2 ; pea 0x4 ; jsr read   ; SLICE COUNT -> SETTINGS+1092
+```
+
+Measured directly out of project.256, `SET-B[15]` (UI slot 144):
+
+```
+SETTINGS+1092 (0x444) = 0            <- slice count
+bytes 0x440..0x448   = all zero
+/universi/AUDIO/afo-melero.ot        <- u32 at 0x33a = 11 slices
+slice array 0x12c..0x42c             = zero except 0x131..0x134
+```
+
+The lone non-zero run at +305 is the trim/loop triple that `FUN_40099374` writes to
+`SETTINGS+300/304/308` (which shares the first 12 bytes with slice[0]) -- not parser output.
+**So the .ot slice loop never ran for this slot.** Scalar attributes DID land (length at +0x104,
+tempo `0x09bb` at +0x116, `0x639750` at +0x131), so the parser started and got through the early
+fields, then either bailed at one of its many `blt 0x40089d7a` error exits or was never invoked on
+this path at all.
+
+NEXT (needs a probe): instrument `0x40089940` entry (slot + which exit) and the error exit
+`0x40089d7a`/`0x40089d78`. Run `tools/hookcheck.py` on both before writing a byte.
+
+## TOOL FIX: `tools/fnscan.py` was reading STOCK
+Same defect as the old otdis: it hard-coded `out/stock_mainos.bin`, so it reported
+`0x4008996c addi #0x100d5b30,d3` and `cmpi #128` where the BUILT image has `jsr 0x400d7480` (h_set_d3)
+and `cmpi #255`. Now defaults to `out/mainos_persist256.bin`, honours `OTDIS_IMG`, falls back to stock,
+and prints `[fnscan] scanning <path>`. Fifth tool in this family; distrust any earlier fnscan output.
+
+## The `-2` popup is unrelated to the high slot
+Even on this clean successful reload, `cntB=1` with the same `result=-2 a2=0x460364e4`, while
+`L` shows the high slot loading with `result=1`. X again caught only the five `'/universi/AUDIO/'`
+strlen calls, all passing. So the popup is a **separate** request failing on `a2@(262) == 0`, not the
+sample load. Worth checking whether it also fires on a stock-only project (i.e. pre-existing).
+
+## P41 RESULT: the .ot parser is NEVER INVOKED for a high slot [2026-08-21]
+
+```
+cntP = 0     cntS1 = 0     cntE = 0        (parser entry / slice-loop-done / parser exit)
+cntB = 1     cntL = 0      cntLall = 88
+SET-B[15] = UI slot 144 = '../AUDIO/afo-melero.aif'   slicecount(+1092) = 0
+```
+
+Not aborted, not failing — **never called**. That clears `FUN_40089940` itself: it is correctly
+migrated and would have written SET-B if it ran.
+
+`FUN_40089940` has exactly **one** caller: `0x40084eba`, inside the loader state machine. The state
+that reaches it starts at `0x40084e7a`:
+
+```
+40084e7a: movel %a2@(270),%sp@- ; jsr %pc@(0x40084094)     ; register/yield
+40084e82: movel #65536,%sp@-    ; pea 0x460263e0 ; pea 0x400b328b ; pea %a2@(10)
+40084e98: movel %fp,%d3 ; addil #-30,%d3 ; movel %d3,%sp@-
+40084ea2: jsr 0x40016864                                    ; open the .ot sidecar
+40084eac: tstl %d0 ; blts 0x40084ee4                        ; <-- open FAILS => parser SKIPPED
+40084eb0: movel %a2@(2),%sp@-   ; slot   (arg3)
+40084eb4: movel %a2@(6),%sp@-   ; type   (arg2)
+40084eb8: movel %d3,%sp@-       ; handle (arg1)
+40084eba: jsr 0x40089940
+```
+
+So the slot the parser gets comes from `a2@(2)` of the job record — the same field layout as the job
+records seen earlier. Two possibilities remain: the state never runs for the high slot, or it runs and
+the `.ot` open at `0x40084ea2` fails. Note `0x4008498c`'s `-2` exit branches to `0x40084e70`, which is
+a *different* state (`push d0 ; push a2@(278) ; bra 0x400849ea` = post the completion) — adjacent in
+the listing but not the same path.
+
+## P42 (`DUAL256P42`, sha256 `b8c8ebe0…`) -- `tools/build_diag_loaderr10.py`, 516 B at cave 0x400d7100
+
+| probe | site | hole | records |
+|---|---|---|---|
+| B | 0x40022b50 | 6 | `[result][callerPC][a2]` |
+| **ST** | **0x40084e7a** | 8 | UNFILTERED `[jobrec][a2@2 slot][a2@6 type]` + total at +0x2c — does the state run at all? |
+| **O** | **0x40084ea8** | 6 | `[open result][jobrec][16 bytes of the filename at a2@(10)]` — did the .ot open? |
+| P | 0x40089940 | 8 | `[slot][type][handle]`, slot >= 128, + unfiltered total at +0x20 |
+| L | 0x400908ac | 6 | `[slot][result][pathptr][str16]`, slot >= 128 |
+
+ST's replay reproduces `jsr %pc@(0x40084094)` as `pea 0x40084e82 ; jmp 0x40084094` rather than a real
+`jsr` + `jmp`, so the callee sees the ORIGINAL return address on the stack — safe even if that function
+does anything with it. The gate asserts both pushed longs.
+
+Layout (768 B, offsets): `+0x04 cntB +0x0c cntL +0x18 cntLall +0x1c cntP +0x20 cntPall +0x24 cntST
++0x28 cntO +0x2c cntSTall`; `+0x40 B[8]x12  +0xa0 L[8]x28  +0x180 P[8]x12  +0x1e0 ST[8]x12  +0x240 O[8]x24`.
+Reserves UI slots **252 and 253**.
+
+Build bug caught by the gate: cntST and cntSTall initially shared offset +0x24, so the manual increment
+ran before `rec_alloc` read the count and entry 0 was skipped. The memory assertions flagged it
+(`CNT=2 want 1`, array empty). Counters must never share an offset.
+
+Gates: hookcheck OK; emu_probes 14/14 across B/L/P/ST/O; emu_check GREEN; audit identical to base;
+exact unmerged byte diff = the five holes (6/8/6/8/6) + `[0x400d7100,0x400d7304)`; no cave write
+outside `{d0-d3,a0,a1}`; cave ends in `jmp`.
+
+## P42 RESULTS + the .ot loader is still unidentified [2026-08-21]
+
+**User correction:** the earlier run where "slices appeared" was on a LOW slot. Re-tested properly:
+**high slots have no slices, via AED FILE->LOAD NEW SAMPLE and not after RELOAD either.**
+
+```
+run A (project-open + assign):  cntP=0 cntPall=0 cntST=0 cntO=0 cntSTall=0  slicecount=0
+run B (AED FILE->LOAD, low):    cntP=0 cntPall=0 cntST=0 cntO=0             slicecount=0
+run C (AED FILE->LOAD, high):   cntB=4 cntL=4 cntLall=444  all parser counters 0
+```
+
+**`FUN_40089940` never executes -- for ANY slot.** `cntPall` is the UNFILTERED total and the gate now
+proves it ticks for a low slot too (`P unfiltered total` check), so the zero is real, not a filter
+artifact. The state at `0x40084e7a` that contains its only call site never runs either (`cntSTall = 0`).
+So the .ot sidecar parser we spent P41/P42 instrumenting is dead code in these flows, and the slice
+data that low slots DO show comes from somewhere else entirely.
+
+**Two false leads closed.** `0x460ba8a4` (STATIC) and `0x46105424` (FLEX) looked like the slice source
+-- both are copied into `SETTINGS+312` and `SETTINGS+1092` at `0x40093fbc` / `0x40096bbe`. They are a
+**park/restore cache**, not a loader: the mirror site at `0x400936ec..0x40093720` does
+`cache[64 + a4*4] = SETTINGS[1092]` and then `SETTINGS[1092] = 1`, i.e. it saves the slot's slice state
+away and resets the slot to a single whole-sample slice. Only 6 references each, all inside those two
+functions. Index `a4` is a small cache index, NOT the slot (entry stride 12 from +4, counts from +64 --
+they would overlap past index 4).
+
+## P43 (`DUAL256P43`, sha256 `953bc40e…`) -- `tools/build_diag_loaderr11.py`, 438 B at cave 0x400d7100
+Probes B / L / P (kept) plus:
+
+| probe | site | hole | records |
+|---|---|---|---|
+| **AED** | **0x40070cd2** | 10 | UNFILTERED `[SETTINGS ptr][slice count][slice[0] word]` + total at +0x2c |
+
+`0x40070cd2` is the exact instruction where the AED SLICE tab loads the count it will draw
+(`movel %a3@(1092),%d3`), and `a3` comes from the migrated getter `0x4006da78` two instructions earlier,
+so the pointer names the slot: SET-A -> `(p-0x100d5b30)/0x448`, SET-B -> `128+(p-SET_B)/0x448`.
+
+**Test:** open the AED on a LOW slot that draws slices, then on the HIGH slot that does not, then SAVE.
+Reserves UI slots 252 and 253. Delete project.256 first.
+
+It decides between the only two possibilities left:
+- low slot non-zero + high slot zero -> `+1092` IS the field the screen uses; fix the writer
+- low slot ALSO zero but still draws -> the screen reads slices from elsewhere and `+1092` is a red
+  herring (which would also explain why the `.ot` parser being dead does not stop low slots working)
+
+Gates: hookcheck OK; emu_probes 11/11 (B/L/P/AED); emu_check GREEN; audit identical to base; zero
+changes outside the four holes and the cave.
