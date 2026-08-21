@@ -22,12 +22,13 @@ REG = {"d0": UC_M68K_REG_D0, "d1": UC_M68K_REG_D1, "d2": UC_M68K_REG_D2, "d3": U
        "a0": UC_M68K_REG_A0, "a1": UC_M68K_REG_A1, "a2": UC_M68K_REG_A2, "a3": UC_M68K_REG_A3,
        "a4": UC_M68K_REG_A4}
 
-# table params: base_A, stride, adj_B, lo_incl (idx where B starts), field
-SET_A, SET_ADJ = 0x100d5b30, 0x476df600
-SETF_A, SETF_ADJ = 0x100d5c3e, 0x476df70e
-ST_A, ST_ADJ = 0x46c90a78, 0x476fea00
-S41_A, S41_ADJ = 0x46c920a4, 0x47701400
-S42_A, S42_ADJ = 0x46c93a24, 0x47701600
+# table params: base_A, stride, adj_B (SYNCED to patch_dual256.s .equ after SET-B relocation to the
+# pool-reclaimed reserve 0x40a955e0; the old 0x476xxxxx values were the pre-relocation SET_B=0x47701a00).
+SET_A, SET_ADJ = 0x100d5b30, 0x40a731e0
+SETF_A, SETF_ADJ = 0x100d5c3e, 0x40a732ee
+ST_A, ST_ADJ = 0x46c90a78, 0x40ab63e0
+S41_A, S41_ADJ = 0x46c920a4, 0x40ab8de0
+S42_A, S42_ADJ = 0x46c93a24, 0x40ab8fe0
 
 
 def exp_settings(idx, A=SET_A, ADJ=SET_ADJ, stride=0x448):
@@ -38,15 +39,17 @@ def exp_settings(idx, A=SET_A, ADJ=SET_ADJ, stride=0x448):
 
 
 def exp_state(idx, A=ST_A, ADJ=ST_ADJ, stride=44):
+    # CURRENT aligned design: idx=128..255 -> STATE-B (idx=128 -> B[0], aligned with SETTINGS; the old
+    # template-at-128 contract was replaced -- see patch_dual256.s STD "idx=128->B[0], aligned w/ SETTINGS").
     p = (idx * stride) & 0xffffffff
-    if 129 <= idx <= 255:
+    if 128 <= idx <= 255:
         return (ADJ + p) & 0xffffffff
     return (A + p) & 0xffffffff
 
 
 def exp_stride4(idx, A, ADJ, stride=4):
     p = (idx * stride) & 0xffffffff
-    if 129 <= idx <= 255:
+    if 128 <= idx <= 255:
         return (ADJ + p) & 0xffffffff
     return (A + p) & 0xffffffff
 

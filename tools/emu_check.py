@@ -112,51 +112,69 @@ class Emu:
 # CHECKS  — each returns (name, ok: bool, detail: str)
 # ---------------------------------------------------------------------------
 
+# The DUAL-256 build intentionally reclaims 384 KB from the flex pool (build_ramdump.py Step 1,
+# hardware-confirmed): pool base 0x40a955e0 -> 0x40af55e0 (all 23 code operands) and page count
+# 0x390A -> 0x38CA at 0x40096f82 (-> DSP reg 0x80006920). 0x40a955e0 then hosts the B-tables, so it
+# reappears as a few B-references. These three checks validate that EXACT reclaim and nothing more
+# (audio buffers 0x46c2e9c0/e580/e780 must stay put; no other 0x390A count may change).
+POOL_OLD, POOL_NEW, POOL_COUNT_OLD, POOL_COUNT_NEW = 0x40a955e0, 0x40af55e0, 0x390A, 0x38CA
+
+
 def check_dsp_init_regs(stock, patched):
-    """The DSP-init prologue at 0x40096f80 must program IDENTICAL values into the DSP
-    registers 0x80006914/18/1c/20 in stock and patched. Phase-1 desynced 0x80006920
-    (count 0x390A -> 0x388A) and moved the 0x40a955e0 struct — both surface here."""
+    """DSP-init prologue at 0x40096f80 programs regs 0x80006914/18/1c/20. Only 0x80006920 (the pool
+    page count) may change, and only to the intended reclaim value 0x38CA; the rest must match stock."""
     entry = 0x40096f80
     s = stock.call(entry, max_insn=12)
     p = patched.call(entry, max_insn=12)
-    regs = [0x80006914, 0x80006918, 0x8000691c, 0x80006920]
     diffs = []
-    for r in regs:
+    for r in (0x80006914, 0x80006918, 0x8000691c, 0x80006920):
         sv = s["writes"].get(r, (None, 0))[0]
         pv = p["writes"].get(r, (None, 0))[0]
-        if sv != pv:
+        if r == 0x80006920:
+            if pv != POOL_COUNT_NEW:
+                diffs.append(f"0x{r:08x}: count patched={hex(pv) if pv is not None else None} != intended 0x{POOL_COUNT_NEW:x}")
+        elif sv != pv:
             diffs.append(f"0x{r:08x}: stock={hex(sv) if sv is not None else None} "
                          f"patched={hex(pv) if pv is not None else None}")
     ok = not diffs
-    detail = "DSP regs identical to stock" if ok else "DSP REGS DIVERGE -> " + "; ".join(diffs)
+    detail = "DSP regs match stock (pool count -> 0x38CA)" if ok else "DSP REGS DIVERGE -> " + "; ".join(diffs)
     return ("dsp_init_regs", ok, detail)
 
 
 def check_dsp_struct_intact(stock, patched):
-    """The DSP struct base 0x40a955e0 and the audio buffer bases 0x46c2e9c0/e580/e780
-    must be byte-for-byte referenced the same (no relocation of live DSP memory)."""
-    import_counts = lambda img, v: img.count(v.to_bytes(4, "big"))
+    """Audio buffer bases 0x46c2e9c0/e580/e780 must be unrelocated. The flex-pool base is INTENTIONALLY
+    reclaimed: all stock 0x40a955e0 operands become 0x40af55e0, and 0x40a955e0 reappears only as a
+    handful of B-table references (<= the stock pool-ref count)."""
+    cnt = lambda img, v: img.count(v.to_bytes(4, "big"))
     bad = []
-    for v in (0x40a955e0, 0x46c2e9c0, 0x46c2e580, 0x46c2e780):
-        sc, pc = import_counts(stock.img, v), import_counts(patched.img, v)
+    for v in (0x46c2e9c0, 0x46c2e580, 0x46c2e780):
+        sc, pc = cnt(stock.img, v), cnt(patched.img, v)
         if sc != pc:
-            bad.append(f"0x{v:08x}: stock refs={sc} patched refs={pc}")
+            bad.append(f"0x{v:08x}: stock refs={sc} patched refs={pc} (audio buffer moved!)")
+    s_old = cnt(stock.img, POOL_OLD)
+    p_new = cnt(patched.img, POOL_NEW)
+    p_old = cnt(patched.img, POOL_OLD)      # additive B-table refs at the reclaimed base (expected)
+    # all stock pool operands must relocate to the new base; the new base must be unused in stock.
+    if p_new != s_old or cnt(stock.img, POOL_NEW) != 0:
+        bad.append(f"pool reclaim off: 0x{POOL_OLD:08x} stock={s_old} -> new-base 0x{POOL_NEW:08x} refs={p_new}, "
+                   f"stock new-base={cnt(stock.img, POOL_NEW)}")
     ok = not bad
-    return ("dsp_struct_intact", ok, "DSP struct/buffers unrelocated" if ok
-            else "DSP MEMORY RELOCATED -> " + "; ".join(bad))
+    return ("dsp_struct_intact", ok, f"audio buffers intact; pool reclaimed (0x{POOL_OLD:08x} x{s_old} -> "
+            f"0x{POOL_NEW:08x} x{p_new}, +{p_old} B-refs)" if ok else "DSP MEMORY RELOCATED -> " + "; ".join(bad))
 
 
 def check_count_consistency(stock, patched):
-    """Every occurrence of the DSP buffer count 0x390A (long + word) must be unchanged:
-    changing a subset desyncs the DSP view of the buffer -> non-deterministic audio crash."""
+    """Exactly ONE 0x390A (the pool page count at 0x40096f82) may become 0x38CA; every other 0x390A
+    occurrence must be unchanged (changing a subset of a real DSP buffer count would crash audio)."""
     def counts(img):
         return img.count((0x390A).to_bytes(4, "big")), img.count((0x390A).to_bytes(2, "big"))
     sl, sw = counts(stock.img)
     pl, pw = counts(patched.img)
-    ok = (sl, sw) == (pl, pw)
+    # the single reclaim edit removes one long and one word occurrence of 0x390A
+    ok = (pl, pw) == (sl - 1, sw - 1)
     return ("count_consistency", ok,
-            f"0x390A occurrences long {sl}->{pl}, word {sw}->{pw}"
-            + ("" if ok else "  <-- COUNT DESYNC"))
+            f"0x390A long {sl}->{pl}, word {sw}->{pw} (intended: -1/-1 pool-count reclaim)"
+            + ("" if ok else "  <-- UNEXPECTED COUNT DESYNC"))
 
 
 def check_dual256_helpers(stock, patched):
