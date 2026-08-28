@@ -28,7 +28,8 @@ STUBS = [("patch",         0x400d64e0),   # lazy part: save/restore + destinatio
          ("patch_scene2",  0x400d6700),   # sticky A/B scene pointers
          ("patch_led",     0x400d6800),   # dimmed LED while a track is dirty
          ("patch_notimer", 0x400d6900),   # countdown gate + the two menu entries
-         ("patch_arp",     0x400d7000)]   # arp key-scale: 10 extra qualities (code + data)
+         ("patch_arp",     0x400d7000),   # arp key-scale: 10 extra qualities (code + data)
+         ("patch_trigscale", 0x400d7b00)] # MIDI manual-trig stall: per-track-scale MIDI stride
 
 # detour site -> (source, symbol, what it displaces)
 DETOURS = [(0x40009094, "patch_scene2",  "scene_stub",   "apply_part entry"),
@@ -45,7 +46,14 @@ DETOURS = [(0x40009094, "patch_scene2",  "scene_stub",   "apply_part entry"),
            # arp key-scale: 10 extra qualities (Greek modes + blues + phd/mel/oct/hir)
            (0x4009fad2, "patch_arp",     "decode_cave",  "arp scale decode"),
            (0x4009fb74, "patch_arp",     "lookup_cave",  "arp scale lookup"),
-           (0x4003b790, "patch_arp",     "fmt_cave",     "arp scale label")]
+           (0x4003b790, "patch_arp",     "fmt_cave",     "arp scale label"),
+           # FUN_4009b5c8 per-track-scale seed: use the MIDI stride for MIDI tracks 8..15
+           # (was reading the audio stride 0x91a / +0x51, overshooting into trig data ->
+           # DAT_80006646[] garbage -> DAT_400aba50[] OOB -> MIDI trig stalls after step 1).
+           # The 6-byte jmp exactly replaces `move.l #0x91a,D0`; the 3 instrs after it
+           # (12 bytes, 0x4009b6f8..0x4009b703) are left orphaned -- unreachable, nothing
+           # branches into them (the SCALE_MODE==0 path jumps straight to 0x4009b704).
+           (0x4009b6f2, "patch_trigscale", "cave",       "MIDI trig per-track scale read")]
 
 # original bytes each detour must find, as a guard against a wrong assumption
 EXPECT = {0x40009094: "4fefff98", 0x40009664: None,
@@ -54,7 +62,8 @@ EXPECT = {0x40009094: "4fefff98", 0x40009664: None,
           0x40053498: "4fefffdc48d71cfc", 0x40053a68: "4fefffd448d77cfc",
           0x4005435c: "4fefffd848d73cfc",
           0x4009fad2: "102800316606", 0x4009fb74: "41f9400d80a0",
-          0x4003b790: "4e56ff2c48d7"}
+          0x4003b790: "4e56ff2c48d7",
+          0x4009b6f2: "203c0000091a"}   # move.l #0x91a,D0  (head of the corrupt seed read)
 
 ARP_COUNT_AT = 0x400d4096      # arp F-knob key-scale enum: 25 states -> 145
 

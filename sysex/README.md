@@ -1,11 +1,20 @@
 # sysex/ — building the patched firmware
 
-This folder does **not** contain a firmware image. It contains the patch — the ~1,175
-bytes of ColdFire code authored in this repository — plus a script that applies it to
-**your own** copy of the official Elektron OS.
+This folder does **not** contain a firmware image. It contains the patch — the ColdFire
+code authored in this repository, captured hunk by hunk as JSON — plus a script that
+applies it to **your own** copy of the official Elektron OS.
 
 No Elektron binary is redistributed here. You download the stock OS yourself; the
 script produces a `.syx` byte-identical to the reference build.
+
+Two build profiles:
+
+| JSON | contents | size vs stock |
+|---|---|---|
+| `patches/playsfreefix-r1.json` | the MIDI manual-trig **bug fix** only, on otherwise-stock 1.40C | 2 hunks, 72 B |
+| `patches/maxolydian-r13.json` | the fix + all the MAXOLYDIAN behavior mods (the default) | 31 hunks, ~1.5 KB |
+
+Regenerate either from a fresh build with `gen_patch_json.py`.
 
 ## Requirements
 
@@ -27,16 +36,22 @@ script produces a `.syx` byte-identical to the reference build.
 ./fetch-os.sh                      # downloads the official OS into downloads/
 ./setup.sh                         # builds elektron-firmware-tool into vendor/
 
+# fix + mods (maxolydian-r13.json is the default)
 python3 sysex/apply_patch.py \
     -i downloads/extracted/OCTATRACK_OS1.40C.syx \
-    -o OCTATRACK_MAXOLYDIAN.syx
+    -o OCTATRACK_OS1.40C_MAXO_R13.syx
+
+# fix only, on stock
+python3 sysex/apply_patch.py -p sysex/patches/playsfreefix-r1.json \
+    -i downloads/extracted/OCTATRACK_OS1.40C.syx \
+    -o OCTATRACK_OS1.40C_PLAYSFREEFIX.syx
 ```
 
 ```
 [1/5] stock .syx checksum ok
 [2/5] extracted section_3_MAIN_OS.bin (1,112,560 bytes)
-[3/5] applied 22 hunks (1175 bytes)
-[4/5] repacked -> OCTATRACK_MAXOLYDIAN.syx
+[3/5] applied 31 hunks (1792 bytes)
+[4/5] repacked -> OCTATRACK_OS1.40C_MAXO_R13.syx
 [5/5] output checksum ok — byte-identical to the reference build
 ```
 
@@ -47,23 +62,26 @@ per-hunk byte verification always holds.
 
 ## What the patch changes
 
-1,175 bytes out of 1,112,560 (0.11%) of the MAIN OS section.
+Build B (`maxolydian-r13.json`) changes ~1,490 bytes out of 1,112,560 (0.13%) of the
+MAIN OS section. Build A (`playsfreefix-r1.json`) changes 72.
 
-| id | source | effect |
-|---|---|---|
-| `lazy-transitions` | `tools/patch.s`, `patch_enc.s`, `patch_led.s`, `patch_scene2.s` | Sounding tracks keep the previous Part's definition on a pattern change (track LED dimmed) until a trig, a manual trig or an encoder move; A/B scene pointers stay on the same slots. |
-| `no-bank-ptn-countdown` | `tools/patch_notimer.s` | SELECT BANK / SELECT PATTERN windows stop expiring. |
-| `personalize-options` | `tools/patch_notimer.s` | Both of the above are PERSONALIZE entries, **unchecked by default**, so an unconfigured unit behaves exactly like stock. |
-| `boot-branding` | ELEK header (`-V`) | Boot splash and SYSTEM STATUS show `MAXOLYDIAN` instead of `1.40C`. |
+| id | source | effect | gate |
+|---|---|---|---|
+| `midi-trig-scale-fix` | `tools/patch_trigscale.s` | A Plays-Free MIDI track with trig quant *Direct* + pattern scale *Per Track* no longer stalls after step 1 on a manual trig. `FUN_4009b5c8` was seeding the per-track scale index with the audio track stride for MIDI tracks. | **always on** (bug fix) |
+| `arp-key-scales` | `tools/patch_arp.s` | ARP F-knob key-scale gains 10 qualities (Greek modes + blues + phrygian-dominant / melodic / octatonic / hirajoshi); `OFF`/`maj`/`min` byte-identical to stock. | always on |
+| `lazy-transitions` | `tools/patch.s`, `patch_enc.s`, `patch_led.s`, `patch_scene2.s` | Sounding tracks keep the previous Part's definition on a pattern change (track LED dimmed) until a trig, a manual trig or an encoder move; A/B scene pointers stay on the same slots. | PERSONALIZE, off |
+| `no-bank-ptn-countdown` | `tools/patch_notimer.s` | SELECT BANK / SELECT PATTERN windows stop expiring. | PERSONALIZE, off |
+| `personalize-options` | `tools/patch_notimer.s` | Adds the two switches above to the PERSONALIZE menu, unchecked by default. | — |
+| `boot-branding` | ELEK header (`-V`) | Boot splash and SYSTEM STATUS show `MAXOLYDIAN` instead of `1.40C` (build B only). | — |
 
-The code patches live in a free code cave at `0x400d64e0`–`0x400d697c`, reached by
-detours at `0x40009094` (part apply), `0x40052e98` (encoder editor), `0x4003f1b4`
-(crossfader), `0x40083fb4` (track LED painter) and `0x40034b5e` (trig painter). Design,
-addresses and reverse-engineering notes are in [`../NOTES.md`](../NOTES.md) and
-[`../ARCHITECTURE.md`](../ARCHITECTURE.md).
+The MIDI-trig fix is a detour at `0x4009b6f2` into a 62-byte code cave at `0x400d7b00`.
+The MAXOLYDIAN code lives in the same free cave region (`0x400d64e0` onward) reached by
+6-byte jump detours; `tools/build.py` derives every detour target from the linker symbol
+table and verifies the original bytes at each site. Design and RE notes:
+[`../NOTES.md`](../NOTES.md) ("Session 6" for the fix), [`../ARCHITECTURE.md`](../ARCHITECTURE.md).
 
-`patches/maxolydian-r10.json` holds each hunk with its load address, the original bytes
-and the replacement bytes, so the change is auditable without running anything.
+Each JSON holds every hunk with its load address, the original bytes and the replacement
+bytes, so the change is auditable without running anything.
 
 > Only the current revision is published. Earlier ones carried a GUI-in-transition patch
 > that crashed the unit; it is gone — the current spec wants an encoder move to *end* the
@@ -76,9 +94,15 @@ is much faster than MIDI. Its correctness is not assumed: it regenerates Elektro
 official `.bin` byte-for-byte from that file's container.
 
 ```sh
+# build B
 EFT_EMIT_CONTAINER=elek.bin elektron-firmware-tool -i stock.syx -c 3 out/mainos.bin \
     -V MAXOLYDIAN -o out.syx
-python3 tools/make_bin.py elek.bin -o OCTATRACK_MAXOLYDIAN.bin
+python3 tools/make_bin.py elek.bin -o OCTATRACK_MAXO_R13.bin
+
+# build A (no -V: version field stays "1.40C")
+EFT_EMIT_CONTAINER=elek_a.bin elektron-firmware-tool -i stock.syx -c 3 \
+    out/mainos_trigscale_only.bin -o out_a.syx
+python3 tools/make_bin.py elek_a.bin -o OCTATRACK_PLAYSFREEFIX.bin
 ```
 
 ## Before you flash
@@ -95,4 +119,6 @@ Read [`../FLASHING.md`](../FLASHING.md) first. Short version:
 
 This is unofficial, modified firmware, built for personal study of hardware its author
 owns. It is not endorsed by or supported by Elektron, and it will not be supported by
-them. Validated in a ColdFire emulator and on one MKII unit. **Use at your own risk.**
+them. Validated in a ColdFire emulator; the MAXOLYDIAN mods are also confirmed on one
+MKII unit, the MIDI manual-trig fix is not yet hardware-tested. See FLASHING.md §6 for
+the failure playbook. **Use at your own risk.**

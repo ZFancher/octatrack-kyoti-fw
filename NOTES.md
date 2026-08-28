@@ -1233,3 +1233,1267 @@ new patterns/parts but not new sounds — too limiting, and it doesn't solve the
 (new Flex/Static samples into RAM without halting the DSP/playback). Shipped firmware reverted to
 R11 (arp key scales + lazy transitions). The bank-paging sources/emulators/diagnostics remain in
 tools/ and DESIGN_BANKPAGE.md as documented, reusable RE.
+
+
+## Session 4 — Ghidra headless decompilation now runnable in-sandbox (no macOS host needed)
+
+Previous sessions noted `analyzeHeadless`/JDK "live only on the host Mac, not in this
+environment" and treated real Ghidra decompilation as blocked until run manually there.
+That's no longer true for the Linux device-bridge sandbox specifically (still true for the
+plain cloud container, which has no access to `octamax/` at all): it has Java, network
+egress to github.com/api.github.com/pypi.org (but NOT ports.ubuntu.com, deb.debian.org,
+ftp.gnu.org, conda channels — those 403/timeout through the sandbox's proxy), gcc/g++, and
+the mounted project folder — enough to build and run headless Ghidra end to end.
+
+### Recipe (portable JDK 21 + Ghidra 12.1.2, built for linux_arm_64, no root)
+The sandbox is aarch64 Linux; Ghidra 12.1.2's release zip only ships a `decompile` native
+binary for `linux_x86_64`/`mac_arm_64`/`mac_x86_64`/`win_x86_64` — none run on aarch64
+Linux (no qemu-user available either). Built it from Ghidra's own bundled source instead:
+
+1. `curl` a portable Temurin JDK 21 tarball (`OpenJDK21U-jdk_aarch64_linux_hotspot_*.tar.gz`
+   from the `adoptium/temurin21-binaries` GitHub releases — the Adoptium API itself
+   (`api.adoptium.net`) 403s through this proxy, but GitHub releases work) and extract.
+2. `curl` `ghidra_12.1.2_PUBLIC_*.zip` from the `NationalSecurityAgency/ghidra` GitHub
+   releases and extract. Both downloads complete in ~15s each at ~40MB/s — no need to
+   background them (see gotcha below).
+3. `Ghidra/Features/Decompiler/src/decompile/cpp/Makefile` only special-cases
+   `x86_64`/other(→ treated as 32-bit x86) under Linux — no aarch64 branch. Patch it:
+   `ARCH_TYPE=` (empty) and `OSDIR=linux_arm_64` for `ifeq ($(ARCH),aarch64)`. All the
+   bison/flex-generated `.cc` files (`grammar.cc`, `pcodeparse.cc`, `slghparse.cc`,
+   `slghscan.cc`, `xml.cc`) ship pre-generated in the release zip — no bison/flex needed.
+4. Don't build the `decomp_opt` target (the standalone console decompiler) — it pulls in
+   `analyzesigs.cc`/`loadimage_bfd.cc` via the Makefile's `EXTRA` wildcard, which need
+   `<bfd.h>` (binutils-dev headers, not installed, apt has no root here anyway). The
+   target Ghidra's Java side actually shells out to is **`ghidra_opt`**
+   (`CORE+DECCORE+GHIDRA` sources only, no bfd dependency). Also blank `BFDLIB=-lbfd` at
+   the top of the Makefile (only `libbfd-2.38-system.so` is present, no `-lbfd`-resolvable
+   dev symlink, and `ghidra_opt`'s link line doesn't need it once `EXTRA` is out of the
+   picture anyway).
+5. `make ghidra_opt -j6` — clean build, ~80 objects, done in one pass (~1 min). Copy the
+   resulting `ghidra_opt` binary to
+   `Ghidra/Features/Decompiler/os/linux_arm_64/decompile` (create that dir; it doesn't
+   ship in the zip).
+6. Ghidra project ownership: opening a project created by a different OS user throws
+   `ghidra.util.NotOwnerException: Project is owned by <original-user>` — the sandbox's
+   shell user doesn't match. Fix: `export GHIDRA_JAVA_OPTIONS="-Duser.name=<original-user>"`
+   before calling `analyzeHeadless` (the script forwards this env var straight into the
+   JVM's `-D` args; overrides `System.getProperty("user.name")`, which is what Ghidra's
+   ownership check reads).
+7. Then the documented invocation from the `GhidraResolveNN.java` header comments works
+   as-is (just point `JAVA_HOME`/`PATH` at the extracted Temurin instead of the
+   homebrew paths those comments assume):
+   ```
+   export JAVA_HOME=<path>/jdk-21.0.12.1+1
+   export PATH="$JAVA_HOME/bin:$PATH"
+   export GHIDRA_JAVA_OPTIONS="-Duser.name=<original-user>"
+   <ghidra>/support/analyzeHeadless ~/Documents/octamax/ghidra_project octamax \
+     -process "section_3_MAIN_OS.bin" -noanalysis \
+     -scriptPath ~/Documents/octamax/tools -postScript GhidraResolveNN.java
+   ```
+   Full run (JVM start + project open + 4-function decompile) took **6.4s** — cheap enough
+   to just re-run per script, no need to keep a session open.
+
+**Gotcha — nothing backgrounded survives between sandbox shell calls.** `nohup ... &`,
+`disown`, and even `setsid` all get reaped the moment the invoking call returns (tested
+directly: a `setsid`-detached `sleep 25` was gone with no trace by the next call, ~20s
+later). Large downloads/builds have to either complete inside one call's ~45s window, or be
+genuinely resumable (`curl -C -`, `make`'s object-file caching) so a second call in the same
+shell-less style continues the work rather than restarting it. In practice both the JDK
+(196MB) and Ghidra (546MB) downloads and the `ghidra_opt` build finished in a single call
+each, so this only matters if egress is slower next time.
+
+Local build products (`jdk-21.0.12.1+1/`, `ghidra_12.1.2_PUBLIC/`) live in the sandbox's own
+scratch home, not under `~/Documents/octamax` — they don't persist across sessions and
+aren't part of this repo. Re-running the recipe above from scratch takes about 3 minutes.
+
+### Confirmed via real decompilation: FUN_400a1eea's `a0` precondition, and where DIRECT is read
+
+Two things session 3 part 4 could only infer from disassembly are now decompiler-confirmed:
+
+- **`a0` is a genuine implicit input**, not something the function sets up itself: Ghidra's
+  decompiler independently flags `byte *in_A0;` as a live-in register and the function's
+  very first action is `*in_A0 = ~*in_A0;` (byte-complement-in-place — a flag/state toggle
+  at entry, matching the raw `not.b (a0)` instruction that faulted when called cold).
+  Corroborates: `FUN_400a1eea` cannot be called without first finding and replicating
+  whatever caller sets up `a0`.
+
+- **DIRECT (`TRIGQUANT`, blob-relative `+0x48fe`) has exactly one static/register-relative
+  runtime reader in this function**, at `puVar45[uVar20*0x8b0 + 0x48fe]` inside a per-track
+  loop (`uVar20` = track 0..7, `0x8b0` = the confirmed per-track stride), itself gated by
+  `DAT_800065b6 == 0` (a sub-step counter reset every full step — this block runs once per
+  step, not every tick). Full excerpt in `out/ghidra/GhidraResolve26_session4.txt` (search
+  `0x48fe`), decompiled C:
+  ```c
+  if (DAT_800065b6 == '\0') {
+    cVar11 = puVar45[uVar20 * 0x8b0 + 0x48fe];      // DIRECT/quantize-index byte, this track
+    if (uVar20 * 0x8b0 == 0) {                       // TRACK 0 ONLY — different path, no skip-check
+      if (puVar45[CONCAT22(cVar11 >> 7,0x8e55)] == '\0') { iVar15 = (int)(char)puVar45[0x8e53]; }
+      else { iVar15 = (int)(char)puVar45[0x48f8]; }
+    } else {
+      if (cVar11 < 1) goto LAB_400a37f0;             // TRACKS 1-7 — DIRECT(-1) same as index-0: skip
+      iVar15 = *(int *)(&DAT_400d80dc + cVar11 * 4);  // else: quantize-index -> step-length table
+    }
+    if (0 < iVar15) { ... quantize-window / note-reschedule logic, gated on a step counter
+                          (_DAT_800065b2) modulo iVar15 ... }
+  }
+  LAB_400a37f0:
+  ```
+  Two things worth chasing next session, in order of how cheap they are to check:
+  1. **Track 0 is handled asymmetrically from tracks 1-7.** Tracks 1-7 skip this whole
+     block identically for DIRECT and quantize-index-0 (`cVar11 < 1`). Track 0 never takes
+     that skip at all — it always evaluates a different sign-of-`cVar11` branch reading
+     `puVar45[0x8e53]`/`puVar45[0x48f8]` instead. If the user's repro pattern happens to sit
+     on track 0, this asymmetry is a very plausible bug site; if not, it's likely unrelated
+     and the tracks-1-7 skip path is the one to trace against PLAYS_FREE.
+  2. `puVar45[uVar20*0x8b0 + 0x48f9]` (blob-relative `+0x48f9`, i.e. exactly the
+     unidentified "`-3(a1)`" field flagged in session 3 part 4) is read a little further
+     down in the *same* `DAT_800065b6`-gated block (line ~1117 of the log) — so that
+     mystery byte and DIRECT are consumed together here, not in unrelated code paths.
+  This block is quantize/reschedule logic, not obviously the "manual trig key" handler
+  itself — but it's the confirmed, and only, place DIRECT is read at runtime in the
+  function session 3 already identified as the heaviest MIDI-track-state user, so it's the
+  strongest concrete lead so far for how DIRECT actually influences sequencer behavior.
+
+Next step: find `FUN_400a1eea`'s real caller (xref search on `0x400a1eea` — not yet done
+this session) to learn the real `a0` value/type, so the emulator can call it with a valid
+precondition and single-step both the track-0 special case and the tracks-1-7 skip path
+with PLAYS_FREE toggled, watching for where behavior actually diverges.
+
+
+## Session 4 continued (part 2) — SCALE_MODE located, and a correction to the earlier
+## FUN_400a1eea reading
+
+New test pair supplied by the user (real hardware exports, same track/pattern/trig as all
+prior tests): `test1_PFD_scale` = `test1_PFD` (Plays Free ON, Direct selected) with track
+scale mode ALSO set to "per track" in the OT UI. This is the user's confirmed **known-good
+repro of the actual bug** (all three preconditions: Plays Free + Direct + per-track scale
+mode). Diffed against `test1_PFD` the same way as every prior pair.
+
+### Finding 4: SCALE_MODE is a new byte at blob `+0x48fd` / file `0x4964`, completing the
+tight per-track MIDI-trig header
+
+`project.work`/`.strd` differ by 3 bytes (`MIDI_CLOCK_RECEIVE`, `MIDI_TRANSPORT_RECEIVE`
+0→1, `MIDI_MODE` 1→0) — incidental setup for a playable repro (feeding it live MIDI), not
+scale mode; ignore for this purpose. `bank01.strd`/`.work` differ by exactly 2 content bytes
++ the checksum trailer (delta +2, consistent with 2 bytes each `+1` — Finding 2 holds for a
+4th data point). Ran `tools/emu_bankdeserialize.py` on both (now installable in-sandbox:
+`pip3 install --user --break-system-packages unicorn`) to get real, firmware-computed
+blob-relative offsets rather than hand-mapping file offsets:
+
+```
+test1_PFD vs test1_PFD_scale — 2 differing bytes (blob-relative):
+  0x48fd (18685): 0x00 -> 0x01
+  0x8e55 (36437): 0x00 -> 0x01
+```
+
+`+0x48fd` sits **immediately between** the already-confirmed `PLAYS_FREE` (`+0x48fc`) and
+`TRIGQUANT`/DIRECT (`+0x48fe`) — resolves the "constant `0x00` spacer, role unknown" byte
+flagged in session 3 part 1. The tight per-track/per-pattern MIDI-trig header (file-relative
+in this test bank; add the usual bank/pattern offsets for the general case) is now:
+
+```
+0x4962: 0xFF          (still unidentified — unchanged across all 5 test projects now)
+0x4963: PLAYS_FREE    (0/1)
+0x4964: SCALE_MODE    (0/1) -- NEW, this session
+0x4965: TRIGQUANT/DIRECT (-1=DIRECT, 0-16=index)
+```
+(blob-relative, bank 0 / pattern 0: `+0x48fc`/`+0x48fd`/`+0x48fe` respectively, same layout
+just shifted, per the file↔blob correspondence established in session 3 part 3.)
+
+### Correction to session 3 part 4 / session 4 part 1: the "track-0 special case" in
+### FUN_400a1eea is NOT gated on track index — it's gated on TRIGQUANT==0, for every track
+
+Session 4 part 1's Ghidra decompile of `FUN_400a1eea` rendered a branch as
+`if (uVar20 * 0x8b0 == 0)` (read at the time as "only for track 0"). Wrote a second script
+(`tools/GhidraResolve27.java`) to pull the **raw disassembly** around every instruction
+referencing `0x48fc/0x48fd/0x48fe/0x8e52-0x8e55/0x48f8/0x48f9` in this function, specifically
+to check that reading against real asm rather than the decompiler's algebraic rendering —
+good thing, because it was wrong. The actual instructions (per-step loop, gated on
+`DAT_800065b6==0` same as before):
+
+```asm
+tst.b   (DAT_800065b6).l
+bne.w   LAB_400a37f0                    ; once-per-step gate, same as before
+move.l  #0x8b0,D0
+muls.l  D7,D0                           ; D0 = track_index(D7) * 0x8b0
+lea     (0x0,A4,D0*1),A0                ; A0 = per-track pointer (A4 = this pattern's blob base)
+mvs.b   (0x48fe,A0),D0                  ; D0 = sign-extended TRIGQUANT/DIRECT byte, THIS track
+bne.b   LAB_400a3662                    ; if D0 != 0 (i.e. NOT quantize-index-0, incl. DIRECT=-1): skip to the DIRECT/index handling below
+move.w  #-0x71ab,D0w                    ; D0==0 path (quantize-index 0): D0.w = 0x8e55 (D0's high word was already 0 from the sign-extended-0 byte above, so this is a compact way to set D0=0x00008e55)
+tst.b   (0x0,A4,D0*1)                   ; test blob[A4 + 0x8e55]  <-- the newly-confirmed byte
+beq.b   LAB_400a3656
+mvs.b   (0x48f8,A0),D2                  ; blob[0x8e55]!=0: D2 = PER-TRACK byte at A0+0x48f8 (4 bytes before PLAYS_FREE)
+bra.b   LAB_400a3672
+LAB_400a3656:
+move.l  #0x8e53,D0
+mvs.b   (0x0,A4,D0*1),D2                ; blob[0x8e55]==0: D2 = PATTERN-level byte at blob+0x8e53
+bra.b   LAB_400a3672
+LAB_400a3662:
+tst.l   D0
+ble.w   LAB_400a37f0                    ; D0<0 (DIRECT): skip, unchanged from before
+lea     (0x400d80dc).l,A1
+move.l  (0x0,A1,D0*0x4),D2              ; D0 in 1..16: quantize-index -> step-length table (unchanged)
+```
+
+The branch that matters is `bne.b LAB_400a3662` on **the TRIGQUANT byte itself being
+nonzero**, not on track index — `D0` had briefly held `track_index*0x8b0` two instructions
+earlier, but is fully overwritten by the `mvs.b (0x48fe,A0),D0` load before the branch. The
+decompiler's `uVar20 * 0x8b0 == 0` rendering conflated these two unrelated uses of the same
+register into a spurious algebraic identity. **This block runs identically for all 8 tracks**
+whenever that track's TRIGQUANT byte is exactly `0` (quantize-index 0) — there is no
+track-0-only special case. Retracting the "track 0 handled asymmetrically" lead from the
+session 4 part 1 handoff; it doesn't hold up against raw disassembly.
+
+What actually happens, correctly stated: when a track's TRIGQUANT is DIRECT (`-1`) OR any
+nonzero quantize index (`1..16`), behavior is as already documented (DIRECT skips this
+quantize-window block entirely; nonzero index looks up a step-length table). Only when
+TRIGQUANT is exactly `0` does **SCALE_MODE (blob `+0x8e55`, a per-pattern-scoped byte
+distinct from but correlated with the per-track `+0x48fd` byte found above) decide where
+the fallback quantize-window length comes from**: the pattern-shared byte at `+0x8e53` when
+SCALE_MODE is 0, or this specific track's own byte at `+0x48f8` when SCALE_MODE is nonzero —
+i.e., literally "does the quantize-index-0 default come from the pattern or from this
+track", which is exactly what a PER-PATTERN vs PER-TRACK scale-mode toggle should mean
+semantically. Good independent confirmation that `+0x8e55` is the real "scale mode" bit
+consumed at runtime, not just a coincidentally-correlated flag.
+
+**Open question, not yet resolved**: the per-track `SCALE_MODE` byte found at `+0x48fd` this
+session is used **nowhere** in `FUN_400a1eea` — a literal-target search across the whole
+function (all 9 candidate offsets, `tools/GhidraResolve27.java`) found zero references to
+`0x48fd`. Only the pattern-scoped `+0x8e55` copy is read here. So either `+0x48fd` is
+write-only bookkeeping the UI keeps for its own display purposes, or it's read by a
+still-unidentified different function — worth an image-wide literal search for `0x48fd`
+next (same technique as the earlier `0x48fe` dead-end, so also check for register-relative
+access the way `+0x8e55` needed raw disassembly to find, not just a literal-byte scan).
+
+There is also a SECOND, independent read of `+0x8e55` earlier in `FUN_400a1eea`, well before
+the per-step loop (`adda.l #0x8e54,A2` / `tst.b (0x1,A2)` at `0x400a1fbc`/`0x400a1fc2` — this
+is pattern-load-time-shaped setup code (computes `A2 = bank_base + current_pattern*0x8ed8 +
+0x8e54`, i.e. blob-relative `+0x8e54`, then tests the next byte = `+0x8e55`), gating a loop
+that seeds a per-track byte array from a lookup table at `0x400aba50` when SCALE_MODE is
+nonzero — same "seed a per-track array once, only when a flag is on" shape session 3 already
+found for `PLAYS_FREE` seeding `0x80006508[track]` at pattern load. Not fully traced this
+session; flagging the shape since it's the same pattern as a confirmed real mechanism.
+
+Full raw disassembly context for every hit saved to
+`octamax/out/ghidra/GhidraResolve27_session4.txt`.
+
+### Updated next step
+1. Find `+0x48fd`'s actual runtime reader (whole-image search, expect it needs
+   register-relative reasoning like `+0x8e55` did — a plain literal-byte scan already missed
+   it once for DIRECT and would likely miss it again).
+2. Still outstanding from part 1: find `FUN_400a1eea`'s real caller to get a valid `a0` for
+   emulation.
+3. Once both land, re-run the emulator/decompiler trace with all three flags (PLAYS_FREE,
+   SCALE_MODE, DIRECT) set exactly as `test1_PFD_scale` has them (the user's confirmed real
+   repro) and compare against single-flag-off variants to find where behavior actually
+   diverges into the bug.
+
+
+## Session 4 continued (part 4) — likely found the manual-trig key handler itself, and a
+## coherent end-to-end mechanism for the bug
+
+Continuing directly from part 2/3: whole-image operand scan (`tools/GhidraResolve28.java`,
+186,343 instructions, every function in the program) for who reads
+`PLAYS_FREE`/`SCALE_MODE`/`DIRECT` (`+0x48fc`/`+0x48fd`/`+0x48fe`) turned up `FUN_4009f3a4`
+reading `PLAYS_FREE` and `DIRECT` directly (outside the sequencer's per-step loop) — sitting
+inside the `0x4009be00-0x4009f650` region session 3 part 4 already flagged as hosting an
+unnamed function tied to MIDI track state, but never pinned down. Decompiled it
+(`tools/GhidraResolve29.java`), found its callers (`tools/GhidraResolve30.java`), and
+decompiled the biggest caller (`tools/GhidraResolve31.java`). Together these resolve the
+"where is `+0x48fd` read?" open question from part 2 and give a coherent, traceable path
+from a manual key press through to the DIRECT-consuming logic.
+
+### `FUN_40044584(track, pressOrRelease)` — very likely THE manual-trig key handler
+
+`param_1` = track index (0-15: 0-7 audio, 8-15 MIDI via `param_1-8`), `param_2` = 0 or 1
+(rejects anything else). For MIDI tracks, reads a 3-valued byte at exactly
+`+0x48fd` (blob-relative, via `_DAT_46c82456 + pattern*0x8ed8 + track*0x8b0 + 0x48fd` —
+**this is `SCALE_MODE`, confirmed live-read at runtime**, resolving part 2's open question)
+and dispatches on it. For audio tracks the analogous byte lives at a *different* offset in a
+*different* per-track region (`+0x55` within a `0x91a`-strided block, not the `0x8b0`-strided
+MIDI header) — scale mode is stored per track-type, not at one canonical offset.
+
+Simplified MIDI-track logic (full raw decompile in
+`out/ghidra/GhidraResolve31_session4.txt`):
+
+```c
+uVar4 = track - 8;
+if (_DAT_80000012 != 0) {                        // MIDI-mode gate (role TBD)
+  cVar1 = SCALE_MODE[track];                       // 0, 1, or 2 -- see open question below
+  if (isRelease) {                                 // param_2 == 0
+    if (cVar1 == 2) FUN_4009f3a4();                 // only value 2 does anything on release
+    return;                                          // 0 and 1: no-op on release
+  }
+  // isPress (param_2 == 1):
+  if (cVar1 == 1) {
+    if (FUN_4009b290(track) == 1)                    // "is this track already active?"
+      { FUN_4009f3a4(track); goto setKeyBit; }        // already active -> re-trigger path
+    // else falls through to FUN_4009b5c8(track) below (not yet active -> normal start)
+  } else if (cVar1 != 2) goto setKeyBit;             // cVar1==0: skip straight to setKeyBit
+  FUN_4009b5c8(track);                                // "normal" trig-start (not decompiled yet)
+  setKeyBit: _DAT_460d1794 |= (1 << track);
+  return;
+}
+/* _DAT_80000012 == 0: entirely different path -- direct MIDI note-on/off scheduling via
+   FUN_40005030/FUN_40042d1c/FUN_4004271c. Not the bug's precondition (PF+Direct+ScaleMode
+   presumably requires the _DAT_80000012 != 0 branch); not traced further this session. */
+```
+
+`FUN_4009b290(track)` is a one-line accessor: returns `DAT_80006500[track]` (the
+already-documented MIDI mute/active array) — i.e. **"is this track already active/playing
+right now?"** So for `SCALE_MODE == 1` (our confirmed test value — see open question,
+this may not be literally "per track") on a **press**, `FUN_4009f3a4` only fires when the
+track is *already active*; otherwise the normal start path (`FUN_4009b5c8`) runs instead.
+This is exactly the shape of a manual **re-trigger while already playing** — which lines up
+with Plays Free being a precondition (a Plays Free track is the kind you'd press again while
+it's still sounding, since it isn't locked to the step grid).
+
+### The likely end-to-end bug mechanism, now traceable start to finish
+
+```
+FUN_40044584(track, press=1)                          -- manual key press, MIDI track
+  SCALE_MODE[track] == 1                               -- per-track scale mode (our repro)
+  FUN_4009b290(track) == 1                              -- track already active
+    -> FUN_4009f3a4(track)
+         gated on PLAYS_FREE[track] != 0                -- Plays Free ON (our repro)
+         reads DIRECT[track]
+           if DIRECT == -1 (selected, our repro) OR pattern-loaded-flag != 1:
+             -> CLEARS DAT_80006500/0x800064d0/0x800064f0/0x800064e0/... (the track's
+                active/playing state arrays) entirely
+             -> FUN_400a539c(track)  (resets more per-track note/voice scratch state,
+                                       sets a "release" flag to 1 for that track)
+             -> FUN_40000c3c(0x460d17ae, ...)  (posts an event/message -- the same
+                                                  "wake consumer task" primitive used
+                                                  elsewhere for async work, per session 3)
+           else:
+             -> just flips bits in _DAT_80006680/_DAT_80006682 (the SAME bitmask pair
+                FUN_400a1eea's per-step quantize-window logic reads/clears)
+```
+
+Read plainly: with all three of the user's confirmed preconditions active, a manual
+re-trigger of an already-playing MIDI track routes into the DIRECT-selected branch of
+`FUN_4009f3a4`, which **wipes the track's active-state bookkeeping and posts a generic
+event, instead of taking the bit-flip path that (via `_DAT_80006680`/`_DAT_80006682`)
+`FUN_400a1eea`'s step engine is set up to consume.** That's a plausible, concrete mechanism
+for "manual trig silently does nothing / stops the track" under exactly the reported
+conditions — though **whether the clear-and-post-event branch is actually wrong, or is
+supposed to properly restart the note through some effect of the posted event that just
+hasn't been traced yet, is not yet confirmed.** `FUN_40000c3c(0x460d17ae, ...)`'s effect and
+`FUN_4009b5c8`'s behavior (the "normal start" path this whole thing is an alternative to)
+are the natural next things to decompile.
+
+### Open question: is SCALE_MODE really binary, or a 3-way enum?
+
+`FUN_40044584` dispatches on `SCALE_MODE` having 3 distinct values (`0`, `1`, `2`), each with
+different behavior, on both audio and MIDI tracks. Our confirmed diff only exercised a
+`0x00 -> 0x01` transition (the user's "per track" setting). It's not yet established whether
+the OT UI's scale-mode setting genuinely has a 3rd state (`2`) reachable some other way (a
+3-position menu?), or whether `1` and `2` are actually the same conceptual "per track" mode
+reached via different code paths for unrelated reasons, or something else. Worth asking
+the user directly what OT UI options exist for this setting, and/or exporting a 3rd test
+variant to see if a byte value of `2` is reachable at all. This matters because our repro's
+observed behavior (value `1`, gated through `FUN_4009b290`'s activity check) may not be the
+same path a value-`2` project would take (value `2` skips the `FUN_4009b290` gate entirely
+on press, and behaves differently on release too).
+
+### Next step
+1. Decompile `FUN_4009b5c8` (the "normal start" path `FUN_40044584` takes instead of
+   `FUN_4009f3a4` for tracks that aren't already active) and `FUN_40000c3c`'s target at
+   `0x460d17ae` — need both to know what SHOULD happen on a normal re-trig, to confirm the
+   DIRECT branch in `FUN_4009f3a4` is actually the divergence point and not intentional.
+2. Resolve the value-`1`-vs-`2` SCALE_MODE question (ask the user about the real UI, or get
+   a 3rd test export).
+3. `_DAT_80000012` (gates whether this whole code path runs at all) and `DAT_8000004c`
+   (checked in the `else` branches) are both new, unidentified globals worth naming.
+
+
+## Session 4 continued (part 5) — user correction: it's not "scale mode", it's the manual-
+## trig response mode (ONE/ONE2/HOLD); and the actual bug mechanism is now traceable
+
+Two corrections from the user, both important:
+
+1. **The 3-valued byte at blob `+0x48fd` (file `0x4964`) found in part 2/4 is NOT scale
+   mode.** It's Elektron's own manual-trig-key **response mode** setting, with three named
+   options: **"ONE"** (retrigger the track every press — what all our test projects are set
+   to), **"ONE2"** (toggle: one press starts, the next press stops), and **"HOLD"** (plays
+   only while the key is held down). Renaming this field `TRIG_MODE` going forward (still
+   at the same confirmed offset — the location and the fact that it's read in `FUN_40044584`
+   are unaffected, only its *meaning* was misidentified). "Scale mode" as a concept may not
+   exist at this offset at all; if the user's OT project also has a real scale/track-length
+   setting, it lives somewhere else, not investigated this session.
+
+2. **A Plays-Free MIDI track manually triggered should start running even when the OT's
+   overall sequencer transport is stopped.** This is expected/correct behavior, not a bug —
+   and it directly explains why `_DAT_800065b8` matters here.
+
+### `_DAT_800065b8` is very likely per-pattern "sequencer actually stepping" state, not a
+### static "loaded" flag
+
+Whole-image write search (`tools/GhidraResolve32.java`): all 3 writes to `_DAT_800065b8`
+are `move.l Dn,(0x800065b8).l` — full 32-bit writes — and **all 3 sites are inside
+`FUN_400a1eea`** (the per-step sequencer engine), not at pattern-load time as session 3
+assumed ("MIDI pattern loaded" flag). Given it's written by the step engine itself and
+tested as `!= 1` (not a simple zero check), the better working theory is that it reflects
+whether the sequencer is actively stepping this pattern right now — which would explain
+exactly why the user's point (2) matters: **when the overall transport is stopped, this
+would plausibly read something other than `1`**, and both functions below treat
+`_DAT_800065b8 != 1` as equivalent to DIRECT being selected. Not fully confirmed (would
+need to watch it live across a transport stop/start), but it now has a much more precise
+role than "loaded".
+
+### The bug, traced concretely: `FUN_4009f3a4`'s restart path is missing the activation step
+### that `FUN_4009b5c8` (the real "start" function) performs
+
+`FUN_40044584`'s `TRIG_MODE == 1` ("ONE") press-handler logic (part 4) calls
+`FUN_4009b290(track)` — "is this track already active?" (`DAT_80006500[track]`) — and
+branches: **already active → `FUN_4009f3a4(track)`; not active → `FUN_4009b5c8(track)`.**
+Decompiled `FUN_4009b5c8` this round (the "not active, so start it" path) and it is
+unmistakably the Plays-Free start sequence: for MIDI tracks it checks PLAYS_FREE first
+(non-Plays-Free tracks bail to a different function, `FUN_4009b95a`, not yet examined),
+reads DIRECT, and:
+
+```c
+if ((cVar5 != -1 /* not DIRECT */) && (_DAT_800065b8 == 1 /* sequencer stepping */)) {
+    // normal quantized case: just flip the step-engine bitmask, defer to FUN_4009b95a
+    ...
+    FUN_4009b95a();
+    return;
+}
+// DIRECT selected, OR sequencer not actively stepping (transport stopped): full start --
+(&DAT_46c77b89)[track] = DAT_800065be;    // save current pattern/bank
+... [a large block: copies pitch/note/timing scratch state, initializes per-track buffers]
+FUN_400a539c(track);                        // per-track note/voice reset
+(&DAT_80006500)[track] = 1;                 // <-- ACTIVATES the track
+FUN_40000c3c(0x460d17ae,&DAT_400abac8);     // posts the same event as FUN_4009f3a4
+```
+
+Compare directly against `FUN_4009f3a4`'s equivalent branch (part 3), same gating condition
+(`cVar1 == -1 || _DAT_800065b8 != 1`), reached when the track is **already active**:
+
+```c
+(&DAT_80006500)[track] = 0;                 // <-- DEACTIVATES the track (opposite!)
+... [clears the other per-track state arrays to 0]
+FUN_400a539c(track);                        // same call
+FUN_40000c3c(0x460d17ae,&DAT_400abac8);     // same event
+```
+
+**Both functions call the identical pair `FUN_400a539c(track)` +
+`FUN_40000c3c(0x460d17ae,...)` in this branch. `FUN_4009b5c8` additionally does the full
+state re-initialization and sets the track active (`DAT_80006500[track] = 1`) before that
+pair; `FUN_4009f3a4` only clears state and sets it inactive (`= 0`) before the same pair.**
+Given "ONE" mode is supposed to *restart* an already-playing track — i.e. conceptually
+stop-then-immediately-start-again — `FUN_4009f3a4`'s branch does the "stop" half and never
+does the "start" half. The track goes silent and stays silent, instead of restarting.
+
+This lines up with every reported precondition and the user's point (2) simultaneously:
+DIRECT selected and/or the transport being stopped both land in the exact same "clears
+instead of restarts" branch (they're OR'd together in the gating condition), and Plays Free
+is required simply because it's what makes `FUN_4009f3a4`/`FUN_4009b5c8` reachable for MIDI
+tracks at all (non-Plays-Free tracks take the `FUN_4009b95a` path entirely). **This is now
+the leading, well-evidenced candidate for the actual bug mechanism**, not just a lead.
+
+### Open items
+- Exact `TRIG_MODE` value mapping: `1 = ONE` is confirmed (user-stated + test data). Value
+  `2`'s dispatch (press → unconditional `FUN_4009b5c8`; release → `FUN_4009f3a4`) reads more
+  like **HOLD** (press starts, release stops) than "ONE2", contrary to the initial guess
+  last round. Value `0` (press → unconditional `FUN_4009b5c8`, no active-check; release →
+  no-op) doesn't obviously match either remaining name from the code alone — a toggle
+  ("ONE2") would need state persisted *across* separate press events, which might live
+  inside `FUN_4009b95a` (not yet decompiled) rather than in this dispatcher. Worth a 3rd
+  test export (`TRIG_MODE` = the untested value) to pin this down definitively, same
+  methodology as every other field this project has confirmed.
+- `FUN_4009b95a` (the non-Plays-Free / normal-quantized path both functions defer to) is
+  still undecompiled — likely holds the ONE2 toggle logic if that guess above is right.
+- Not yet proposed a fix — the natural one (`FUN_4009f3a4`'s branch should call
+  `FUN_4009b5c8` instead of/after clearing, rather than only clearing) needs the full
+  register/stack context checked before treating it as safe; flagging as the shape of the
+  fix, not a confirmed patch.
+
+
+## Session 4 continued (part 6) -- DAT_80000012 identified as project-level "MIDI_MODE"
+## setting (likely bug precondition #3); FUN_40044584 ground-truthed via raw disassembly;
+## HOLD (=2) confirmed exactly; value 0 still unresolved; FUN_4009b95a is an empty stub
+
+Two threads pursued: (1) fully ground-truth the TRIG_MODE dispatch in `FUN_40044584` against
+raw disassembly (not just decompiled C, given the earlier decompiler-misrender lesson from
+part 3), and (2) chase down `DAT_80000012`, the single global that gates whether the entire
+TRIG_MODE-based dispatch even runs for MIDI tracks -- a strong candidate for the real
+"scale mode = per track" bug precondition #3, since our confirmed per-track TRIG_MODE byte
+turned out not to be scale mode at all (see part 5).
+
+### `DAT_80000012` = a project-state boolean sourced from a text config key literally named
+### "MIDI_MODE"
+
+`DAT_80000012` has exactly **one write site** in the whole image (found earlier via
+`GhidraResolve32`'s write-scan): inside `FUN_400866c4`, a ~7100-byte function that is
+unmistakably a **text-based project/state-file line parser** (it reads lines byte-by-byte,
+splits on `=`, and switches on section headers `SAMPLE`, `SETTINGS`, `STATES`, `META`, then
+on a long chain of `KEY_NAME` string compares within the `STATES` section: `RELOAD_BANK`,
+`PASTE_PATTERN`(bank index), `ARRANGEMENT`, `ARRANGEMENT_MODE`, `MIDI_MODE`, `RENAME_PART`,
+...). This is very likely the parser for the project's saved/live-state text blob (separate
+from the binary bank-file format this project has focused on so far).
+
+The `MIDI_MODE` case, decompiled:
+```c
+iVar2 = FUN_40013e14(local_12d, s_MIDI_MODE_400b7e8b);   // strcmp against "MIDI_MODE"
+if (iVar2 == 0) {
+    ...
+    iVar2 = FUN_400144c4(puVar3);      // parse the value after '='
+    if (bVar10) {
+        if (iVar2 < 0) {
+            _DAT_100b14de = 0;
+            _DAT_80000012 = 0;
+        } else {
+            _DAT_100b14de = iVar2;
+            _DAT_80000012 = iVar2;
+            if (0 < iVar2) {            // clamp to boolean
+                _DAT_100b14de = 1;
+                _DAT_80000012 = _DAT_100b14de;
+            }
+        }
+    }
+}
+```
+So `DAT_80000012` is a **boolean project setting, loaded once from a `MIDI_MODE=` line in a
+text state/config blob**, clamped to 0 or 1. It is read (never written) everywhere else,
+always as the outer gate in `FUN_40044584`:
+```c
+tst.l (0x80000012).l
+beq.w 0x40044710      // MIDI_MODE == 0: entirely different code path (direct MIDI-out
+                       // scheduling, does NOT read TRIG_MODE at all)
+// falls through when MIDI_MODE != 0: reads TRIG_MODE (+0x48fd) and dispatches through the
+// FUN_4009b5c8 / FUN_4009f3a4 pair analyzed in part 5 -- i.e. THIS is the whole codepath
+// the bug lives in.
+```
+**This is a strong candidate for bug precondition #3.** The internal firmware name
+("MIDI_MODE") doesn't obviously match the user's own description ("track scale mode = per
+track"), but functionally it fits perfectly: it's a single global boolean, set once from
+project state (not per-step, not per-track), and it gates whether the ONE/ONE2/HOLD
+TRIG_MODE dispatch (where the actual bug lives) is reachable at all vs. an entirely
+different, separately-implemented direct-MIDI-scheduling path when it's off. Whatever the
+UI calls it, this is almost certainly the flag the user was describing -- flagging the name
+mismatch explicitly rather than asserting the UI label, since that hasn't been directly
+confirmed (would need a project text-state export to see the literal `MIDI_MODE=` line and
+correlate it against the known-good/known-bad UI setting).
+
+### `FUN_40044584` ground-truthed via raw disassembly (not just decompiled C)
+
+Given the part-3 lesson about a decompiler misrender, the TRIG_MODE dispatch was re-checked
+against raw disassembly end to end (`GhidraResolve33`). It confirms the decompiled structure
+from part 5 exactly, with one addition -- the MIDI-track press dispatch (D3=track 8-15,
+D4=press(1)/release(0), D0=TRIG_MODE byte sign-extended) is:
+
+```
+press (D4==1):
+  D0 == 0  -> unconditionally call FUN_4009b5c8 (start), NO active-state check first
+  D0 == 1  -> call FUN_4009b290(track) [active?]; if active -> FUN_4009f3a4 (the buggy
+              clear-only path); if not active -> FUN_4009b5c8 (start)
+  D0 == 2  -> unconditionally call FUN_4009b5c8 (start), NO active-state check first
+              (same call as D0==0 -- these two share the exact same call site)
+release (D4==0):
+  D0 == 0  -> no call (falls straight to generic tail/no-op)
+  D0 == 1  -> no call
+  D0 == 2  -> call FUN_4009f3a4 (stop)
+```
+
+**Value `2` matches HOLD exactly and unambiguously**: press always (re)starts, release
+always stops. Confirmed, not just inferred.
+
+**Value `1` is bulletproof as ONE** (hardware test-data ground truth from every export this
+project has). Its dispatch is the odd one out: it's the only value that bothers to check
+active-state via `FUN_4009b290` before deciding whether to start or hand off to the
+clear-only stop path. Conceptually this is exactly "restart if already playing, start if
+not" -- i.e. correct ONE intent -- but the "restart" half is implemented as a bare stop
+(`FUN_4009f3a4`'s clear-without-reactivate branch, per part 5) instead of stop-then-start,
+which is the bug.
+
+**Value `0` remains unresolved.** By elimination it should be ONE2 (toggle: first press
+starts, second press stops), but the dispatch code doesn't match a toggle at all -- it just
+unconditionally calls `FUN_4009b5c8` on every press with no active-state check, and does
+nothing on release. Checked whether `FUN_4009b5c8` itself might contain the toggle/active
+check (in case it was hiding there instead of in the dispatcher) -- it does not: its full
+decompile (recovered from the `GhidraResolve32` log) has no active-state read anywhere;
+it either defers to `FUN_4009b95a` (quantized/non-DIRECT case) or unconditionally does the
+full re-init-and-activate sequence (DIRECT-or-not-stepping case), regardless of whether the
+track was already active. So value 0's press behavior would, if anything, always sound like
+a correct **restart-every-press**, not a toggle -- more like a second flavor of "ONE" than
+"ONE2". Possibilities, none confirmed: (a) value 0 is simply never emitted by the real UI
+(reserved/default-only) and ONE2 is actually value... there is no 4th value though, so this
+seems unlikely; (b) ONE2's toggle-off check happens further upstream, before
+`FUN_40044584` is even called (e.g. the caller only invokes this dispatcher on transitions,
+suppressing the "off" press before it gets here) -- not yet checked; (c) our identification
+of which named mode maps to which value is simply wrong in some way not yet apparent from
+static analysis alone. **Next concrete step to resolve this: a third real test export with
+TRIG_MODE set to ONE2 specifically (not just "the untested byte value"), so the byte value
+can be read directly via the emulator deserializer the same way every other field in this
+project has been confirmed** -- guessing further from code alone isn't productive past this
+point.
+
+### `FUN_4009b95a` is a literal empty stub
+
+Both `FUN_4009b5c8`'s and `FUN_4009f3a4`'s "quantized / not DIRECT / sequencer stepping"
+branches defer to `FUN_4009b95a()` after flipping bits in `_DAT_80006680`/`_DAT_80006682`.
+Decompiled in full this session: `void FUN_4009b95a(void) { return; }` -- a true no-op, 10
+bytes (entry + rts, effectively). This rules it out as a hiding place for ONE2 toggle logic
+or any other quantized-path state machine; the real work in the quantized case is entirely
+the bit-flip that happens just before the call, consumed later by `FUN_400a1eea`'s per-step
+engine. Likely vestigial (a hook point that no longer does anything in this firmware
+version) rather than a bug.
+
+### Also fully confirmed this round: `FUN_4009b290`
+
+```c
+uint FUN_4009b290(uint param_1) {
+  if ((int)param_1 < 0) return _DAT_800065b8;
+  return (uint)(byte)(&DAT_80006500)[param_1 & 0xf];
+}
+```
+Simple active-state getter: `DAT_80006500[track]` per-track (the same array `FUN_4009b5c8`
+sets to 1 on activate and `FUN_4009f3a4`'s buggy branch sets to 0 on deactivate), or
+`_DAT_800065b8` itself when called with a negative sentinel. No new information beyond
+part 5's earlier partial view, but now the full body is confirmed rather than summarized.
+
+### Open items (updated)
+- **Precondition #3 identity**: `DAT_80000012`/"MIDI_MODE" is now the strongest candidate,
+  but the internal name doesn't confirm the UI label the user used ("scale mode = per
+  track"). Not confirmed against a project state-text export yet.
+- **TRIG_MODE value 0**: still unresolved; needs a 3rd real test export with ONE2 selected,
+  same methodology as every other confirmed field.
+- Fix shape is unchanged from part 5: `FUN_4009f3a4`'s DIRECT-or-not-stepping branch clears
+  and deactivates a track but never re-runs the reactivation sequence `FUN_4009b5c8`
+  performs in its equivalent branch. Still not proposed as a concrete patch pending full
+  register/stack verification.
+
+
+## Session 5 (Claude Code, on the user's Mac) — toolchain moved to native macOS; Open Item 1
+## resolved (dead end); handoff-5's "SCALE_MODE not in the trig chain" claim is WRONG;
+## step-engine quantize handler fully mapped
+
+Environment change: this session runs as Claude Code directly on the user's Apple-Silicon Mac
+(OS user `kyoti_m4`), not the old Cowork Linux sandbox. Consequences:
+
+### Toolchain (replaces the from-source `ghidra_opt` build recipe in the Session 4 intro)
+- **Ghidra**: Homebrew formula at `/opt/homebrew/Cellar/ghidra/12.1.2/` →
+  `analyzeHeadless` = `/opt/homebrew/Cellar/ghidra/12.1.2/libexec/support/analyzeHeadless`.
+  The official `mac_arm_64` native `decompile` binary ships and works
+  (`.../libexec/Ghidra/Features/Decompiler/os/mac_arm_64/decompile`) — **no from-source
+  build needed**, exactly as handoff-5 predicted.
+- **JDK 21**: `/opt/homebrew/Cellar/openjdk@21/21.0.12/libexec/openjdk.jdk/Contents/Home`.
+- Invocation that works (headless run ≈ 4 s, JVM + project open + scripts):
+  ```
+  export JAVA_HOME=/opt/homebrew/Cellar/openjdk@21/21.0.12/libexec/openjdk.jdk/Contents/Home
+  export PATH="$JAVA_HOME/bin:$PATH"
+  /opt/homebrew/Cellar/ghidra/12.1.2/libexec/support/analyzeHeadless \
+    ~/Documents/octamax/ghidra_project octamax -process "section_3_MAIN_OS.bin" \
+    -noanalysis -scriptPath ~/Documents/octamax/tools -postScript GhidraResolveNN.java
+  ```
+  `GHIDRA_JAVA_OPTIONS="-Duser.name=kyoti_m4"` is **not** needed (running as the project
+  owner). The "Could not determine local host name" and `DuplicateFileException` benign
+  errors from the old sandbox do **not** appear here.
+- **macOS TCC gotcha (cost ~an hour at session start)**: `~/Documents` is TCC-protected and
+  the process that actually touches the FS is Anthropic's `claude` binary
+  (`com.anthropic.claude-code`, separately Developer-ID-signed), **not** VS Code. Granting
+  VS Code Full Disk Access does nothing. Fix: add
+  `~/.vscode/extensions/anthropic.claude-code-<ver>-darwin-arm64/resources/native-binary/claude`
+  to Full Disk Access (path is version-stamped → re-add after each extension update), or run
+  `claude` from Terminal.app instead. Test project folders (`test1_*`) also exist as copies
+  on `~/Desktop` (readable without the grant).
+
+Scripts this session: `tools/GhidraResolve36.java` … `GhidraResolve38.java`. Raw logs:
+`out/ghidra/GhidraResolve3{5,6,7,8}_session5.txt`.
+
+### Open Item 1 RESOLVED — `FUN_4009a670` is a load-time bounds-CLAMP, not on the trig path
+
+Decompiled in full (`GhidraResolve36`). It walks all 8 audio tracks (stride `0x91a`), then all
+8 MIDI tracks (stride `0x8b0`), then the pattern-level fields, **clamping every field to its
+legal range** and returning the count of corrections made. Callers (all load/init-time, none
+runtime):
+- `FUN_4008cebc` — the bank deserializer, calls it once on the freshly-loaded blob.
+- `FUN_4009abdc` — the pattern **initializer** ("new empty pattern" defaults), tail-calls it.
+- `FUN_40025770` — bulk "validate all 16 patterns of a bank" loop (`adda.l #0x8ed8,A2`).
+
+**Not reachable from `FUN_40044584` / the manual-trig path at all.** Dead end for the bug
+mechanism — but it hands us authoritative field ranges (blob-relative, per track for the
+per-track ones):
+| offset | field | clamp range |
+|---|---|---|
+| `+0x48f8` | per-track quantlen | `[2, 0x40]` |
+| `+0x48f9` | (unnamed, MIDI) | `[0, 6]` |
+| `+0x48fa` | (unnamed, MIDI) | `[0, 0x1e]` |
+| `+0x48fb` | (unnamed, MIDI) | `[-1, 1]` |
+| `+0x48fc` | **PLAYS_FREE** | `[0, 1]` |
+| `+0x48fd` | **TRIG_MODE** | `[0, 2]` (⇒ 3 states ONE/ONE2/HOLD, consistent) |
+| `+0x48fe` | **DIRECT/TRIGQUANT** | `[-1, 0x10]` |
+| `+0x48ff` | (unnamed, MIDI) | `[0, 1]` |
+| `+0x8e50` | pattern length (u16) | `[2, 0x400]` |
+| `+0x8e52` | pattern scale idx | `[0, 6]` |
+| `+0x8e53` | pattern fallback quantlen | `[2, 0x40]` |
+| `+0x8e54` | pattern "scale offset" (see below) | `[0, 6]` |
+| `+0x8e55` | **SCALE_MODE** | `[0, 1]` — **binary at pattern level** (settles part-4's "is it 3-valued?" — no) |
+| `+0x8e56` | (pattern) | `[-1, 0x10]` |
+| `+0x8e57` | (pattern) | `[0, 3]` |
+| `+0x8e58` | (pattern, i32) | `[0x2d0, 0x1c20]` else `0xb40` |
+
+`FUN_4009abdc` init defaults: pattern `+0x8e50=0x10, +0x8e52=2, +0x8e53=0x10, +0x8e54=2,
++0x8e55=0, +0x8e56=0, +0x8e57=0, +0x8e58=0xb40`; per-track (both types) first 8 bytes
+`{0x10, 2, 0, 0xff, 0, (u8)_DAT_80000094, 0, 0}`.
+
+### CORRECTION to handoff-5 Open Item 2 — `FUN_4009b5c8` **does** read SCALE_MODE (`+0x8e55`)
+
+Handoff-5 states `+0x8e55` "is not read anywhere in the manual-trig-key dispatch chain
+(`FUN_40044584`, `FUN_4009b5c8`, `FUN_4009f3a4`)". **`FUN_4009b5c8` reads it.** It was
+already visible in the `GhidraResolve32` decompile and is now confirmed against **raw
+disassembly** (`GhidraResolve38`, `0x4009b6d0`–`0x4009b704`, in the function's full-init
+tail which Ghidra has split off as a separate `candidate_4009b64e` listing):
+```asm
+; D1 = 0x400e21e0 + bank*0x9b340 ;  D6 = current pattern ;  D3 = track index (0..15)
+move.l #0x8ed8,D2 ; muls.l D6,D2 ; move.l D1,D0 ; add.l D2,D0
+movea.l D0,A0 ; adda.l #0x8e54,A0        ; A0 = pattern-block + 0x8e54
+lea (-0x7fff99c2).l,A1                    ; A1 = 0x8000663e  (&DAT_8000663e)
+tst.b (0x1,A0)                            ; <-- SCALE_MODE, pattern-level +0x8e55
+beq.b .normal
+  move.l #0x91a,D0 ; muls.l D3,D0 ; add.l D2,D0   ; D0 = track*0x91a + pattern*0x8ed8
+  movea.l D1,A0 ; lea (0x51,A0,D0*1),A0           ; A0 = blob + bank + that + 0x51
+.normal:
+move.b (A0),(0x0,A1,D3*1)                 ; DAT_8000663e[track] = *A0
+```
+The whole-image operand scan (`GhidraResolve35`) missed it because `+0x8e55` is reached as
+`[regA + 0x8e54] + 1` — register-relative, the documented blind spot (3rd time now:
+DIRECT read, the earlier `+0x8e55` read in `FUN_400a1eea`, and this one).
+
+So SCALE_MODE's effect on the trig path: in `FUN_4009b5c8`'s **full-init branch only**, it
+picks the *source byte* copied into `DAT_8000663e[track]`:
+- SCALE_MODE == 0 (Normal): pattern-level byte `+0x8e54`.
+- SCALE_MODE != 0 (per-track): per-track byte at `blob + pattern*0x8ed8 + track*0x91a + 0x51`.
+  **Note the `0x91a` (audio) stride applied to a raw track index that is 8–15 for MIDI** —
+  for MIDI track 8 that resolves to blob-relative `+0x4921` (inside MIDI-track-0's sub-block
+  but not at a named field). Present identically in raw asm and decompile — not a misrender.
+  Looks anomalous (audio stride on a MIDI index); could itself be a firmware bug or the
+  per-track scale byte for MIDI genuinely lives in a `0x91a`-strided shared array. **Unverified.**
+
+`FUN_4009f3a4` still does **not** reference `+0x8e55` in either branch (re-confirmed against
+full decompile + raw asm, `GhidraResolve37`).
+
+### `DAT_8000663e` fully characterised — it's a per-track "scale offset", consumed by the
+### step engine's quantize handler
+
+`DAT_8000663e[track]` is written by exactly two places:
+1. `FUN_4009b5c8` full-init branch (seed, SCALE_MODE-gated, above).
+2. `FUN_400a1eea` (the per-step engine), inside its once-per-step quantize handler
+   (`DAT_800065b6 == 0` gate), in the `_DAT_80006680` "soft (re)start at boundary" sub-block
+   — with the **same SCALE_MODE gate**:
+   ```c
+   if (puVar45[0x8e55] == '\0')  *scaleoff = puVar45[0x8e54];               // Normal: pattern byte
+   else                          *scaleoff = puVar45[track*stride + 0x51/0x48f9];  // per-track byte
+   cVar = tbl[*scaleoff] - tbl[DAT_8000663d];      // tbl = DAT_400aba50[]
+   DAT_800065db/cb[track] = clamp(...);
+   if (tbl[DAT_8000663d] - tbl[*scaleoff] < 1) { DAT_80006508[track] = 1; FUN_400a539c(track); }  // REACTIVATE
+   else                                          _DAT_80006684 |= bit;                              // pending
+   _DAT_80006680 &= ~bit;
+   ```
+   (`DAT_8000663d` is a separate single byte one address below — a global "current/target
+   scale offset". `DAT_400aba50` is a small translation table, same one part 2 flagged.)
+It is **read** only via the on-stack pointer table `FUN_400a1eea` builds (`lea 0x8000663e,An
+; move.l An,(slot,SP)` at `0x400a292a` / `0x400a2970` / `0x400a3cb4` — these are *address
+stashes*, not content reads; the content reads are the `*pcStackNN` derefs above).
+
+### The step engine's quantize handler is **entirely skipped when DIRECT is selected**
+
+`FUN_400a1eea`'s per-track quantize block (both the `_DAT_80006680` soft-restart and the
+`_DAT_80006682` soft-stop sub-blocks) begins:
+```asm
+mvs.b (0x48fe,A0),D0      ; DIRECT byte, this track
+bne.b  .handleNonZero     ; != 0
+ ... (D0==0, quantize-index 0): SCALE_MODE picks +0x8e53 vs +0x48f8 as the window length ...
+.handleNonZero:
+tst.l D0
+ble.w  LAB_400a37f0       ; D0 == -1  (DIRECT selected)  -> SKIP the whole handler for this track
+ ... (D0 in 1..16): table lookup ...
+```
+So with DIRECT selected, the step engine does **nothing** for the track's soft
+restart/stop — it neither papers over nor re-creates the missing reactivation.
+
+### Where this leaves Open Item 2 (still open, but sharper)
+
+On paper the bug should reproduce on **DIRECT + PLAYS_FREE + ONE + MIDI_MODE alone**,
+independent of SCALE_MODE:
+- `FUN_4009f3a4` takes its clear branch because `cVar1 == -1` (DIRECT) — deactivates, posts
+  event, never reactivates, never touches `_DAT_80006682`.
+- `FUN_400a1eea` skips the track (DIRECT) — no recovery.
+- SCALE_MODE is absent from both paths; its only role is choosing the *seed value* of
+  `DAT_8000663e[track]` at first start, and `DAT_8000663e` is only consumed by the
+  step-engine handler that DIRECT already causes to be skipped.
+
+Yet the user has confirmed on real hardware that pattern-scale = **Per Track** is required
+(A1 Per-Track shows the bug, A2 Normal doesn't, all else identical). Unreconciled. Leading
+hypotheses now, none verified:
+1. The anomalous `track*0x91a + 0x51` MIDI seed read in `FUN_4009b5c8` (audio stride on a
+   MIDI index) lands on a byte whose value flips some *other* downstream decision when
+   SCALE_MODE is per-track — needs the emulator to see what's actually at `+0x4921…+0x49xx`
+   for the repro banks and who else reads it.
+2. There is a second SCALE_MODE consumer still hidden behind register-relative addressing
+   (the operand scan has now demonstrably missed `+0x8e55` reads **twice**). A dedicated
+   pass that walks every `adda/lea #0x8e5x` / `#0x8e40..0x8e60` immediate and every
+   `(disp,An)` with `disp` in that window, across the whole image, is warranted before
+   trusting "only these N functions read it".
+3. `_DAT_800065b8` ("stepping") and/or `DAT_800065b6` (sub-step gate) are computed
+   differently under per-track scale, changing which `FUN_4009f3a4` branch is taken. Not
+   traced.
+4. Mapping error somewhere (e.g. "trigger quantization = Direct" is not `+0x48fe == -1` in
+   the per-track-scale case, because `+0x48fe`'s meaning shifts with scale mode — cf. the
+   `+0x8e53`-vs-`+0x48f8` swap the step engine already does for quantize-index 0).
+
+### Next steps (revised priority)
+1. **Extend `emu_bankdeserialize.py` into an actual execution harness** for `FUN_4009f3a4`
+   and the `FUN_400a1eea` quantize handler: load a real repro bank blob into RAM at
+   `bank_blob_base`, set `DAT_800065bd/be` (bank/pattern), `_DAT_800065b8`, then call
+   `FUN_40044584(8, 1)` twice and watch `DAT_80006500[8]` / `DAT_80006508[0]` /
+   `_DAT_80006680/82/84` / `DAT_8000663e`. Run it once with `test1_PFD_scale` (bug repro)
+   and once with `test1_PFD` (per-track scale OFF) and diff the RAM trace — this is the
+   direct way to see what SCALE_MODE actually changes, rather than more static staring.
+2. Whole-image **register-relative** scan for `+0x8e54/+0x8e55` (immediates `0x8e40..0x8e60`
+   in `adda/lea/addi/movea`, plus `(disp,An)` displacements in that window). The operand
+   scan is confirmed unreliable for this offset.
+3. Decompile `FUN_4009f2f8` (called by `FUN_4009f3a4`'s MIDI clear branch, `param = track-8`)
+   — small, not yet looked at; the only sub-call in the buggy branch besides `FUN_400a539c`
+   and `FUN_40000c3c` that hasn't been read.
+4. Still outstanding from part 6: 3rd hardware export with **TRIG_MODE = ONE2** to resolve
+   value `0`.
+5. Fix shape unchanged; still blocked on items 1–2.
+
+
+## Session 5 part 2 — [SUPERSEDED BY PART 3 — the `+0x48fd`/ONE2 story below is NOT the
+## reported bug; kept for the byte-level facts and the harness build-out only]
+## ~~BUG REPRODUCED IN EMULATION. Root cause is the `+0x48fd` dispatch byte~~
+
+Built `tools/emu_trigbug.py` — a Unicorn execution harness (reuses `emu_bankdeserialize.py`'s
+file-read hook to deserialize a real bank, writes the blob to the real base `0x400e21e0`,
+sets the ~8 globals the trig path reads, then calls the real `FUN_40044584(track, press)`
+**twice** to simulate re-pressing an already-playing track's trig key). Run log:
+`out/ghidra/emu_trigbug_session5.txt`. Notes on the harness:
+- Unicorn m68k faults (`UC_ERR_EXCEPTION`) on the privileged `move SR,Dn` / `move #imm,SR`
+  / `move Dn,SR` critical-section guards. Handled at runtime: a `UC_HOOK_CODE` callback
+  detects those encodings (`w & 0xFFC0 in {0x40C0,0x42C0,0x44C0,0x46C0}`) and advances PC
+  past them. Safe for a single-threaded trace.
+- Stubbed to `rts`: `FUN_40000c3c` (event post), `FUN_40010bc8` (MIDI send), `FUN_400108b0`.
+  Left real: `FUN_4009b290`, `FUN_4009b5c8`, `FUN_4009f3a4`, `FUN_4009b95a`, `FUN_400a539c`,
+  `FUN_4009f2f8`.
+- `FUN_40044584` uses a **different** blob pointer + pattern index than the b5c8/f3a4/1eea
+  trio: it reads the blob base from the pointer at `_DAT_46c82456` and the pattern index
+  from `DAT_100b14d0` (byte), NOT `0x400e21e0` / `DAT_800065bd`/`be`. Harness sets all of
+  them (`[0x46c82456] = 0x400e21e0`, `[0x100b14d0] = 0`, `[0x800065bd/be] = 0`,
+  `[0x80000012] = 1` MIDI_MODE, `[0x800065b8]` = stepping flag).
+
+### Ground truth from deserializing all 5 real test banks (`scratchpad/insp_banks.py`)
+
+Pattern 0, MIDI track 0 (= track index 8) header bytes, and pattern-level `+0x8e55`:
+
+| project | +0x48fc PLAYS_FREE | +0x48fd | +0x48fe DIRECT | +0x8e55 SCALE_MODE |
+|---|---|---|---|---|
+| test1_PF_        | 1 | **0** |  0 | 0 |
+| test1_PFD        | 1 | **0** | -1 | 0 |
+| test1_PFD_scale  | 1 | **1** | -1 | **1** |
+| test1nil         | 0 | **0** |  0 | 0 |
+| test1nil_scale   | 0 | **0** |  0 | **1** |
+
+Key: `test1nil_scale` has pattern SCALE_MODE `+0x8e55 = 1` but `+0x48fd = 0` — so **`+0x48fd`
+is NOT a mirror of the pattern scale-mode bit.** Only `test1_PFD_scale` (the confirmed
+hardware repro) has `+0x48fd = 1`. `test1_PFD` vs `test1_PFD_scale` still differ by exactly
+2 bytes: `+0x48fd` 0→1 and `+0x8e55` 0→1.
+
+### The emulation result (identical for `stepping = 1` and `stepping = 0`)
+
+```
+test1_PFD  (+0x48fd = 0):
+  press #1:  DISP -> B5C8(start)                          -> active[8] = 1
+  press #2:  DISP -> B5C8(start)                          -> active[8] = 1   (restarts, keeps playing) OK
+test1_PFD_scale  (+0x48fd = 1):
+  press #1:  DISP -> B290(inactive) -> B5C8(start)        -> active[8] = 1
+  press #2:  DISP -> B290(ACTIVE)   -> F3A4(retrig)
+                    -> F2F8(note-off sweep) -> 4x midisend -> A539C(reset) -> C3C(event)
+             -> active[80006500][8] = 0  AND  active[80006508][0] = 0        (fully de-activated) BUG
+```
+
+Matches the user's behavioural description exactly: after the buggy re-press the track is
+fully de-activated (both the audio-indexed `DAT_80006500[8]` and the MIDI-indexed
+`DAT_80006508[0]` go to 0), so it neither sounds nor advances — "only the step-1 C ever
+fires, the step-2 C# never does."
+
+### Root cause, now concrete and demonstrated
+
+`FUN_40044584`'s MIDI-track press handler dispatches on the byte at
+`blob + pattern*0x8ed8 + (track-8)*0x8b0 + 0x48fd`:
+- **`+0x48fd == 0`**: `if (cVar1 != 0)` is false → falls straight through to
+  **`FUN_4009b5c8(track)` unconditionally, with no active-state check**. A re-press of an
+  already-playing track therefore re-runs the full start/re-init → the track restarts. **No bug.**
+- **`+0x48fd == 1`**: calls `FUN_4009b290(track)` first; **track already active → `FUN_4009f3a4(track)`**,
+  whose DIRECT branch (`+0x48fe == -1` ⇒ `cVar1 == -1`) clears `DAT_80006500`/`DAT_80006508`
+  and the other per-track arrays, sweeps note-offs (`FUN_4009f2f8`), calls `FUN_400a539c`,
+  posts the event — and **never re-activates**. Track goes silent and stays silent. **Bug.**
+- `+0x48fd == 2` (HOLD): press → unconditional `FUN_4009b5c8`; release → `FUN_4009f3a4`.
+  (Not the bug — press always restarts.)
+
+So the **necessary-and-sufficient trigger is `+0x48fd == 1` together with `+0x48fe == -1`
+(DIRECT) and `+0x48fc == 1` (PLAYS_FREE)**. `_DAT_800065b8` (stepping / transport) does
+**not** matter — DIRECT alone forces `FUN_4009f3a4` into the clear-only branch.
+`+0x8e55` (pattern SCALE_MODE) is **not** in the mechanism at all — its only role is
+picking the `DAT_8000663e` seed source (Session 5 part 1), and that value is only consumed
+by the step-engine quantize handler which DIRECT causes to be skipped. It is a **passenger**
+that happens to co-vary with `+0x48fd` in the `test1_PFD_scale` export.
+
+### RESOLVED (user-confirmed): `+0x48fd` IS TRIG_MODE; the mapping is 0=ONE, 1=ONE2, 2=HOLD
+
+User: *"It was somehow set to ONE2. I missed that."* So `test1_PFD_scale` differs from
+`test1_PFD` by **two** independent UI changes — pattern scale → Per Track (`+0x8e55`, a **red
+herring**, plays no role) and the MIDI track's trig mode → **ONE2** (`+0x48fd`, the actual
+cause). Confirmed TRIG_MODE value map (corrects parts 4–6, which had guessed `1 = ONE`):
+
+| `+0x48fd` | mode | `FUN_40044584` press behaviour | release |
+|---|---|---|---|
+| 0 | **ONE**  | unconditional `FUN_4009b5c8` (restart every press) | no-op |
+| 1 | **ONE2** | active? → `FUN_4009f3a4` : `FUN_4009b5c8` | no-op |
+| 2 | **HOLD** | unconditional `FUN_4009b5c8` | `FUN_4009f3a4` |
+
+ONE2 is the only mode that calls `FUN_4009f3a4` on *press*, and only when the track is
+already playing — i.e. a manual **re-trigger while playing**. With Direct selected that
+lands in `FUN_4009f3a4`'s clear-only branch → silence. Open Item 2's "why does scale mode
+matter" puzzle is fully dissolved: it never did. Open Item 3 ("value 0 isn't a toggle") too:
+value 0 is ONE, not ONE2.
+
+**Updated bug preconditions (all 4 required, superseding the handoff's list):**
+1. MIDI track.  2. Plays Free (`+0x48fc == 1`).  3. Trig quant = Direct (`+0x48fe == -1`).
+4. **Trig mode = ONE2** (`+0x48fd == 1`).  *(Not pattern scale; not `_DAT_800065b8`.)*
+Plus `_DAT_80000012` / MIDI_MODE must be on for the whole TRIG_MODE dispatch to run.
+
+### (historical) the ambiguity that led here — what is `+0x48fd` and why did it flip?
+
+`+0x48fd` is Elektron's per-MIDI-track manual-trig **response-mode** byte (part 5: ONE / ONE2
+/ HOLD), clamped `[0,2]` by `FUN_4009a670`. The emulated dispatch says:
+- value 0 → "restart every press" — behaviourally this is **ONE**.
+- value 1 → "if already playing, hand to `FUN_4009f3a4`" — the buggy one; behaviourally a
+  **toggle-ish / ONE2**.
+- value 2 → HOLD (confirmed earlier).
+This is the **opposite** of the part-4/5 assumption that `1 = ONE`. Under the emulated
+behaviour, `0 = ONE` and `1 = ONE2`, which also dissolves the part-6 "value 0 doesn't act
+like a toggle" puzzle (it isn't ONE2, it's ONE).
+
+**Open question for the user** (the last thing blocking a clean writeup): when `test1_PFD_scale`
+was exported from `test1_PFD`, which OT UI setting(s) changed? If the MIDI track's trig mode
+was set to **ONE2** at that time, everything is consistent and the bug is simply "ONE2 +
+Plays Free + Direct MIDI track: manual re-trigger stops instead of toggling/restarting". If
+*only* "pattern scale → Per Track" was changed, then enabling Per-Track scale has a side
+effect of also writing `+0x48fd = 1`, and the two are genuinely linked in the firmware's
+save path (would need to trace the pattern-settings writer, `FUN_4008a6fc`/serializer side).
+
+### Candidate fix — 1 byte, validated in the harness
+
+The bug is entirely in `FUN_40044584`'s ONE2 press dispatch calling `FUN_4009f3a4`
+(stop-only) where it needs a restart. Fixing `FUN_4009f3a4` itself is wrong — HOLD *release*
+also calls it and must stop. So fix the call site:
+
+```
+             0x400446a2   beq.b 0x400446c8      67 24     "ONE (+0x48fd==0): unconditional FUN_4009b5c8"
+  patch ->   0x400446a2   bra.b 0x400446c8      60 24     make ONE2 fall through to the same call
+```
+
+**One byte: file offset `0x442a2` (= `0x400446a2 - 0x40000400`), `0x67` → `0x60`.**
+Effect: ONE2 press now always routes to `FUN_4009b5c8` (start/restart every press) — exactly
+like ONE — instead of `active ? FUN_4009f3a4 : FUN_4009b5c8`. HOLD is unaffected (HOLD press
+already lands on `0x400446c8`; HOLD release is on the separate `D4==0` path). ONE and ONE2
+become behaviourally identical.
+
+Harness validation (`out/ghidra/emu_trigbug_fix_session5.txt`), `active[8]` after presses 1/2/3:
+
+| bank (track 8, pattern 0) | mode | stock | patched |
+|---|---|---|---|
+| test1_PFD        | ONE  | `1 1 1` | `1 1 1` (unchanged) |
+| test1_PFD_scale  | ONE2 | `1 0 1` ← **bug** | `1 1 1` ← **fixed** |
+| test1_PF_ (stepping=0) | ONE, not Direct | `1 1 1` | `1 1 1` (unchanged) |
+| test1_PF_ (stepping=1) | ONE, not Direct | `0 0 0`* | `0 0 0`* |
+
+*`test1_PF_` has DIRECT=0 (quantize-index 0), so `FUN_4009b5c8` takes the "soft" path
+(`_DAT_80006680 |= bit`, defer to step engine) and never sets `active[8]` directly — the
+harness doesn't run `FUN_400a1eea` so it stays 0. Correct behaviour, not a regression.
+
+**Caveat / open question for the user:** this makes ONE2 press-on-playing *restart* instead
+of *toggle-off*. If ONE2 is meant to be "retriggerable one-shot" (the reading that makes
+this a bug at all), that is exactly right and ONE2==ONE is acceptable. If ONE2 is genuinely
+meant to *toggle* (press on / press off) and the only defect is that the toggle-off path is
+a hard clear rather than a clean stop, then the fix instead needs `FUN_4009f3a4`'s clear
+branch to stop the track *cleanly enough that the step engine or transport can restart it* —
+a bigger change needing free-space for a trampoline (no room to inline stop-then-start at
+the call site: the pushed `FUN_4009f3a4` arg can't be reused without also widening the
+shared `addq.l #4,SP` at `0x400446d0`, which other press paths reach with only one arg).
+
+### Audio tracks: same prerequisites, NO bug (user-confirmed) — why
+
+`FUN_40044584`'s audio path (`param_1 < 8`) has the **same** `cVar1==1 → already-active →
+FUN_4009f3a4` dispatch shape as MIDI, reading the mode byte from the audio struct at
+`+0x55` (within the `0x91a` stride) instead of `+0x48fd`. Two candidate reasons audio is
+immune, not yet disambiguated:
+1. The audio dispatch is gated behind `(DAT_8000004c & 1) != 0`; when that bit is 0, a
+   manual audio-track trig goes to `FUN_4003f3a8(track, track+0x18, 0x7f)` entirely — it
+   never touches `FUN_4009f3a4`/`FUN_4009b5c8`. (MIDI, by contrast, is gated on
+   `_DAT_80000012` / MIDI_MODE, which the repro has set.)
+2. Even if `FUN_4009f3a4` does run for an audio track and de-activates it, an audio track
+   is locked to the step grid — the next sequencer step re-triggers it from the pattern's
+   own trig data, so the missing reactivation is invisible. A **Plays Free** MIDI track has
+   no such safety net (that is *why* PLAYS_FREE is a precondition), so the de-activation
+   sticks.
+Worth a quick check of `DAT_8000004c`'s meaning and the audio `+0x55` byte's value in the
+test exports, but this doesn't change the MIDI root cause.
+
+### Next steps
+1. Get the user's answer on the `+0x48fd` question above (ONE2 vs a scale-mode side effect).
+2. Extend the harness to drive `FUN_400a1eea` a few steps after the re-press (needs the `a0`
+   precondition + more globals) to show C then C# firing for `test1_PFD` and nothing for
+   `test1_PFD_scale` — a full behavioural repro, not just the active-flag proxy.
+3. Draft the `FUN_4009f3a4` patch and validate it in `emu_trigbug.py`.
+
+
+## Session 5 part 3 — user disclosed two things that overturn part 2's conclusion; the REAL
+## root cause is a MIDI stride bug in `FUN_4009b5c8`'s per-track-scale read
+
+Two facts from the user:
+1. *"It was somehow set to ONE2 [`+0x48fd == 1`]. I missed that."* — so `test1_PFD_scale`
+   differs from `test1_PFD` by **two** UI changes, not one.
+2. **On real hardware the bug reproduces with Plays Free + Direct + per-track scale for
+   ALL THREE trig modes (ONE, ONE2, HOLD)** — trig mode is *not* a precondition.
+3. Audio tracks with the identical settings are fine.
+
+Part 2's `+0x48fd`/ONE2 → `FUN_4009f3a4` story is therefore **not the reported bug** (it's
+trig-mode-specific, which #2 rules out). It's a real secondary code smell — keep it filed,
+but it is not this. Part 2's byte-level facts still stand: `+0x48fd` = TRIG_MODE
+(0=ONE/1=ONE2/2=HOLD), confirmed; `test1_PFD_scale` has `+0x48fc=1, +0x48fd=1, +0x48fe=-1,
++0x8e55=1`.
+
+### The real mechanism — `FUN_4009b5c8` reads the MIDI per-track scale byte with the AUDIO stride
+
+`FUN_4009b5c8`'s full-init branch, SCALE_MODE(`+0x8e55`)-gated seed (Session 5 part 1 quoted
+this and under-weighted it). Raw asm `0x4009b6f2`–`0x4009b704`:
+```
+D3 = param_1 (track; 8..15 for MIDI)   D2 = pattern*0x8ed8   D1 = 0x400e21e0 + bank*0x9b340
+if (blob[pattern-block + 0x8e55] != 0):          # SCALE_MODE = "Per Track"
+    D0 = D3 * 0x91a                               # <-- AUDIO track stride, on a MIDI index
+    A0 = D1 + D0 + D2 + 0x51                       # = blob + track*0x91a + 0x51
+DAT_8000663e[D3] = *A0                             # D3 = 8..15  ->  writes DAT_80006646[0..7] (aliased)
+```
+For an **audio** track (`param_1` 0–7) `blob + track*0x91a + 0x51` is that audio track's real
+scale byte — and `FUN_400a1eea`'s audio loop reads the exact same expression, so audio is
+self-consistent → **audio has no bug** (matches fact #3).
+
+For a **MIDI** track (`param_1` 8–15) the audio stride `0x91a` on index 8 lands at blob
+`+0x4921` — `0x21` bytes into MIDI track 0's *trig data*, not any scale field — and it
+drifts a further `0x6a` per track. The correct MIDI read (what `FUN_400a1eea`'s MIDI loop
+uses) is `blob + pattern-block + (track-8)*0x8b0 + 0x48f9`. `FUN_4009b5c8` never added the
+MIDI branch for this one read.
+
+Harness proof (`emu_trigbug.py` → `scale_evidence()`, log `out/ghidra/emu_trigbug_scale_session5.txt`):
+
+| bank | SCALE_MODE | `FUN_4009b5c8` reads | → `DAT_80006646[0]` after press | `DAT_400aba50[idx]` |
+|---|---|---|---|---|
+| test1_PFD       | 0 (Normal)   | pattern byte `+0x8e54` = 2 | **2** (valid) | `[2]` = 6  ✓ |
+| test1_PFD_scale | 1 (Per Track)| `blob[+0x4921]` = **0xff** | **255** ← out of range | reads 0x3fc past a 13-entry table = garbage |
+
+`DAT_400aba50` = `int32[13]` = `{3,4,6,8,12,24,48,96,48,24,12,6,0}` (step-length table,
+valid indices 0–12).
+
+### Why all four preconditions are needed, and why trig mode is not
+
+- **Per Track** (`+0x8e55 == 1`): only then does `FUN_4009b5c8` do the buggy audio-stride
+  read. Normal scale uses pattern `+0x8e54` (a valid small index).
+- **Direct** (`+0x48fe == -1`): needed *twice over*. (a) `FUN_4009b5c8`'s soft path
+  (`cVar5 != -1 && stepping`) returns **before** the corrupting seed write — only the
+  Direct/full-init path reaches it. (b) In `FUN_400a1eea`'s MIDI per-step loop, a Direct
+  track hits `if (cVar11 < 1) goto LAB_400a37f0` and **skips the block that would recompute
+  `DAT_80006646[track]` from the correct `+0x48f9` source** — so the garbage is never healed.
+- **Plays Free**: the gate that lets a MIDI track reach `FUN_4009b5c8` at all (non-PF →
+  `FUN_4009b95a` stub).
+- **Trig mode**: `FUN_4009b5c8` never reads `+0x48fd`. ONE / ONE2 / HOLD all call
+  `FUN_4009b5c8` on the first manual trig of a PF+Direct track → all three corrupt
+  `DAT_80006646[track]` identically. ✓ matches fact #2.
+
+### Why "C fires, C# never does"
+
+`FUN_400a1eea` has a second MIDI loop (uVar20 = 8..15, `pcVar34 = &DAT_80006646` incrementing)
+whose per-track step-advance gate is:
+```c
+if (DAT_80006508[track]==1 && DAT_400aba50[DAT_80006646[track]] <= (byte)(subcounter+1)) {
+    ... advance to next step, emit its note ...
+    if (SCALE_MODE!=0) DAT_80006646[track] = blob[(track-8)*0x8b0 + 0x48f9];   // heal -- but only AFTER an advance
+}
+```
+- Normal: `DAT_400aba50[2] = 6 <= subcounter+1` → true once per 6 ticks → advances, step 2's
+  C# fires.
+- Bug: `DAT_400aba50[255]` = a huge garbage int → `huge <= (byte)(...)` is **always false**
+  → the track never advances past step 1, and the heal line (which needs a successful
+  advance) never runs. **Permanent stall after the first note.** The initial C is emitted by
+  the manual-trig start path itself; step 2's C# needs this loop, which is wedged.
+
+### The fix — in `FUN_4009b5c8`, not the dispatcher
+
+`FUN_4009b5c8`'s per-track-scale seed must use the MIDI stride/offset for MIDI tracks:
+`blob + pattern-block + (param_1-8)*0x8b0 + 0x48f9` instead of `+ param_1*0x91a + 0x51`.
+No room to do the different address math in the 18 bytes at `0x4009b6f2`–`0x4009b704`
+(and `D3` can't be clobbered — it indexes the destination store at `0x4009b704`), so this
+needs a trampoline to a code cave. **Patch not yet drafted.** The old part-2 one-byte
+`+0x48fd` patch is **withdrawn** — it addressed the wrong path.
+
+`emu_trigbug.py`'s `scale_evidence()` gives a direct pass/fail for any candidate:
+after a press, `DAT_80006646[0]` must be a valid index (0–12), not 255.
+
+### Still worth doing
+- Full `FUN_400a1eea` run in the harness for the end-to-end C/C# behavioural repro (the
+  static trace above is strong but not executed).
+- Confirm the drifting per-track offset for MIDI tracks 1–7 (`blob + track*0x91a + 0x51`).
+- A hardware export with Plays Free + Direct + per-track scale + trig mode **ONE** would
+  nail fact #2 against the byte layout (all current exports with the bug config happen to
+  also be ONE2).
+
+
+## Session 6 (Claude Code) — the fix: drafted (`tools/patch_trigscale.s`), emulator-validated,
+## built into TWO flashable images (A: stock+fix, B: +MAXOLYDIAN mods), reproducible-packaged,
+## drift confirmed for all 8 MIDI tracks, and a flash-failure playbook written. Not yet flashed.
+## [SUPERSEDED by Session 7: Build A flashed to a real Octatrack MKI 2026-08-28 — fix confirmed, no regression.]
+
+### The patch
+
+Detour + code cave, exactly as Session 5 predicted (no room in place — 18 bytes at
+`0x4009b6f2`–`0x4009b703`, `D3` live as the store index at `0x4009b704`).
+
+- **Detour** `0x4009b6f2` (6 bytes, replaces `move.l #0x91a,D0` precisely): `jmp 0x400d7b00`.
+  The 3 instructions after it (`0x4009b6f8`–`0x4009b703`, 12 bytes) are left orphaned —
+  unreachable, and nothing branches into them: the SCALE_MODE==0 path is the
+  `beq 0x4009b704` at `0x4009b6f0`, which lands *past* them with `A0` already set to
+  `&blob[pattern-block + 0x8e54]` from `0x4009b6e0` (unchanged Normal-scale behaviour).
+- **Cave** `0x400d7b00` (62 bytes, in the `0x400d64da..0x400d7c3c` zero cave `build.py`
+  already uses; `patch_arp` ends at `0x400d7224`, so there's a wide gap):
+  ```
+  moveq #7,D0 ; cmp.l D3,D0 ; blt .midi          ; 7 < track -> MIDI (8..15)
+  ; audio (0..7): unchanged -- A0 = D1 + D3*0x91a + D2 + 0x51 ; jmp 0x4009b704
+  .midi: D0 = D3-8 ; D6 = 0x8b0 ; D0 *= D6 ; D0 += D2 ; D0 += 0x48f9
+         A0 = D1 ; A0 += D0 ; jmp 0x4009b704       ; = blob + pat*0x8ed8 + (trk-8)*0x8b0 + 0x48f9
+  ```
+  `D6` (pattern index) is dead past `0x4009b6d6`, reused as the multiply scratch — ColdFire
+  `muls.l` wants a register source, and `D0` holds the running product. `0x48f9` is folded
+  into `D0` with `addi.l` because ColdFire indexed addressing only has an 8-bit displacement
+  (`lea (0x48f9,A0,D0)` won't assemble; `lea (0x51,A0,D0)` in the audio arm is fine).
+  Assemble: `m68k-elf-as -mcpu=5407` (cfv4), same as every other stub.
+
+### Validation (`tools/emu_trigbug.py`, `scale_evidence()` extended; `FIX_SCALE` patch-dict)
+
+`out/ghidra/emu_trigbug_fix_session6.txt`:
+
+| bank | SCALE_MODE | STOCK `DAT_80006646[0]` after press | FIXED | audio `DAT_8000663e[0]` stock/fixed |
+|---|---|---|---|---|
+| test1_PFD       | 0 | 2 (valid, `aba50[2]=6`)        | 2 (unchanged — Normal path bypasses the detour) | 0x00 / 0x00 |
+| test1_PFD_scale | 1 | **255** (OOB → garbage step len → stall) | **2** (valid, `aba50[2]=6`) | 0x00 / 0x00 |
+
+Also ran the harness with `IMG_PATH` pointed at the real built `out/mainos.bin` (fix
+compiled in, no patch dict): `test1_PFD_scale` → `DAT_80006646[0] = 2`, identical to
+`test1_PFD`; audio untouched. `python3 tools/build.py` applies cleanly (EXPECT guard
+`203c0000091a` at `0x4009b6f2`; cave verified free).
+
+### Open item 3 — DONE. `emu_trigbug.py drift_check()` (`--drift`), log appended to
+`out/ghidra/emu_trigbug_fix_session6.txt`.
+
+The buggy `track*0x91a + 0x51` read lands a different amount past each MIDI track's real
+scale byte (`(track-8)*0x8b0 + 0x48f9`): drift = `0x91a - 0x8b0 = 0x6a`/track, so the buggy
+offset for MIDI trk N is `0x48f9 + 0x28 + N*0x6a` (blob-rel, bank/pat 0):
+
+| MIDI trk | buggy off | correct off | buggy − correct |
+|---|---|---|---|
+| 0 | 0x4921 | 0x48f9 | +0x28 |
+| 1 | 0x523b | 0x51a9 | +0x92 |
+| 2 | 0x5b55 | 0x5a59 | +0xfc |
+| … | … | … | +0x6a each |
+| 7 | 0x88d7 | 0x85c9 | +0x30e |
+
+Emulated what-if (RAM blob forced `+0x48fc=1`/`+0x48fe=0xff` on all 8 MIDI tracks, press
+each): STOCK → `DAT_8000663e[8..15]` all 255 (these test tracks are empty so every drifted
+offset happens to read 0xff = "no trig"; a populated track would give assorted non-index
+garbage). FIXED → every MIDI track gets its own valid `+0x48f9` byte (2). No audio regression.
+
+### Flash prep — DONE. TWO builds, both carrying the identical always-on fix (no PERSONALIZE gate).
+
+**Build A — fix on otherwise-stock 1.40C** (version field untouched, stays `1.40C`):
+- `tools/build_trigscale_only.py` (new) applies just the detour+cave to stock →
+  `out/mainos_trigscale_only.bin` (72 bytes vs stock: 2 hunks).
+- `.syx`: `out/OCTATRACK_OS1.40C_PLAYSFREEFIX.syx` (EFT `-c 3 …` **no `-V`**; checksums ok;
+  section 3 decompresses byte-identical; only 0x4009b6f2 / 0x400d7b00 differ from stock).
+- `.bin`: `out/OCTATRACK_PLAYSFREEFIX.bin` (`make_bin.py out/elek_pffix.bin`; ELUP ok).
+- JSON: `sysex/patches/playsfreefix-r1.json` (2 hunks, `display_version: null`).
+- `apply_patch.py -p playsfreefix-r1.json` → sha-identical to the EFT build (`a2f5d5bd…`).
+
+**Build B — fix + the MAXOLYDIAN mods** (= shipped R11 + this fix; R12 was the shelved
+bank-paging):
+- `tools/build.py` now includes `patch_trigscale` → `out/mainos.bin` (1489 bytes vs stock).
+- `.syx`: `out/OCTATRACK_OS1.40C_MAXO_R13.syx` (EFT `-c 3 out/mainos.bin -V MAXOLYDIAN`).
+- `.bin`: `out/OCTATRACK_MAXO_R13.bin`.
+- JSON: `sysex/patches/maxolydian-r13.json` (31 hunks); `apply_patch.py` default repointed
+  here. `apply_patch.py` → sha-identical to the EFT build (`29eec95b…`).
+
+Tooling notes:
+- `sysex/gen_patch_json.py` (new) diffs stock vs a built image and emits the hunk JSON +
+  hashes; `--trigscale-only` / `--name` / `--display-version keep` for build A.
+- `apply_patch.py` now skips `-V` when `display_version` is null/empty (keeps the stock
+  version field byte-identical — that's how build A's `.syx` stays "otherwise stock").
+- Old `maxolydian-r10.json` left in place but superseded (predates the R11 arp patch too).
+- `FLASHING.md`: both builds documented (A/B), plus a step-by-step hardware repro/fix/
+  regression test (PLAYS FREE + Direct + Per-Track scale, step-1/step-2 MIDI trigs, manual
+  trig, sequencer stopped → stock plays only C, fixed plays C then C#).
+
+### Failure playbook — DONE (`FLASHING.md` §6, and `octamax_handoff_7.md` for the next session)
+
+`FLASHING.md` §6 "If flashing fails, or the flashed OS misbehaves" covers: always-recover-first
+(STARTUP MENU → MIDI UPGRADE → stock `.syx`); classify into (a) transfer never completed →
+transport, not the patch (slow SysEx, re-copy CF, re-verify the local file with
+`elektron-firmware-tool -i` / `bin_decode.py`); (b) flash finished but OS won't boot → flash A
+if B was flashed (isolates the fix from the mods); if A also bricks, the fix fails on real
+silicon → code change needed; (c) OS runs but fix inactive / regression → re-run the repro,
+check A vs B. Plus a "Debugging the fix" checklist (D6 liveness, orphaned bytes, cave
+executability at 0x400d7b00 — fallback 0x400d7300, ISA, bisect via a no-op cave).
+
+### Still open
+
+- Flash a build to the real unit and confirm the stall is gone (`FLASHING.md` "Testing the
+  MIDI manual-trig fix"). Expect the user to try build A first. Recovery net: hold [FUNC] on
+  boot → STARTUP MENU → [TRIG 3] MIDI UPGRADE → send
+  `downloads/extracted/OCTATRACK_OS1.40C.syx`.
+- (nice-to-have) Full behavioural `FUN_400a1eea` run in the harness — deferred; the function
+  is huge (A0 struct live-in, `[A0+0x6632]` word, many globals + sub-step counters, calls
+  FUN_4009cf4c/d1e8/e884/33968/4a668). The static trace + `scale_evidence`/`drift_check`
+  already pin the mechanism and the fix.
+- (nice-to-have) Hardware export with trig mode **ONE** (all bug-config exports so far ONE2).
+- The withdrawn part-2 ONE2 oddity — only if the user reports it independently.
+
+
+## Session 7 (Claude Code) — HARDWARE CONFIRMED. Build A (stock 1.40C + Plays-Free fix)
+## flashed to a real Octatrack **MKI** unit; the MIDI manual-trig stall is gone and no
+## regression observed. The fix is now hardware-validated.
+
+**2026-08-28** — the user flashed `out/OCTATRACK_OS1.40C_PLAYSFREEFIX.*` (Build A: fix on
+otherwise-stock 1.40C, no MAXOLYDIAN mods) to an actual **Octatrack MKI**. Result: the unit
+boots normally, OS version still reads `1.40C` (Build A leaves the version field untouched
+by design), and the previously-reproducible bug — a Plays-Free MIDI track with trig quant
+Direct + pattern scale Per Track stalling after step 1 on a manual trig — **no longer
+occurs**. Works without issue; no regression reported.
+
+Notes:
+- Elektron ships the same OS 1.40C image for the Octatrack MKI and MKII, so the RE (done
+  against the MKII `.syx`) and the fix apply to both. This is the first on-hardware
+  confirmation and it happened on an **MKI**.
+- Only Build A has been flashed. Build B (`OCTATRACK_OS1.40C_MAXO_R13.*` = fix + MAXOLYDIAN
+  mods) is unchanged and still carries the identical fix; its non-fix mods were already
+  hardware-confirmed in earlier sessions, but the R13 bundle as a whole has not been
+  re-flashed since adding `patch_trigscale`. If flashing B later, the §6 playbook still
+  applies (flash A to isolate the fix from the mods).
+- The emulator-green-≠-hardware-good caveat is now discharged for the fix itself (Build A).
+
+### Status roll-up
+
+- MIDI manual-trig bug: **root-caused, fixed, built, emulator-validated, and hardware-confirmed
+  on MKI (Build A).** Done.
+- Deferred nice-to-haves (full `FUN_400a1eea` behavioural harness; a trig-mode-ONE hardware
+  export; the withdrawn part-2 ONE2 oddity) remain deferred — none are needed now that the
+  fix is confirmed on real hardware.

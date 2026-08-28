@@ -16,7 +16,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
-DEFAULT_PATCH = HERE / "patches" / "maxolydian-r10.json"
+DEFAULT_PATCH = HERE / "patches" / "maxolydian-r13.json"
 TOOL_CANDIDATES = [
     ROOT / "vendor/elektron-firmware-tool/elektron-firmware-tool",
     Path("elektron-firmware-tool"),
@@ -125,8 +125,13 @@ def main():
         patched.write_bytes(data)
 
         # --- 4. repack --------------------------------------------------------------
-        run([tool, "-i", args.input, "-c", str(tgt["section"]), str(patched),
-             "-V", patch["display_version"], "-o", args.output])
+        # display_version null/"" -> don't touch the ELEK version field (keeps it
+        # byte-identical to the stock input; used by the stock+fix-only build).
+        cmd = [tool, "-i", args.input, "-c", str(tgt["section"]), str(patched)]
+        if patch.get("display_version"):
+            cmd += ["-V", patch["display_version"]]
+        cmd += ["-o", args.output]
+        run(cmd)
         print(f"[4/5] repacked -> {args.output}")
 
     # --- 5. verify the result -------------------------------------------------------

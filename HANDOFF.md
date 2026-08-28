@@ -3,6 +3,13 @@
 Consolidation of the conversation for autonomous work. Full detail in `NOTES.md`,
 `ARCHITECTURE.md`, `COVERAGE.md`.
 
+> **This doc is historical** (the GUI-in-transition patch and the V6 build below were later
+> revised/removed). Current status and the active task live in **`octamax_handoff_7.md`** and
+> `NOTES.md` "Session 6"/"Session 7": the MIDI manual-trig bug is fixed and built into two
+> flashable images (`OCTATRACK_OS1.40C_PLAYSFREEFIX.*` = fix on stock; `OCTATRACK_OS1.40C_MAXO_R13.*`
+> = fix + mods). **Build A was flashed to a real Octatrack MKI on 2026-08-28 and the fix works
+> with no regression.** Flash-failure playbook: `FLASHING.md` §6.
+
 ## What has been achieved (verified)
 
 - **Complete RE** of the Octatrack MKII OS 1.40C firmware: ColdFire (MCF5445x) + DSP56xxx + proprietary

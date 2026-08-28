@@ -82,7 +82,9 @@ learn.
 
 Everything below was verified against the official **OS 1.40C for Octatrack
 MKII** — either from the firmware's own checksums, byte-exact decompilation, or
-direct disassembly. Full write-ups live in [`ARCHITECTURE.md`](ARCHITECTURE.md)
+direct disassembly. Elektron ships the same OS 1.40C image for the Octatrack MKI
+and MKII, and the MIDI manual-trig fix was in fact first confirmed on hardware on
+an **MKI** (2026-08-28). Full write-ups live in [`ARCHITECTURE.md`](ARCHITECTURE.md)
 (consolidated architecture) and [`NOTES.md`](NOTES.md) (chronological log).
 
 ### Hardware
@@ -134,10 +136,21 @@ Elektron ships a ZIP with **two transports of the same OS** — a `.bin` and a
 - Work split: **ColdFire = control** (RTOS, sequencer, parameter assembly);
   **DSP = signal** (playback, time-stretch, filters, FX).
 
-### Practical outcome — the optional patches
-As a demonstration of the above, OCTAMAX can build an image with a few behavior
-changes, **all OFF by default** and toggled from the **PERSONALIZE** menu, so a
-freshly flashed unit is indistinguishable from stock until you opt in:
+### Practical outcome — a bug fix and some optional patches
+
+**MIDI manual-trig fix** (always on, no toggle): a Plays-Free MIDI track with trig
+quantize *Direct* and pattern scale *Per Track* stalled after its first step on a
+manual trig — `FUN_4009b5c8` seeded the per-track scale index with the *audio*
+track stride for MIDI tracks. Fixed with a detour into the code cave
+(`tools/patch_trigscale.s`). Ships two ways: on otherwise-stock 1.40C, or bundled
+with the mods below. **Confirmed on hardware** (2026-08-28): the stock-1.40C-plus-fix
+build was flashed to a real Octatrack MKI and the stall is gone, no regression.
+Write-up: [`NOTES.md`](NOTES.md) ("Session 5 part 3" / "Session 6" / "Session 7");
+emulator harness `tools/emu_trigbug.py`.
+
+The rest are behavior changes, **all OFF by default** and toggled from the
+**PERSONALIZE** menu, so a freshly flashed unit is indistinguishable from stock
+until you opt in:
 
 | feature | effect |
 |---|---|
@@ -193,27 +206,37 @@ the same stock file it emits a `.syx` byte-identical to the reference build.
 
 ### 1. The fast path — apply the pre-built patch
 
-The 1,175 bytes of ColdFire code are already assembled and captured, hunk by
-hunk, in `sysex/patches/maxolydian-r10.json` (each hunk carries its load address,
-the original bytes it expects, and the replacement bytes). To produce a `.syx`:
+The ColdFire code is already assembled and captured, hunk by hunk, as JSON (each
+hunk carries its load address, the original bytes it expects, and the replacement
+bytes). Two profiles:
+
+| JSON | build | contents |
+|---|---|---|
+| `sysex/patches/playsfreefix-r1.json` | **A** | MIDI manual-trig fix only, on otherwise-stock 1.40C (2 hunks, 72 bytes; version field untouched) |
+| `sysex/patches/maxolydian-r13.json` | **B** | the fix + all the MAXOLYDIAN mods (31 hunks) — the default |
 
 ```sh
-python3 sysex/apply_patch.py \
-    -i downloads/extracted/OCTATRACK_OS1.40C.syx \
-    -o OCTATRACK_MAXOLYDIAN.syx
+# Build A — fix only
+python3 sysex/apply_patch.py -i downloads/extracted/OCTATRACK_OS1.40C.syx \
+    -p sysex/patches/playsfreefix-r1.json -o OCTATRACK_OS1.40C_PLAYSFREEFIX.syx
+
+# Build B — fix + mods (uses maxolydian-r13.json by default)
+python3 sysex/apply_patch.py -i downloads/extracted/OCTATRACK_OS1.40C.syx \
+    -o OCTATRACK_OS1.40C_MAXO_R13.syx
 ```
 
 ```
 [1/5] stock .syx checksum ok
 [2/5] extracted section_3_MAIN_OS.bin (1,112,560 bytes)
-[3/5] applied 22 hunks (1175 bytes)
-[4/5] repacked -> OCTATRACK_MAXOLYDIAN.syx
+[3/5] applied 31 hunks (1792 bytes)
+[4/5] repacked -> OCTATRACK_OS1.40C_MAXO_R13.syx
 [5/5] output checksum ok — byte-identical to the reference build
 ```
 
 The script **aborts before writing anything** if the stock checksum is wrong, if
 the original bytes under any hunk don't match (wrong firmware, or already
-patched), or if the patched image's checksum is off.
+patched), or if the patched image's checksum is off. Regenerate either JSON from
+a fresh build with `sysex/gen_patch_json.py`.
 
 ### 2. The full path — rebuild the stubs from source
 
@@ -225,8 +248,13 @@ once froze the unit on the logo screen), verifying the original bytes at each
 site first:
 
 ```sh
-python3 tools/build.py            # assembles the stubs -> out/mainos.bin
+python3 tools/build.py                  # build B: fix + mods  -> out/mainos.bin
+python3 tools/build_trigscale_only.py   # build A: fix only    -> out/mainos_trigscale_only.bin
 ```
+
+Build A (`build_trigscale_only.py`) applies just the MIDI manual-trig fix
+(`tools/patch_trigscale.s`) to a clean stock MAIN OS — 2 hunks, nothing else — and
+is wrapped without `-V` so the version string stays `1.40C`.
 
 Then wrap `out/mainos.bin` back into a transport with the patched
 `elektron-firmware-tool`. Section 3 is the MAIN OS; `-V MAXOLYDIAN` sets the
