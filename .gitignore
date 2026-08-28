@@ -8,6 +8,7 @@ downloads/
 
 # analysis results, patched images, Ghidra project
 out/
+ghidra_project/
 
 # --- Third party (cloned by setup.sh) ---
 vendor/

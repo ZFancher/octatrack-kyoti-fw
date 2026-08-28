@@ -6,6 +6,20 @@ safety net.
 > **Everything is OFF by default.** Straight after flashing the unit behaves exactly like
 > stock firmware. The changes below are switched on from **PERSONALIZE** (see §4).
 
+> **This firmware carries an always-on bug fix** (no PERSONALIZE switch): a **Plays-Free MIDI
+> track** with **trig quantize = Direct** and the pattern's **scale = Per Track** used to
+> **stall after its first step** when manually triggered — step 1's note fired, step 2's
+> never did. Root
+> cause: `FUN_4009b5c8` seeded the per-track scale index using the *audio* track stride for
+> MIDI tracks, corrupting the step-length lookup. Audio tracks were never affected. This is a
+> pure fix — it only changes behaviour in that exact broken configuration. See NOTES.md
+> "Session 5 part 3" / "Session 6".
+>
+> **The fix ships in two builds** (see the file reference at the bottom): **A** = fix on
+> otherwise-stock 1.40C (`out/OCTATRACK_OS1.40C_PLAYSFREEFIX.syx` / `.bin`); **B** = fix +
+> the optional MAXOLYDIAN mods (`out/OCTATRACK_OS1.40C_MAXO_R13.syx` / `.bin`). Same fix in
+> both. The rest of this guide's feature/PERSONALIZE sections apply to build B only.
+
 The firmware introduces TWO optional behavior changes + boot branding:
 1. **Lazy transitions**: when you switch to a pattern that uses a different Part, the tracks that
    are playing keep the previous Part's sound — no volume jump. A track's **LED dims while it has
@@ -53,7 +67,7 @@ bottom of the PERSONALIZE menu.
       ⚠️ **The upgrade does NOT work over USB** — it has to be MIDI DIN. A USB-MIDI cable or an
       audio interface with MIDI works.
 - [ ] **SysEx Librarian.app** (you already have it installed). It's the standard app on Mac for sending `.syx`.
-- [ ] **The patched firmware**: `out/OCTATRACK_OS1.40C_MAXO_R10.syx`
+- [ ] **The patched firmware**: your chosen build's `.syx` (`_PLAYSFREEFIX` or `_MAXO_R13`)
 - [ ] **The official rescue firmware** (essential!): `downloads/extracted/OCTATRACK_OS1.40C.syx`
 - [ ] **Stable power** — don't power it from a dubious power strip; don't move it during flashing.
 
@@ -96,7 +110,7 @@ takes seconds rather than minutes.
 
 1. Connect the OT over USB, select **USB DISK MODE** and press **[YES]**. The CF card appears as a
    drive on the computer.
-2. Copy **`out/OCTATRACK_MAXO_R10.bin`** to the **ROOT** of the card — not inside any folder.
+2. Copy your chosen build's `.bin` (`out/OCTATRACK_PLAYSFREEFIX.bin` or `out/OCTATRACK_MAXO_R13.bin`) to the **ROOT** of the card — not inside any folder.
 3. **Eject the card properly** on the computer, then leave USB DISK MODE on the OT. Skipping the
    eject can leave the write in cache and the OT reads a truncated file.
 4. **PROJECT → OS UPGRADE → [YES]**, confirm the prompt.
@@ -116,10 +130,10 @@ own official `.bin` byte-for-byte from that file's own container.
 1. **Connect MIDI**: your interface's MIDI OUT → the Octatrack's **MIDI IN** (DIN, not USB).
 2. **Open SysEx Librarian**, and in its destination selector choose your MIDI interface (the output
    port connected to the OT).
-3. **Drag** `out/OCTATRACK_OS1.40C_MAXO_R10.syx` into the SysEx Librarian list.
+3. **Drag** your chosen build's `.syx` (`_PLAYSFREEFIX` or `_MAXO_R13`) into the SysEx Librarian list.
 4. On the Octatrack: turn it off, hold **[FUNC]** and turn it on → **STARTUP MENU**.
 5. Press **[TRIG 3]** (MIDI UPGRADE) → it should say **"READY TO RECEIVE MIDI UPGRADE…"**.
-6. In SysEx Librarian, select the file (`_MAXO_R2.syx`) and press **Play**.
+6. In SysEx Librarian, select that file and press **Play**.
    - The OT's **[TRIG]** lights turn on one by one as it receives. **It takes a while** (be patient).
 7. When the transfer finishes: **"PREPARING FLASH"** appears and then **"UPDATING FLASH"**.
    - **⚠️ DO NOT POWER OFF OR DISCONNECT** during "…FLASH". Interrupting here corrupts the OS (→ "Z" screen).
@@ -157,7 +171,7 @@ If instead the volume jumps when you switch patterns (as before), the patch is n
 8. Restart the unit: the **first screen** should show **`MAXOLYDIAN`** where it used to say `1.40C`.
 9. Also in **SYSTEM (menu) → SYSTEM STATUS → OS VERSION** it should read `MAXOLYDIAN`.
    - If it still says `1.40C`, this file wasn't flashed (or the bootloader reads the version from
-     another copy): retry with `_MAXO_R2.syx`. The change is purely cosmetic and doesn't affect operation.
+     another copy): retry with build B's `.syx`. The change is purely cosmetic and doesn't affect operation.
 
 ### Testing sticky scenes
 10. Have two patterns with different Parts and different A/B scenes selected in each (e.g. P1 with
@@ -176,6 +190,49 @@ If instead the volume jumps when you switch patterns (as before), the patch is n
 14. While any track is in that state, the **selected scene trig** should light **amber** (both
     dies of the bi-colour LED) instead of its usual colour. This one is a global hint — it says
     "something is still on the source Part", not which track.
+
+### Testing the MIDI manual-trig fix (R13, always on)
+
+This one needs no PERSONALIZE switch — it is active immediately after flashing.
+
+> **Hardware-confirmed (2026-08-28):** Build A (`OCTATRACK_OS1.40C_PLAYSFREEFIX`) was flashed
+> to a real Octatrack **MKI** and the stall below no longer happens — C then C# both sound and
+> the phrase loops normally, no regression. The steps below are still the way to re-verify on
+> your own unit.
+
+**Repro of the original bug** (do this on stock 1.40C first if you want to see it, then
+compare after flashing R13):
+
+1. On a **MIDI track**, set **PLAYBACK** (FUNC+PLAYBACK / the track's playback setup) so the
+   track is **PLAYS FREE**.
+2. Set that MIDI track's **trig quantization to DIRECT** (TRIG page → QUANT, or the per-track
+   quantize setting) — i.e. no quantization on manual trigs.
+3. On the pattern, set **SCALE MODE = PER TRACK** (SCALE SETUP → the PATTERN/PER TRACK toggle),
+   and give the MIDI track a scale **length** (any per-track length works; the default is fine).
+4. Put a MIDI note trig on **step 1** and another on **step 2** (different notes, e.g. C then
+   C#, so they're easy to tell apart), with MIDI OUT going somewhere you can hear/monitor
+   (a synth, or the OT's own MIDI monitor / a DAW).
+5. **Stop the sequencer.** Press and hold the MIDI track's **[TRIG]** key (manual trig) so
+   the track plays free from step 1.
+
+- **Stock 1.40C (bug):** you hear **only the step-1 note** (C). The track never advances to
+  step 2 — C# never sounds. Releasing and re-pressing just replays step 1.
+- **R13 (fixed):** you hear **C, then C#, then it loops** the two-step phrase normally, exactly
+  as it does with SCALE MODE = PATTERN.
+
+6. **Regression checks** (all should behave exactly as on stock):
+   - Same setup but **SCALE MODE = PATTERN** → was always fine, still fine.
+   - Same setup but **trig quant ≠ Direct** (e.g. 1/16) → still fine.
+   - Same setup but **not Plays Free** → still fine.
+   - An **audio track** with Plays Free + Direct + Per-Track scale, manually trigged → plays
+     and advances normally (audio was never affected; confirm the fix didn't disturb it).
+   - Try trig modes **ONE / ONE2 / HOLD** on the MIDI track — all three reproduced the stall
+     on stock and all three should be fixed on R13.
+
+> Emulator evidence for this fix: `tools/emu_trigbug.py` (run with no args, or `--drift`).
+> On the repro bank the corrupted scale index goes from **255** (out of range → stalled
+> step-length gate) to a valid **2** after the patch, matching the non-buggy Pattern-scale
+> path; audio tracks read identically patched vs unpatched.
 
 > **An OS upgrade resets the PERSONALIZE settings.** Both switches come back unchecked
 > after every flash, so the unit is stock until you re-enable them. Worth knowing when
@@ -213,14 +270,111 @@ are not affected.
 
 ---
 
+## 6. If flashing fails, or the flashed OS misbehaves
+
+**First, always: get back to a known-good OS.** Hold **[FUNC]** on power-on → STARTUP MENU →
+**[TRIG 3]** MIDI UPGRADE → send `downloads/extracted/OCTATRACK_OS1.40C.syx` from SysEx
+Librarian → wait through "UPDATING FLASH". This works even from a black/"Z" screen — the
+bootloader is never touched by an OS update. Nothing on the CF card is affected. Then work out
+what happened before trying again.
+
+Figure out **which of three things** you're looking at:
+
+### (a) The transfer / flash never completed
+
+Symptoms: SysEx Librarian errors or stalls; the OT's TRIG lights stop advancing; "PREPARING
+FLASH" never appears; the CF `.bin` path reports a bad/'not a valid OS' file (`-2`), wrong
+length (`-3`), or bad checksum (`-4`).
+
+This is almost never the patch — it's the transport. The two builds only differ from stock by
+72 bytes (A) or ~1500 bytes (B); both repack through the same checksummed container as the
+official file.
+
+- **MIDI:** lower SysEx Librarian's send speed (Preferences → raise "pause between messages"
+  to 100–300 ms). Use a real 5-pin DIN interface, not USB. Try a different interface/cable.
+- **CF card:** re-copy the `.bin` to the **card root**, **eject properly** (a cached/truncated
+  write is the usual `-4`), re-seat the card. Confirm the file size matches what's in `out/`.
+- Re-verify the artifact before re-sending: `elektron-firmware-tool -i <file>.syx` must print
+  `checksums : ok`; for the `.bin`, `python3 tools/bin_decode.py <file>.bin` must print
+  `✓ COINCIDE`. If either fails, the local file is corrupt — rebuild it (§ Quick file
+  reference → "Rebuild from source").
+
+### (b) The flash completed, but the OS won't boot / traps / hangs
+
+Symptoms: logo screen forever, `EXCEPTION VEC:xx`, a hang, garbled display — **after** a
+"UPDATING FLASH" that finished.
+
+Now the patched code is suspect. Isolate it:
+
+1. If you flashed **B (MAXO)** → flash **A (PLAYSFREEFIX)**. If A boots fine, the fault is in
+   the MAXOLYDIAN mods (lazy transitions / encoder / LED / scene / menu / arp), **not** the
+   MIDI-trig fix. Report which build broke.
+2. If **A also fails to boot** → the MIDI-trig fix itself is the problem on real silicon
+   (it passed the ColdFire emulator, which is not a perfect model). Revert to stock and
+   report it — this needs a code change, not a reflash. See "For a future debugging session"
+   below.
+3. Either way you are never stuck: the rescue path in this section always brings the unit back.
+
+### (c) The OS boots and runs, but the fix doesn't work (or something else is wrong)
+
+- **Did the flash actually take?** Build B: SYSTEM → SYSTEM STATUS → OS VERSION should read
+  `MAXOLYDIAN`. Build A: it still says `1.40C` (by design) — so instead confirm by the
+  behaviour test below. An OS upgrade **resets PERSONALIZE**, but the MIDI-trig fix is
+  **not** gated by PERSONALIZE — it is always on — so a fresh flash is enough to test it.
+- **Re-run the exact repro** from "Testing the MIDI manual-trig fix" above (PLAYS FREE +
+  trig quant Direct + pattern SCALE MODE = PER TRACK, MIDI trigs on steps 1 and 2, sequencer
+  stopped, hold the track's [TRIG]). Fixed = you hear step 1 then step 2 then it loops.
+  Still stuck on step 1 = the fix isn't active → you flashed the wrong/old file, or see (b).
+- **A regression** (something that worked on stock now misbehaves): note the exact steps and
+  whether it happens on **A** too. A-only-clean points at the MAXOLYDIAN mods; both-broken
+  points at the MIDI-trig fix.
+
+### For a future debugging session (hand this to Claude)
+
+If the MIDI-trig fix is implicated on hardware (case (b).2 or a (c) regression tied to it):
+
+- The whole fix is `tools/patch_trigscale.s`: an 18-byte detour at `0x4009b6f2`
+  (`jmp 0x400d7b00` + 6× `nop`) into a 62-byte cave at `0x400d7b00`. Nothing else.
+- Re-check, on real-hardware assumptions (not just the Unicorn emulator, which passed):
+  1. **Cave liveness** — the cave clobbers `D0`, `A0`, and (MIDI arm only) `D6`. `D0`/`A0`
+     are scratch on both original paths. `D6` was argued dead past `0x4009b6d6`; re-verify
+     against the *full* `FUN_4009b5c8` disasm (`out/ghidra/GhidraResolve38_session5.txt`).
+     If `D6` is live, push/pop it (`move.l %d6,-(%sp)` / `move.l (%sp)+,%d6`) around the
+     multiply — the function is inside a `move #0x2700,SR` critical section so the stack is
+     safe.
+  2. **The orphaned bytes** `0x4009b6f8..0x4009b703` (stale `muls.l`/`add.l`/`movea.l`/`lea`
+     after the `jmp`). Argued unreachable. If a disassembler or an indirect path *can* reach
+     them, NOP-fill all 18 (the detour already does on the `.bin`/`.syx`; confirm in the
+     shipped image with `m68k-elf-objdump`).
+  3. **Cave executability** — `0x400d7b00` is inside the same `0x400d64da..0x400d7c3c` zero
+     cave that R11's shipped detours already run from on hardware, ~2.3 KB further in. If in
+     doubt, move the cave to `0x400d7300` (right after `patch_arp`, still proven range) and
+     rebuild.
+  4. **ISA** — assembled `-mcpu=5407` (ColdFire V4e), same as every other stub. `muls.l`
+     with a register source and `addi.l #imm,Dn` are valid V4e; `lea (d8,An,Xn)` is the only
+     supported indexed form (8-bit disp) — that's why `0x48f9` is folded into `D0` first.
+  5. **Bisect** — build a variant whose cave is just `jmp 0x4009b704` (does nothing) to test
+     the trampoline mechanism alone, then add the audio arm, then the MIDI arm.
+- Emulator harness for any candidate: `tools/emu_trigbug.py` (`scale_evidence()` /
+  `drift_check()`); `FIX_SCALE` in that file is the patch-dict. `tools/build_trigscale_only.py`
+  rebuilds build A; `tools/build.py` rebuilds build B.
+- Full reasoning: `NOTES.md` "Session 5 part 3" and "Session 6".
+
+---
+
 ## Risk notes (honest)
 
 - This firmware is **modified by you, for your own unit, for study purposes.** It is not official
   Elektron firmware and has no support from them.
-- The patches are **validated in a ColdFire emulator**, and the audio/GUI/sticky-scene behaviour is
-  confirmed on hardware. The emulator harnesses exercise one call at a time, which is exactly how a
+- The patches are **validated in a ColdFire emulator**. The audio/GUI/sticky-scene behaviour of
+  the MAXOLYDIAN mods is confirmed on hardware. The **MIDI manual-trig fix is now also confirmed
+  on hardware**: Build A (`OCTATRACK_OS1.40C_PLAYSFREEFIX`, fix on stock 1.40C) was flashed to a
+  real Octatrack **MKI** on 2026-08-28 — the unit boots normally and the step-1 stall is gone,
+  with no regression. Build B (`_MAXO_R13`, fix + mods) carries the identical fix but the R13
+  bundle has not been re-flashed since the fix was added, so treat B as emulator-validated for
+  the fix. In general the emulator harnesses exercise one call at a time, which is exactly how a
   reentrancy crash slipped through into builds 1.0–3.0 — treat emulator green as necessary, not
-  sufficient, and go in with the recovery net ready.
+  sufficient, and go in with the recovery net ready (§6 has the failure playbook).
 - The only truly delicate moment is **"UPDATING FLASH"**: don't cut power there.
 - Residual risk of a *hard* (unrecoverable) brick: very low — the rescue bootloader is not touched in
   a normal OS update.
@@ -229,12 +383,59 @@ are not affected.
 
 ### Quick file reference
 
+There are **two builds of the fix**. Both contain the identical MIDI manual-trig fix; they
+differ only in what else is on board. Pick one.
+
+**A. Fix only — otherwise 100% stock 1.40C** (version screen still says `1.40C`):
+
 | File | What it is |
 |---|---|
-| `out/OCTATRACK_OS1.40C_MAXO_R10.syx` | **Patched firmware** — everything: lazy part, GUI-in-transition, sticky scenes v2, dirty indicators, "MAXOLYDIAN" branding. The one you're going to flash |
-| `out/OCTATRACK_OS1.40C_LAZYPART_GUI.syx` | Variant without boot branding — ⚠️ pre-V4, has the crash |
-| `out/OCTATRACK_OS1.40C_LAZYPART.syx` | Audio-only variant (no GUI patch, so no crash) |
-| `downloads/extracted/OCTATRACK_OS1.40C.syx` | **Official rescue OS** — for recovery or reverting |
+| `out/OCTATRACK_OS1.40C_PLAYSFREEFIX.syx` | MIDI-DIN upgrade. Stock 1.40C with **only** the MIDI manual-trig fix (2 code hunks, 72 bytes). Byte-identical to stock everywhere else. |
+| `out/OCTATRACK_PLAYSFREEFIX.bin` | Same, for the CF-card path (card ROOT → PROJECT → OS UPGRADE). |
+
+**B. Fix + the MAXOLYDIAN mods** (arp key-scales, lazy transitions, no BANK/PTN timer, sticky
+scenes, dirty indicators, `MAXOLYDIAN` branding — the feature mods are all **off by default**
+in PERSONALIZE):
+
+| File | What it is |
+|---|---|
+| `out/OCTATRACK_OS1.40C_MAXO_R13.syx` | MIDI-DIN upgrade. |
+| `out/OCTATRACK_MAXO_R13.bin` | CF-card path. |
+
+**Rescue (either way):**
+
+| File | What it is |
+|---|---|
+| `downloads/extracted/OCTATRACK_OS1.40C.syx` | **Official rescue OS** — for recovery or reverting. |
+
+Rebuild from source:
+
+```sh
+# Build A — fix only, on stock
+python3 tools/build_trigscale_only.py                  # -> out/mainos_trigscale_only.bin
+EFT_EMIT_CONTAINER=out/elek_pffix.bin \
+  vendor/elektron-firmware-tool/elektron-firmware-tool \
+  -i downloads/extracted/OCTATRACK_OS1.40C.syx -c 3 out/mainos_trigscale_only.bin \
+  -o out/OCTATRACK_OS1.40C_PLAYSFREEFIX.syx            # no -V: keeps the "1.40C" version field
+python3 tools/make_bin.py out/elek_pffix.bin -o out/OCTATRACK_PLAYSFREEFIX.bin
+
+# Build B — fix + MAXOLYDIAN mods
+python3 tools/build.py                                 # -> out/mainos.bin
+EFT_EMIT_CONTAINER=out/elek_r13.bin \
+  vendor/elektron-firmware-tool/elektron-firmware-tool \
+  -i downloads/extracted/OCTATRACK_OS1.40C.syx -c 3 out/mainos.bin -V MAXOLYDIAN \
+  -o out/OCTATRACK_OS1.40C_MAXO_R13.syx
+python3 tools/make_bin.py out/elek_r13.bin -o out/OCTATRACK_MAXO_R13.bin
+```
+
+Reproducible one-shot (verifies stock + result checksums, no assembler needed):
+
+```sh
+python3 sysex/apply_patch.py -i <your stock .syx> -p sysex/patches/playsfreefix-r1.json  -o A.syx
+python3 sysex/apply_patch.py -i <your stock .syx> -p sysex/patches/maxolydian-r13.json   -o B.syx
+```
+
+(Regenerate those JSONs from a fresh build with `sysex/gen_patch_json.py`.)
 
 ---
 
