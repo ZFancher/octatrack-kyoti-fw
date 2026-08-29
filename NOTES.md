@@ -2497,3 +2497,702 @@ Notes:
 - Deferred nice-to-haves (full `FUN_400a1eea` behavioural harness; a trig-mode-ONE hardware
   export; the withdrawn part-2 ONE2 oddity) remain deferred — none are needed now that the
   fix is confirmed on real hardware.
+
+---
+
+# Session 8 (2026-08-28) — NEW BUG: MIDI-track LFO SETUP knobs transmit CC on the wrong channel
+
+## The bug (Elektronauts thread 87588, reported by the user in 2019 on MKI OS 1.30B)
+
+Editing **SPD / DEP on a MIDI track's LFO SETUP page** makes the Octatrack transmit the
+6 LFO CCs (**CC 28–33** = LFO Speed 1-3 / Depth 1-3) on the MIDI channel assigned to the
+**twin audio track** (audio track N), not the MIDI track's own channel.
+- Without MIDI loopback: stray CC 28–33 on audio track N's channel (confirmed with a MIDI
+  monitor by sezare56).
+- With loopback: those CCs come back in and drive **audio track N's** LFO depth/speed →
+  the audio track audibly cuts out. This is how the user originally noticed it.
+- Only the **LFO SETUP** page, only **twin tracks**, not bidirectional, audio/MIDI channels
+  must differ. Normal LFO (MAIN) page reportedly unaffected.
+Target for our fix: **OS 1.40C** (behaviour assumed to persist; not yet reproduced on 1.40C).
+
+## Manual facts (OS 1.40C MKII manual, `tool-results/otmk2.txt`)
+
+- Audio LFO: **LFO MAIN** page = SPD1-3, DEP1-3 (§11.4.7). **LFO SETUP** page (FUNC+LFO) =
+  per-LFO PMTR, WAVE, MULT, TRIG, SPD, DEP (§11.4.8). SPD/DEP are **mirrored** on both pages.
+- MIDI LFO MAIN / MIDI LFO SETUP "work just like" the audio ones (§15.4.5/6). MIDI LFO PMTR
+  can target the MIDI track's own MAIN-page params (note/vel/len/PB/AT/CC1-10).
+- Appendix C.7 (audio CTRL CHANGE MAPPINGS): CC 28–33 = "LFO param #1-6 (Speed 1-3, Depth
+  1-3)", flagged **TRN + REC** — but transmit only when PROJECT>MIDI>CONTROL>**AUDIO CC OUT**
+  = EXT / INT+EXT (default INT = no send). Explicit opt-in.
+- Appendix C.8 (MIDI MODE CTRL CHANGE MAPPINGS): "the auto channel **responds to**…" CC 28–33
+  = "MIDI LFO param #1-6" — listed **REC only**. **There is no "MIDI CC OUT" setting.** So per
+  the manual a MIDI track has no business *transmitting* CC 28–33 when you touch an LFO knob.
+
+## Agreed fix direction (user, this session)
+
+**Suppress** CC transmission from the MIDI LFO SETUP page's SPD/DEP encoders (rather than
+"fix the channel"): the emitted CCs are undocumented, ungated, wrong-channel, and nobody can
+rely on them. Kills both the no-loopback noise and the loopback glitch. Verify first whether
+LFO MAIN transmits at all / on which channel; if it legitimately does on the MIDI track's own
+channel, make SETUP match MAIN instead of pure-suppress.
+
+## RE progress (Ghidra headless, `tools/GhidraLfo*.java`, project already analyzed, 2194 fns)
+
+Load base 0x40000400. `_DAT_80000012` = audio(0)/MIDI(≠0) selector. `DAT_100b14cc` = current
+track, `DAT_100b14cf` = displayed pattern, `DAT_80000000`/`80000003` = active track / sounding
+pattern, `_DAT_46c82456` = live project blob base, pattern stride 0x18b2.
+
+### Page plumbing — CONFIRMED
+- **LFO SETUP page** shared audio+MIDI. Title strings: `"MIDI LFO SETUP"` @0x400b47d5,
+  `"LFO SETUP"` @0x400b47da (tail of the same bytes).
+- **Page descriptor** @~0x400bc030: `+0x24`=title(0x400b47da), `+0x54`=open FUN_40058390,
+  `+0x58`=teardown FUN_40055de0, `+0x5c`=renderer **FUN_400572e8**, `+0x80`=FUN_4003ad8c.
+- **FUN_40058390** = page-open. Installs the param table via
+  `FUN_400326d4(&DAT_400d37f6 [audio] | &DAT_400d4162 [MIDI], 0xffffffff, &DAT_400bbc72)`.
+- **Param-descriptor structs**: audio LFO page @**0x400d37f6**, MIDI LFO page @**0x400d4162**.
+  Each holds **12 params**: 0-5 = LFO MAIN (SPD1-3,DEP1-3), 6-11 = LFO SETUP (PMTR,WAVE,MULT,
+  TRIG,SPD,DEP). 6-byte labels start at struct+0x16 (0x400d380c / 0x400d4178). Struct also
+  has min array @+0x6a, range @+0x9a, and FUN_400a6994 inputs @+0x18a/+0x18e.
+- Renderer FUN_400572e8: audio blob offsets 0x90482 / 0x8f072 / 0x8f3e2; MIDI 0x90512 /
+  0x8f268 / 0x8f26b. LFO **designer waveform** editors (no MIDI TX): FUN_400381c8 (set step),
+  FUN_40037f40 (interp mask), FUN_400383e4 (rotate), FUN_40038148 (invert).
+
+### Encoder-edit path — PARTLY MAPPED
+- Main UI event loop = **FUN_40061a94**. Param-page encoder turn = **case '?'** (event 0x40):
+  ```
+  iVar17 = (pcVar6[2] % 6) + DAT_400a7280[pcVar6[2] / 6] * 6;   // <-- param-index remap table
+  uVar10 = DAT_80000000; if (_DAT_80000012 != 0) uVar10 += 8;   // MIDI mode -> track idx +8
+  FUN_40054cd8(uVar10, iVar17, delta);                          // apply
+  ```
+  `DAT_400a7280` (small per-page base table) NOT yet dumped — **next step**.
+- **FUN_40054cd8(track, paramIdx, value)** = generic param apply.
+  - `page = paramIdx/0x24`, `sub = paramIdx%6`.
+  - `if (track < 8)` audio branch: writes blob, **NO MIDI transmit** (only FUN_4009da20).
+  - `else` MIDI branch (track-8 = midi slot): writes blob @0x8f162 region, then
+    **`FUN_4009eec8(midiSlot, paramIdx, value, 0)`** then `FUN_4009da20(track)`.
+- **FUN_4009eec8(midiSlot, paramIdx, value, 0)** = MIDI-track param → live MIDI out. Acts
+  ONLY for `paramIdx == 0x12` (PB → 0xE0), `0x13` (AT → 0xD0), `0x14..0x1d` (CC1..CC10 →
+  0xB0, CC# from CTRL setup table). Channel = `*(byte)(… midiSlot*0x24 + 0x40171442) - 1 & 0xf`
+  = the **MIDI track's own** channel. Does NOT itself handle LFO params (0x1e+).
+- Other transmit siblings: **FUN_400438fc**, **FUN_40055008** (both call FUN_4009eec8);
+  **FUN_400a14f0** (called from case 'H' with the *audio* active-track index, forces
+  `FUN_40054cd8(track+8, 0x14+i, …)` and can emit a raw `chan|0xB0` via FUN_40010bc8).
+- MIDI byte-out primitive: **FUN_40010bc8(nbytes, *bytes)**, 59 refs.
+
+### Where the bug most likely is (hypotheses, unproven)
+1. `DAT_400a7280[page]` for the LFO SETUP page remaps `iVar17` into the **0x14..0x1d** window,
+   so FUN_40054cd8's MIDI branch → FUN_4009eec8 treats an LFO SPD/DEP edit as a CC1..CC10
+   send. (Would explain "CC" but not obviously "CC 28-33" / "audio channel".)
+2. A transmit sibling (FUN_400438fc / FUN_40055008 / FUN_400a14f0) resolves the channel from
+   an **audio-track** table indexed by track number while the LFO SETUP edit is in flight.
+3. The "audio channel" symptom = FUN_4009eec8 style code indexing `0x40171442` with the wrong
+   base when `_DAT_80000012`/`DAT_80000002` (part) state points at the twin audio track.
+
+### Immediate next steps
+1. Dump `DAT_400a7280` (bytes) + the param-id ranges the LFO MAIN vs LFO SETUP encoders emit.
+2. Decompile FUN_400438fc, FUN_40055008, FUN_4009da20 — find the CC-28..33 / audio-channel path.
+3. Reproduce in the emulator (adapt `tools/emu_*`): drive case '?' with an LFO-SETUP paramId
+   for a MIDI track whose twin audio track has a different channel; capture FUN_40010bc8 args.
+4. Then design the suppression patch (likely a guard in FUN_40054cd8's MIDI branch, or in
+   FUN_4009eec8, skipping transmit when paramIdx is an LFO param / page == LFO SETUP).
+
+Scratch dumps: `scratchpad/lfo{2..13}.txt`. Manual text: `tool-results/otmk2.txt`.
+
+---
+
+## Session 8 continued — LIKELY ALREADY FIXED IN 1.40C (emulation-backed)
+
+### The transmit mechanism, fully traced
+- **FUN_400409f4** = polled "AUDIO CC OUT" transmitter (runs off HW timer `DAT_fc078xxx`).
+  For each set bit `ch` in `_DAT_46c7e0de` (a **MIDI-channel** mask), for each set param bit
+  in `[ch*0x10 + 0x46c7d7d8]`, transmits `CC (col*0x20 + bit) = value[ch*0x80 + 0x46c7bf2c + ...]`
+  with status byte `(ch | 0xB0)`.
+- **FUN_40033e3c(track, ccNum, value)** = the enqueue. Gated by `DAT_8000004a & 2` (= AUDIO
+  CC OUT enable; INT clears it). Resolves `ch = *(char*)(0x8000003f + track)` — the **audio
+  track's assigned MIDI channel** — skips if that channel collides with a MIDI track's
+  channel, else stores value at `[ch*0x80 + ccNum + 0x46c7bf2c]` and sets `_DAT_46c7e0de` bit `ch`.
+- **CC number for a param edit = `enc + 0x10 + DAT_400a72a8[_DAT_460d1684]*6`.** Empirically
+  (emu sweep) `_DAT_460d1684`: 0→playback CC16-21, **1→LFO CC28-33**, 2→amp CC22-27,
+  3→FX1 CC34-39, 4→FX2 CC40-45. (Matches manual Appendix C.7.)
+
+### The shared SETUP-page encoder handler
+- **FUN_400554e0(block)** (called by every param-SETUP page-open) does
+  `_DAT_460d1684 = block; FUN_400326d4(def, 0, &DAT_400c085a)` — installs the encoder handler
+  table @0x400c085a: encoders 0-5 → **FUN_40055008**, encoder 6 → FUN_4004eb24.
+- Page-open → block: LFO SETUP (FUN_40058390) → **block 1**; PLAYBACK/MIDI-NOTE → 0;
+  MIDI-CTRL1/EFFECT1 → 3; MIDI-CTRL2/EFFECT2 → 4.
+- **FUN_40055008(enc, delta)**:
+  - `if (_DAT_80000012 == 0)` (**audio mode**): writes param, then
+    `FUN_40033e3c(DAT_100b14cc, enc + 0x10 + DAT_400a72a8[_DAT_460d1684]*6, value)`
+    → for block 1 that's **CC 28-33 on DAT_100b14cc's audio channel**. (Correct AUDIO CC OUT.)
+  - `else` (**MIDI mode**): `FUN_4009eec8(DAT_100b14cc, _DAT_460d1684*6 + enc, value, 0)`.
+    FUN_4009eec8 only emits for param 0x12..0x1d (PB/AT/CC1-10). For the LFO block that's
+    param **6..11 → FUN_4009eec8 does nothing.**
+
+### Emulation result (`tools/emu_lfocc.py`, unicorn)
+Drove FUN_40055008 for every `enc`×`_DAT_460d1684`×{audio,midi}. Faithful:
+- audio + block 1 → `FUN_40033e3c(0, 28..33, val)`  ✅ audio CC out fires (expected).
+- **midi + block 1 → FUN_4009eec8(0, 6..11, val, 0) → nothing transmitted.** ✅ no bug.
+- midi + block 3/4 (CTRL pages) → FUN_4009eec8 param 18..29 → PB/AT/CC1-10 DO transmit
+  (correct — that's the point of the CTRL pages).
+Also swept all 13 `FUN_40033e3c` callers: only FUN_40055008 ever uses CC 28-33; the rest
+use CC 0x31-0x7f (mute/solo/cue/arm/scene). **No page-enter bulk LFO-CC dumper exists.**
+
+### Conclusion
+On **OS 1.40C** there is no code path by which editing a MIDI track's LFO SETUP SPD/DEP
+transmits CC 28-33 — the `_DAT_80000012` (MIDI-mode) gate in FUN_40055008 sends MIDI-track
+edits down the FUN_4009eec8 path, which ignores LFO params. The 2019 report was against
+**MKI OS 1.30B**; this looks **already fixed** (most plausibly: the `_DAT_80000012` guard
+was added to FUN_40055008 in the 1.31/1.40 line). Could not obtain a 1.30B binary to diff.
+
+### Recommended confirmation (hardware, user has the gear)
+On the real Octatrack (1.40C): PROJECT>MIDI>CHANNELS set MIDI trk1→ch1, audio trk1→ch9;
+PROJECT>MIDI>CONTROL set AUDIO CC OUT = EXT (or INT+EXT); MIDI monitor on the OUT.
+MIDI mode → MIDI track 1 → LFO SETUP page → turn SPD / DEP. If **no** CC 28-33 appear on
+ch9, the bug is fixed and this task is closed. If they DO appear, the repro is live and the
+fix target is the missing `_DAT_80000012` guard / a second path — resume from here.
+
+### Residual (if pursuing further)
+- Emulate the full [MIDI]→open MIDI-LFO-SETUP→turn-SPD chain (page-open FUN_40058390 +
+  event loop) rather than calling FUN_40055008 directly, to rule out an open-time emit.
+- Obtain OT OS 1.30B/1.31 and diff FUN_40055008 to confirm what the fix was and when.
+
+---
+
+## Session 9 (2026-08-28) — Feasibility: "soft" audio-track mute (decay + FX tails, like trig mutes)
+
+Goal: make FUNC+TRACK audio mute enter the amp release phase and let delay/reverb tails ring,
+instead of the instant hard cut. Longstanding Elektronauts wish. User's hypothesis: the soft
+behaviour already exists in the arranger-mute path. Scripts: `tools/GhidraMute{1..7}.java`;
+dumps `out/ghidra/GhidraMute{1..7}_session9.txt`.
+
+### Map of the mute subsystem (verified by decompile + byte-search for address constants)
+- **Audio-track mute mask** = 8-bit `_DAT_460fab40` (bit t = track t muted). Managed by a
+  self-contained "mute mode / QUICK MUTE" module at `0x40083480..0x40083f??`.
+  - `FUN_40083480` → getter (used by LED refresh FUN_40030a6c/c60/e6c).
+  - `FUN_40083ab4(keycode,phase)` → **mute a track**: `uVar1 = keycode-0x10`; `_DAT_460fab40 |=
+    1<<uVar1`; if phase==1 → `FUN_400836d8()`.
+  - `FUN_40083e40(keycode,phase)` → **unmute a track**: `_DAT_460fab40 &= ~(1<<...)`; → `FUN_400836d8()`.
+  - `FUN_400836d8(arg,phase)` = re-evaluate all 8 voices after a mask change (phase 1=mute,0=unmute).
+  - `FUN_40083544(track,phase)` = single-track version; **the arranger calls THIS** (see below).
+- **Byte-search confirms `0x460fab40` is referenced ONLY inside `0x40083482..0x40083e86`.**
+  The DSP frame builder / mixer / trig→voice path never read the raw mute mask.
+- **Derived masks actually consumed by the audio engine**:
+  - `_DAT_46c803d4` : low byte = CUE mask, high byte = MUTE mask. Also drives MIDI CC-out
+    (FUN_40033e3c CC 0x34 cue / 0x35 mute / 0x36 mute-all, via FUN_4005e294 & FUN_4000e79c).
+  - `_DAT_46c7ff64` : "silenced in MAIN out" mask (same <<8 layout). Read by `frame_builder`
+    (FUN_4000c8a4 @0x4000c93e) and a sibling voice-cmd gate @0x4000b936, plus 0x4000ac44.
+  - `FUN_400834d8(_,phase)` = the mute-page **commit** handler (ptr pair @`0x400d15e4`):
+    phase 1 → `_DAT_46c803d4 |= _DAT_460fab40<<8; _DAT_46c7ff64 |= _DAT_460fab40<<8; CC 0x35`;
+    phase 0 → `_DAT_46c7ff64 = 0`.
+- In `frame_builder` the mute mask is applied by **gating pending voice commands**: `btst #8,cmd`
+  then `... & ~_DAT_46c7ff64 ...`, and it *synthesises* a command `uVar10 = (cmd & 0xf000) |
+  per_track_byte(0x800017f6) | 0x210` into the per-track slot — i.e. it forces flag 0x10 (the
+  stop/one-shot bit) while **preserving the existing mode nibble**; it does not force 0xf000.
+
+### The "soft release" machinery already exists (and is used elsewhere)
+- `FUN_40008f84(track)` : start a graceful release — sets `DAT_8000184a |= 1<<t` (voice state
+  "2" = releasing, per FUN_40000ee0), writes release param `0x2d`, calls FUN_4000672c.
+- Consumed by `FUN_400068e4` (control-rate voice updater): on the release bit it writes
+  **ramp targets** `0xf0000000/0xf0000000/0xf0000000` to voice+0x24/0x28/0x2c and `0xe0000000`
+  to voice+0x40 (envelope-segment slope registers — a fast *ramp*, not a zero), then
+  `FUN_40005c7c`/`FUN_40095ee0`/`FUN_4000432c` push it to the DSP frame amp.
+- `FUN_40008fe4(track)` wraps it (also sets `DAT_8000184c=0xff`); `FUN_40008fe4(0xffffffff)` =
+  "release ALL voices", called from transport STOP and every CHANGE SET / SYNC TO CARD flow
+  (FUN_40063660/778/930/e28, FUN_4006437c, FUN_4006cc54) — so a clean fade on state change.
+- `FUN_40083a7c` already does exactly the wanted thing (`for t in muted: FUN_40008fe4(t)`) but
+  has **no discoverable caller** (dead, or dispatched — worth chasing).
+
+### What FUN_400836d8 / FUN_40083544 actually do on mute
+For **FLEX (machine 0) / STATIC (1)** with the **default** mute settings (mute-quantise/retrig
+nibble `uVar6 == 0`): muting a *currently-sounding* voice sends **no stop/release command at
+all**. Only machine types ≥2 (THRU/NEIGHBOR/PICKUP) get a `0x8040` command. The re-eval logic
+only fires when a mute-retrig nibble is set (the STARTS SILENT / ONE / ONE2 / HOLD option).
+→ The instant silence of a sustained sample under mute therefore comes from the
+`_DAT_46c7ff64`/`_DAT_46c803d4` gate in the frame builder + whatever the DSP does with the
+0x?10 command — **not** from the ColdFire voice logic.
+
+### Arranger vs FUNC+TRACK
+The arranger row-command interpreter is `FUN_40061a94` (switch over a command-byte stream;
+handles TEMPO/SCENE/MUTE/… and sets the mute-retrig nibbles `_DAT_460d179a/9e/a2`). Its MUTE
+command calls the **same `FUN_40083544`**. → There is **no separate softer arranger-mute path**
+at the voice level. User's hypothesis not confirmed. The only arranger-specific knobs are the
+shared mute-quantise nibble and the retrig-on-unmute mode.
+
+### Feasibility verdict
+Plausible, scoped like the Bug-1 fix, with ONE real unknown that is DSP-side:
+1. The release primitive we want (`FUN_40008f84`, ramp targets `0xf0000000`) **already exists**
+   and is call-ready. A detour at `FUN_40083ab4` / `FUN_400836d8` could, on mute (phase 1),
+   additionally call `FUN_40008f84(track)` for FLEX/STATIC sounding voices; on unmute do nothing.
+2. **Open question**: is the FX send tapped **pre** or **post** the mute gain? If pre (send is a
+   fixed tap off the voice pre-mute-level), then killing the amp with a release already lets the
+   tail ring — easy win. If post, tails die regardless of amp release and we'd need a frame/mixer
+   routing change (harder; frame_builder is dense ColdFire that r2 mis-decodes, Ghidra partial).
+3. Also need: does the DSP's 0x?10 "stop" do an instant cut or honour an envelope release? DSP
+   program is DSP56300, located **inside the MAIN OS image** at ~`0x400e2000..0x4010fdf0`
+   (~188 KB) — patchable in principle but needs a DSP56300 disassembler.
+
+### Next steps if pursued
+- Emulate (unicorn, like emu_trigbug) the mute of a sounding FLEX voice: watch voice+0x20..0x44
+  and the frame amp slot for that track — instant 0 vs ramp — and see if a separate "send level"
+  slot stays non-zero.
+- Locate the per-track MAIN-mix and SEND-mix level words in the DSP frame double-buffer
+  (`_DAT_800000e0 * 0x180` / `* 0x200` regions filled at the end of frame_builder) and check
+  which the mute mask zeroes.
+- Chase callers of `FUN_40083a7c` (already the desired loop).
+- If pre-send tap confirmed: prototype a detour `FUN_40083ab4`→cave that calls `FUN_40008f84`
+  on mute for sounding FLEX/STATIC, gated by a PERSONALIZE flag ("SOFT MUTE").
+
+### Emulation results — `tools/emu_mute.py` (unicorn), log `out/ghidra/emu_mute_session9.txt`
+Drove the real handlers against a synthetic "track 0 = sounding FLEX voice" pre-state.
+
+**S1 — `FUN_40083ab4(0x10, 1)` (real FUNC+TRACK mute), FLEX voice sounding, default settings:**
+the ONLY write is `_DAT_460fab40 = 0x01`. No voice command, no amp write, `_DAT_46c803d4`/
+`_DAT_46c7ff64`/`DAT_8000184a` untouched. `FUN_400836d8` runs but is a no-op for FLEX/STATIC.
+**S2 — arranger `FUN_40083544(0, 1)`** for FLEX / STATIC / NEIGHBOR: no writes at all. Confirms
+the arranger mute path is identical (and equally inert on a sustained voice).
+
+**S3/S5 — the release is one flag away.** `FUN_40008f84(t)` sets `DAT_8000184a |= 1<<t` (release
+*state*) but NOT the ramp trigger. The ramp trigger is **`DAT_8000184c |= 1<<t`**. With that bit
+set, the very next `FUN_400068e4` tick (the control-rate voice updater, already running every
+audio frame) does, for that track:
+```
+pcurs[t]+0x24 = 0xf0000000   pcurs[t]+0x28 = 0xf0000000   pcurs[t]+0x2c = 0xf0000000
+pcurs[t]+0x40 = 0xe0000000        (envelope-segment slope regs = steep negative = release)
+-> FUN_40005c7c(t, pcurs[t], level, 0, 1, 0)
+   -> FUN_40095ee0(0x80+t, level, ...) -> FUN_40099090(vframe[0x80+t], level, slope)
+      writes AMPseg[0x80+t] +0x114=target(clamped >=0x2d0 floor) +0x118/+0x11c/+0x120=ramp
+```
+i.e. it ramps the **AMP stage** (per-track voice `vframe[0x80+t]`, `pcurs` struct base 0x80004f1c
+stride 0x54) down to the 0x2d0 floor. That's upstream of the track insert-FX + mix routing.
+(`FUN_40008fe4(t)` = `FUN_40008f84(t)` + `DAT_8000184c = 0xff`; that's why transport STOP /
+CHANGE-SET, which call `FUN_40008fe4(-1)`, fade cleanly. `FUN_400972fc` sets a single bit
+`DAT_8000184c |= 1<<t` for PICKUP.)
+
+**S6 — the hard mute gate is NOT an amp ramp.** Pushing `_DAT_460fab40<<8` into
+`_DAT_46c803d4`/`_DAT_46c7ff64` (via `FUN_400834d8`, the mute-page commit) then ticking
+`FUN_400068e4` produced *no* release fingerprint — the instant silence must be the
+voice-command injection in `frame_builder` (`(cmd & 0xf000) | ... | 0x210`, flag 0x10) and/or
+the DSP's handling of it. So the two mechanisms are independent stages:
+`AMP release` (pcurs/vframe, ramped, pre-FX)  vs  `mute gate` (voice-cmd/DSP, instant).
+
+### Feasibility verdict (updated) — GREEN for a small detour patch
+The wanted behaviour = **on mute, run the AMP release instead of relying on the instant gate**.
+Emulation shows the release machinery is complete, already ticking, and triggered by one bit.
+
+**Proposed fix**: detour `FUN_40083ab4` (mute-set; and/or `FUN_40083e40`/`FUN_400836d8`) → code
+cave that, on phase==1, for each newly-muted track whose voice is sounding
+(`(&DAT_800049d8)[t*0xA8+1] != 0`) does:
+  `DAT_8000184c |= (1 << t);`  and  `FUN_40008f84(t);`
+and (open design choice) suppress the frame-builder's injected stop for those tracks so the
+sample tail + its FX feed decay naturally rather than being cut mid-release. Gate the whole
+thing behind a PERSONALIZE flag ("SOFT MUTE"), same pattern as the other MAXOLYDIAN mods.
+Unmute path unchanged (the existing STARTS-SILENT / ONE / ONE2 / HOLD logic still applies).
+
+**Still unverified (needs DSP RE or hardware):** whether suppressing the injected stop is even
+necessary — if the DSP treats `0x?10` on an already-releasing voice as "let the envelope
+finish", the amp-release alone may be enough and no frame-builder change is needed. The DSP
+program is DSP56300 at ~`0x400e2000..0x4010fdf0` inside the MAIN OS.
+
+**Recommended validation before writing the patch:** extend `emu_mute.py` to also drive a few
+frames of `frame_builder` (FUN_4000c8a4) with the mute mask live + the `DAT_8000184c` bit set,
+and confirm the per-track `framelvl_46c938d4[t]` / `vframe[0x80+t]` amp actually ramps (not
+snaps) and that the injected `0x?10` command doesn't zero it first.
+
+### Frame-builder emulation — `emu_mute.py` scenario 7 (enter the per-track loop at 0x4000c87c)
+The real frame-builder task is `FUN_4000b8f0` (5068 B, no callers → kernel/ISR-dispatched, full
+decompile fails). Its per-track command-resolution loop is 0x4000c87c → 0x4000ca94 (then the
+EMAC frame-assembly tail, un-emulatable). Drove just the loop with a still-sounding *sustained*
+voice on track 0 (`(0x800017b8)[t]!=0`, `refresh_46c7faa4[t,0]` bit 0x20 set):
+
+| pre-state | result for trk0 |
+|---|---|
+| unmuted | emits refresh cmd `0x2210` into `RESOLVEDCMD_46104d26[0]` |
+| `_DAT_46c7ff64` bit8 set (force-mute) | emits the **same** `0x2210` — voice kept alive; the cut is the DSP **output** mute (post-FX) applied from `_DAT_46c7ff64` elsewhere in the frame |
+| `_DAT_8000184e` bit8 set, `46c7ff64` clear | **clears `refresh_46c7faa4[t,0]`, emits nothing** — the voice just stops being fed and decays naturally |
+
+So the two silencing stages are now fully characterised:
+- `_DAT_8000184e` (silenced-set) → "stop refreshing" → natural decay, no injected stop.
+- `_DAT_46c7ff64` (main-out silence) → DSP post-FX output mute → **instant, kills FX return too**
+  = the behaviour the community wants gone.
+- `DAT_8000184c` bit → `FUN_400068e4` AMP-envelope release ramp (pre-FX).
+
+### Refined fix design — detour `FUN_400836d8` (the common apply-mute fn)
+`FUN_400836d8` is called by every mute path (plain FUNC+TRACK via `FUN_40083ab4`; the
+CUE/MUTE/SOLO key handlers `FUN_40030a6c/c60/e6c`; arranger via `FUN_40083544`'s sibling).
+Detour it (behind a PERSONALIZE "SOFT MUTE" flag) so on phase==1, for each newly-muted track
+`t` whose voice is sounding (`(&DAT_800049d8)[t*0xA8+1] != 0`) and machine is FLEX/STATIC:
+```
+DAT_8000184c   |= (1 << t)          ; kick the AMP release (FUN_400068e4 ramps vframe[0x80+t])
+_DAT_8000184e  |= (1 << (t + 8))    ; stop the sustain-refresh -> looped samples wind down
+```
+and **suppress the `_DAT_46c7ff64` bit `(1<<(t+8))`** for those tracks (clear it after the
+normal mute code sets it, or gate the setter) so the track's FX/mix output stays open and
+delay/reverb tails ring out while the amp decays. Unmute: clear the `_DAT_8000184e` bit and let
+the existing STARTS-SILENT/ONE/ONE2/HOLD re-trig run.
+
+Open refinements for patch dev (not blockers): (1) `_DAT_46c7ff64` also carries the CUE mask
+and drives MIDI mute-CC-out — make sure clearing the mute bit doesn't disturb cue or the CC.
+(2) `FUN_40030a6c/c60` also XOR the mute state into the pattern blob (`blob+0x28/+0x30`) and
+toggle `_DAT_460d10d4/d8` — confirm SOFT MUTE interacts cleanly with a saved/recalled pattern.
+(3) find where `_DAT_46c7ff64`/`_DAT_46c803d4` actually get set from `_DAT_460fab40` on the
+plain path (`FUN_400834d8` is the QUICK-MUTE commit; the plain path's setter is likely inside
+`FUN_40030984` / `FUN_400839dc` — decompile those next).
+
+### emu_mute.py scenario 8 — the decay honors the AMP-envelope RELEASE knob
+There are **two** independent "stop a voice" primitives and they behave differently:
+
+| primitive | set by | mechanism | fade shape |
+|---|---|---|---|
+| `DAT_8000184a` (bit/track) | `FUN_40008f84(t)` | frame_builder @`0x4000bd3c` reads it, OR's **bit 0x10 (note-off/gate-release)** into the voice command, then clears the bit. Same flag as a STATIC-machine note-off. | **DSP runs the voice's AMP-envelope RELEASE stage → the user's REL setting is honored.** `FUN_400068e4` writes *no* fixed slope for this path (emu-confirmed). |
+| `DAT_8000184c` (bit/track) | `FUN_40008fe4(t)` / STOP / CHANGE-SET | `FUN_400068e4` writes fixed `0xf0000000` envelope slopes | hard ~ms declick fade, **AMP env ignored** |
+
+So the SOFT MUTE detour must use **`FUN_40008f84(t)`**, *not* `DAT_8000184c`. Then muting a
+sounding track = a note-off: the sound decays over its AMP RELEASE time (short REL → quick
+fade, long REL → long fade), and delay/reverb tails ring from the FX buffers throughout.
+
+**Watchdog caveat:** `FUN_40008f84` writes `0x2d`(=45) to `relparam_46c7dfba[t]`, a per-track
+frame countdown (decremented in the `FUN_40052290` per-frame loop). When it reaches 0, a voice
+still in release state 2 is force-freed (`FUN_40000ee0(t)==2` → `FUN_40006820(t)`). So a REL set
+to "infinite"/very-long will NOT sustain forever after a mute — it is cut at ~45 control frames
+(exact ms = 45 × audio-control-frame period, not yet measured; likely tens–low hundreds of ms).
+The FX tail is unaffected (it lives in the FX buffers). If genuinely-infinite mute-sustain is
+wanted, the same detour can also skip re-arming / neutralise that watchdog for soft-muted
+tracks — a one-line addition.
+
+Unmute semantics with this design (user-confirmed choice = "trig mute"): the voice is released
+and then freed, so there is nothing playing underneath — **the track returns from the next
+sequencer trig**, not mid-sample. (Stock OT mute resumes mid-sample because it keeps the voice
+alive under a DSP output-mute; SOFT MUTE deliberately does not.)
+
+### emu_mute.py scenarios 9 & 10 — CORRECTION to S1 + stock-mute command
+S1 was **under-seeded**: the real MUTE key handler sets a mute-quantize word
+(`_DAT_460d10d4`/`d8`/`d0` = 1, three modes) *before* calling `FUN_400836d8`, and S1 left those
+at 0, which is why `FUN_400836d8` looked inert. With the quantize word set:
+
+- `FUN_400836d8` (FLEX, mute, sounding) writes a **voice command to the `46c7e9fa` mailbox**:
+  `0x1040 / 0x2040 / 0x4040` (bit `0x40` + the quantize nibble `<<12`). STATIC gives
+  `0xa040`, or `voice_cmd(t, 0x80, 1)` (a *restart*) in the branch where the pending nibble
+  already matches the voice's current one.
+- Ran all three real key handlers (`FUN_40030a6c` / `c60` / `e6c`) end-to-end against a
+  sounding FLEX voice. **None of them set `_DAT_46c7ff64`, `_DAT_46c803d4`, `_DAT_8000184a`,
+  `_DAT_8000184c` or `_DAT_8000184e`.** Their only voice-engine effect is the `0x?040` mailbox
+  write via `FUN_400836d8`.
+
+So on the **plain FUNC+TRACK path**, `_DAT_46c7ff64` (the DSP output mute) is apparently **not
+set at all** — the silencing is the `0x?040` mailbox command (bit `0x40`) resolved by the
+frame builder / DSP. `_DAT_46c7ff64` is set by the **QUICK MUTE screen commit** (`FUN_400834d8`)
+and the CUE/solo focus path (`FUN_4005e294`), not by track-key mute.
+
+**Open (decides the exact patch):** what does the DSP do with a `0x?040` (bit-0x40) command —
+instant cut, or deferred-to-quantize then cut, and does it kill the FX return? Bit `0x40` vs
+bit `0x10` (note-off) vs `0xf000` (hard stop) semantics still not disassembled (DSP side).
+
+### Revised patch plan
+Two candidate detour strategies, to decide by building + emulating:
+1. **Augment**: keep the stock `0x?040` command, additionally call `FUN_40008f84(t)` +
+   `_DAT_8000184e |= 1<<(t+8)` for sounding FLEX/STATIC. If the stock command turns out to
+   already be release-like (deferred), this alone may give the wanted behavior.
+2. **Replace**: in the `FUN_400836d8` FLEX/STATIC mute branch, swap the `mailbox = uVar6|0x40`
+   / `FUN_40005178(t, uVar6|0x10, 1)` for `FUN_40008f84(t)` (+ the 8000184e bit), so the voice
+   gets a clean note-off instead of the `0x40` command.
+Both behind a PERSONALIZE "SOFT MUTE" flag. Next step: assemble a minimal detour (strategy 1),
+run it in emu_mute.py watching the `46c7e9fa` mailbox + frame output + amp segments, iterate.
+
+### PROTOTYPE BUILT — `tools/patch_softmute.s` (strategy 1, augment) + emu_mute.py S11
+Detour: `0x400836d8` (`FUN_400836d8` entry) ← `jmp 0x400d7b40` + nop (8 B, covers the
+`lea (-0x3c,SP),SP` + `movem.l {D2-D7,A2-A6},(SP)` prologue). Cave at **0x400d7b40** (242 B,
+fits the 0x400d7b3e..0x400d7c3b free tail past `patch_trigscale`; 9 B spare). Gate byte
+**0x800000dc** (next free PERSONALIZE word after 0xd4/0xd8), 0 = stock.
+Cave logic: save d0-d7/a0-a6; if gate off or phase∉{0,1} → run displaced prologue, resume at
+`0x400836e0`. phase 0 (unmute): `SILENCED &= ~((~mask & 0xff) << 8)`. phase 1 (mute): for each
+track in the mask that is FLEX/STATIC (`blob +0x8f385 ≤ 1`) and sounding
+(`FUN_40000e50(t)`→`*(a0+1) != 0`): `FUN_40008f84(t)` + `*(u16)0x8000184e |= 1<<(t+8)`.
+
+emu_mute.py S11 (stock vs patched, FLEX + STATIC):
+- stock  → only `mailbox_46c7e9fa[0] <- 0x2040` (FLEX) / `0xa040` (STATIC).
+- patched → same mailbox write **plus** `FUN_40008f84(0)` runs: `DAT_8000184a=0x01` (note-off
+  armed → DSP AMP RELEASE), `relparam_46c7dfba[0]=0x2d` (45-frame watchdog), and the cave
+  writes `_DAT_8000184e=0x0100`. Detour completes cleanly, no crash.
+- unmute round-trip: `_DAT_8000184e` 0x0100 → 0x0000. ✓
+Gate verified: `softmute=False` runs are byte-identical to stock.
+
+**What emulation can't decide (needs a hardware flash):** whether the retained stock `0x?040`
+command still hard-cuts on top of the note-off (→ switch to "replace": null the
+`mailbox = D3|0x40` / `FUN_40005178(t, D3|0x10, 1)` stores in the FLEX/STATIC branches), and
+whether the FX tail audibly survives. Build A candidate = stock 1.40C + this detour only.
+
+### FLASHABLE BUILD — `tools/build_softmute.py` → "Build C" (2026-08-28)
+Stock 1.40C + `patch_trigscale` (Bug 1, always-on, **bytes identical to `build_trigscale_only.py`**
+— verified by diff) + `patch_softmute` (**always-on**, assembled with `--defsym ALWAYS_ON=1`
+which drops the `tst.b 0x800000dc` gate; gated cave = 242 B, always-on cave = 232 B).
+Caves: patch_trigscale @0x400d7b00 (62 B), patch_softmute @0x400d7b40 (232 B) — adjacent, no
+overlap, end 0x400d7c28 < free-zone end 0x400d7c3c. 272 bytes changed vs stock, only at
+`0x400836d8` (8-B detour) + `0x4009b6f2` (trigscale detour) + the two caves.
+Outputs: `out/mainos_softmute.bin`, `out/OCTATRACK_OS1.40C_SOFTMUTE_PFFIX.syx` (622742 B,
+version field stays "1.40C", EFT checksum + round-trip OK), `out/OCTATRACK_SOFTMUTE_PFFIX.bin`
+(445820 B, CF-card path). Not yet hardware-flashed. FLASHING.md "Build C" + "Testing SOFT MUTE".
+
+### V1 augment FLASHED → hard cut still won (user, 2026-08-28). V2 = REPLACE.
+emu_mute.py check: after V1 (note-off + `_DAT_8000184e` bit + stock `0x?040` left in place),
+frame_builder's per-track loop still resolves `RESOLVEDCMD[t] = 0x2040` → the stock deferred-mute
+command reaches the DSP and hard-cuts. So the note-off never gets a chance.
+
+**patch_softmute V2** (`tools/patch_softmute.s` rewritten): now *deletes* the stock command.
+The detour is a `jmp`, so `(0,SP)=caller_ret` on entry. When there is work to do it saves
+`caller_ret`, overwrites `(0,SP)` with `&post`, runs `FUN_400836d8`'s body (which still writes
+`mailbox[t] = 0x?040`), and the body's `rts` then lands in `post`, which zeroes `0x46c7e9fa[t]`
+and `0x800018be[t]` for every handled track and `jmp`s to the real `caller_ret`. Net for a
+soft-muted sounding FLEX/STATIC track: only `FUN_40008f84(t)` (note-off) + `_DAT_8000184e` bit
+reach the engine; the hard-cut command is gone. Mute mask (`_DAT_460fab40`) is untouched, so
+the mute is remembered; LED / getmask paths see the real mask.
+emu S11 (V2): stock → `RESOLVEDCMD[0] = 0x2040`/`0xa040` (hard cut). patched → `46c7e9fa[0]=0`,
+`8000184a=0x01`, `460fab40=0x01`, `RESOLVEDCMD[0] = 0xeeee` (nothing emitted → voice decays).
+Always-on flash cave (GATE byte = 0) verified: FLEX + STATIC fire, not-sounding tracks don't,
+no crash. Cave moved to **0x400d7400** (330 B; the 0x400d7b40 slot ran past the free-zone end).
+
+### Rebuilt Build C (V2)
+`out/OCTATRACK_OS1.40C_SOFTMUTE_PFFIX.{syx,bin}` — caves patch_softmute @0x400d7400 (330 B) +
+patch_trigscale @0x400d7b00 (62 B); detours 0x400836d8 (8 B) + 0x4009b6f2 (18 B); your bug
+fix bytes still identical to `build_trigscale_only.py`; version field "1.40C"; EFT round-trip OK.
+**Still not hardware-tested.**  If V2 still hard-cuts on hardware → the DSP note-off (bit 0x10)
+does not produce a release for a FLEX one-shot mid-playback, and the fix has to force the AMP
+envelope into its RELEASE segment directly (a DSP-frame `vframe[0x80+t]` / `pcurs` manipulation).
+
+### V2 FLASHED → still hard-cuts, BOTH FLEX and STATIC (user, 2026-08-28).
+So neither the stock `0x?040` command (deleted by V2, emu-confirmed) nor the note-off is the
+operative mechanism. The FUNC+TRACK mute silences the track through a path not yet found —
+candidates: (a) `_DAT_46c7ff64` DSP output mute set somewhere I stubbed; (b) the pattern/kit
+param repush — `FUN_40030a6c/c60/e6c` XOR an 8-byte region at `blob + pat*0x8ed8 + trk*0x91a
++ 0x30` with `_DAT_460d10e2/e6` then call `FUN_40027e00` (repush to audio engine) — this path
+was always stubbed in emu and doesn't decompile; (c) the FUNC+TRACK key path might route
+through `FUN_40083ab4` (qmode 0) so `FUN_400836d8` emits *nothing* and the `0x?040` analysis
+was a red herring for that entry point. `FUN_40027e00` has 258 refs; `_DAT_460d10e2` refs
+cluster at `0x4002ea..0x40030` (FUN_4002exxx — the kit/scene param engine).
+
+### DIAGNOSTIC D1 FLASHED → still hard-cuts, tails still die (user, 2026-08-28).
+`build_softmute.py --d1` = patch deletes ONLY the stock `0x?040` mailbox command, nothing else.
+Deleting it changed nothing → **the `FUN_400836d8` / `0x?040` mailbox command is NOT the mute
+mechanism.** The whole 12-scenario `emu_mute.py` line of investigation was chasing the wrong
+code path. Files `out/OCTATRACK_OS1.40C_SOFTMUTE_D1_PFFIX.{syx,bin}` kept (harmless; MIDI fix
+intact).
+
+### The ACTUAL mute mechanism (found via minimal-stub emu of FUN_40030c60)
+FUNC+TRACK mute of an audio track runs `FUN_40030c60` (0x40030c60; a6c/e6c are the sibling
+CUE/SOLO handlers). On phase 1 it:
+1. `puVar1 = blob + pat*0x8ed8 + trk*0x91a + 0x28` — an **8-byte per-track FLAGS field** in the
+   audio-track parameter block (the 0x91a-stride block).
+2. `*puVar1 ^= _DAT_460d10e2 ; puVar1[1] ^= _DAT_460d10e6` — toggle the MUTE bit(s). The mask
+   `_DAT_460d10e2/e6` is dynamic, owned by the **SCENE / parameter-override engine**
+   (`FUN_4002exxx` cluster) — it is 0 in a bare emu call, set up by whatever enters "mute
+   context". The MUTE-LED routine at ~0x4002ed00 lights the LED when
+   `(_DAT_460d10e2 & param[+0x28]) | (_DAT_460d10e6 & param[+0x2c]) != 0`.
+3. mirror to RAM `0x10016176 + pat*0x8ed8 + trk*0x91a` (8 B).
+4. set dirty flags `*(blob + 0x9b332) = 1`, `_DAT_100f8598 = 1`.
+5. `FUN_400836d8()` — the `0x?040` cosmetic quantize command (proven irrelevant by D1).
+An **async param-sync task** (polls `_DAT_100f8598` / `+0x9b332`, 461 refs) then repushes the
+whole track param block to the audio engine → the mute flag is applied, instantly, post-FX
+(kills the send/return → no tail).
+
+### Scope reassessment — this is NOT a Bug-1-sized detour
+The mute is a **scene/parameter-override flag** (`FUN_4002exxx`, the SCENE engine — COVERAGE.md
+marks Scenes "⬜ untouched, the OT's flagship feature") toggled in the track param block and
+repushed by an async sync to the audio engine, which applies it in the (non-decompiling)
+ColdFire frame-fill and/or the DSP.  Making it "trig-mute" style needs RE of the scene engine
++ the audio param-sync + likely the DSP mute-flag handling — a multi-session effort in the
+hardest, least-decompilable subsystem, with an uncertain payoff (may bottom out at "the DSP
+does it").
+
+### V3 — narrowed goal: "mute = a per-track STOP" (user's chosen target)
+User: *"the same behavior that occurs with a single stop command … sample audio cuts, but the
+fx tails still ring."*  So: don't try to make the dry signal decay musically — just do what a
+single STOP does to that one track.
+
+The three CUE/MUTE/SOLO handlers each XOR an 8-byte flag field in the audio-track param block
+(emu-confirmed offsets): `FUN_40030e6c` → +0x20, `FUN_40030c60` → **+0x28**, `FUN_40030a6c`
+→ +0x30.  The MUTE-LED routine (~0x4002ed00) tests `_DAT_460d10e2 & param[+0x28]` → **+0x28 =
+MUTE = `FUN_40030c60`.**
+
+`tools/patch_softmute.s` rewritten (V3): **detour `FUN_40030c60`** (prologue `4fefffe8
+48d7047c`, 8 B). When SOFT MUTE is on, for a non-PICKUP current track (`DAT_100b14cc`), on the
+key press (phase 1): keep a patch-owned 8-bit soft-mute mask at `0x80006c66` (+ valid byte
+`0x80006c67`=0x5a), toggle this track's bit, and —
+  - now-muted  → `DAT_8000184c |= 1<<t` + `FUN_40008f84(t)`  (exactly a per-track STOP: the
+    `FUN_400068e4` tick fast-fades the AMP; the FX inserts keep ringing)
+  - now-unmuted → just clear the bit
+  - then `rts` — **the stock `FUN_40030c60` body never runs**, so the post-FX param-mute flag
+    is never set → the FX return stays open.
+PICKUP tracks + phase-0 (key release) → run the stock body unchanged.
+Trade-off (test build): mute state not written to the pattern (no save/recall persistence),
+MUTE LED does not light.
+
+emu (`emu_mute.py` `_softmute_patch` now points at 0x40030c60): press1 t2 → `DAT_8000184c`
+bit2, `DAT_8000184a` bit2, `SMASK=0x04`, param+0x28 untouched (stock skipped); press2 →
+`SMASK=0`; press3 → `SMASK=0x04`; PICKUP → stock. Cave 204 B @0x400d7400.
+
+Build: `python3 tools/build_softmute.py` → `out/OCTATRACK_OS1.40C_SOFTMUTE_PFFIX.{syx,bin}`
+(+ the MIDI manual-trig fix, bytes identical to Build A; version "1.40C"; EFT round-trip OK).
+247 bytes changed vs stock. **Not yet hardware-tested.**
+
+If FUNC+TRACK behaviour is *unchanged* after flashing → `FUN_40030c60` isn't the FUNC+TRACK
+path; retry with the detour on `FUN_40030e6c` (+0x20) or `FUN_40030a6c` (+0x30).
+
+### V3 FLASHED → "no change" (user).  V4 — hooked the real per-frame mute gate.
+Minimal-stub emu of the real FUNC+TRACK path (`FUN_40040250(trackkey,1)`, button table at
+0x400bfc30 → all track keys dispatch here → `FUN_40083ab4` → `FUN_400836d8`): the ONLY state
+write is `_DAT_460fab40 |= 1<<t`.  Nothing else.  A periodic task then syncs that into
+**`_DAT_80000008`** (bit 8+t = muted, bit 16+t = cued — same bits the LED painter `FUN_40083eb0`
+reads).
+
+**`FUN_40004dbc`** (entry 0x40004db8) is the per-frame mute gate: `D5 = _DAT_80000008`; per
+track it writes several 16-bit level words into the DSP-frame double-buffer (`_DAT_80003c10`),
+and for a muted track it `clr.w`s them — a **post-FX cut** (kills the FX return).  Source
+arrays `0x80000c60` / `0x80000c80` / `0x8000485a`.  SOLO uses a separate branch gated by
+`_DAT_80000037`.
+
+**patch_softmute V4**: detour the one instruction that loads `_DAT_80000008` into D5
+(`2a39 80000008` @0x40004dc6, exactly a 6-byte jmp).  Cave (66 B @0x400d7400): loads D5;
+unless SOLO is active, for `muted = (D5>>8) & 0xff`:
+  - `DAT_8000184c |= muted`  → `FUN_400068e4` fast-fades those AMPs (dry cuts, like STOP)
+  - `D5 &= ~(muted<<8)`      → `FUN_40004dbc` keeps their frame level words → FX inserts
+    still reach the mix → tails ring
+The global `_DAT_80000008` is untouched (LED still shows muted).  emu: `_DAT_80000008`
+unchanged, `DAT_8000184c` gets the muted bits, no crash.
+
+### V4 FLASHED → track stays FULLY audible (no muting) but LED/UI mute indicator toggles.
+Confirms: `FUN_40004dbc` **is** the gate (clearing the D5 mute bit un-mutes completely), and
+`_DAT_80000008` bit 8+t **is** the per-track mute flag on the FUNC+TRACK path.  But V4's
+per-frame `DAT_8000184c |= muted` did NOT fade the AMP — that byte is a one-shot STOP command;
+re-writing it every frame just re-arms `FUN_400068e4`'s "restart release from current level"
+(and `pcurs+0xc = 0`, the position reset) each tick → no convergence, sample keeps playing.
+
+### V5 — edge-triggered note-off + maintained release state
+`patch_softmute.s` V5: same hook (`move.l 0x80000008,D5` @0x40004dc6).  Cave (132 B): shadow
+of the muted mask in patch RAM `0x80006c66`; unless SOLO:
+  - `newly = muted & ~shadow` (0→1 edge) → `jsr FUN_40008f84(t)` **once** per newly-muted track
+  - every frame: `DAT_8000184a |= muted` (maintain the release-state bit; frame_builder
+    @0x4000bd3c consumes+re-arms it, the way a held note-off is maintained)
+  - `D5 &= ~(muted<<8)` → `FUN_40004dbc` keeps the frame level words → FX inserts reach the mix
+emu: `_DAT_80000008` untouched, `DAT_8000184a` bit set on the edge + maintained frame 2,
+`FUN_40008f84` called once (edge only).  183 B changed vs stock.  **Not yet hardware-tested.**
+
+If V5 STILL leaves the sample audible → the note-off (`DAT_8000184a`→frame_builder `cmd|0x10`)
+does not close the AMP for a freely-looping voice, and the fix has to write the AMP envelope
+segment registers directly (`pcurs[t]+0x20..0x44`, base 0x80004f1c stride 0x54 +bank 0x2a0) or
+the per-voice frame `vframe[0x80+t]` — a bigger job, and possibly a DSP-side one.  That would
+be the point to reassess whether this is worth continuing.
+
+### V5 FLASHED → FX-tail goal WORKS.  Dry hard-cuts (clean, no click) even with AMP REL maxed
+→ the note-off (`DAT_8000184a`→`cmd|0x10`) does a fast declick fade, does NOT run the AMP
+envelope RELEASE segment.  User: this is fine ("fast but smooth"), ship it — it's the
+Digitakt "quiet mutes" behaviour.  Residual: a ~1-frame trig attack blip on muted tracks.
+
+### V6 (SHIP CANDIDATE) — `python3 tools/build_softmute.py [VERSTR]`
+`patch_softmute.s` = two hooks, one cave (228 B @0x400d7400):
+  - `pre`   @ FUN_40004dbc 0x40004dc6 (`move.l 0x80000008,D5`): unless SOLO — for muted tracks,
+    0→1 edge → `FUN_40008f84(t)` once; every frame `DAT_8000184a |= muted` + `D5 &= ~(muted<<8)`
+    (keep the frame level words → FX inserts ring).  shadow @ 0x80006c66.
+  - `pre_v` @ FUN_40005178 0x40005178 (voice-cmd queue, prologue `4feffff4 48d7001c`): drop
+    "start" commands (bit 0x80 set, bit 0x10 clear) for a muted audio track → **no trig blip**.
+    STOP/retrig (0x10 set) and unmuted tracks pass through.  Returns D0=1.
+`_DAT_80000008` untouched → MUTE LED + pattern-stored mute state still work.  SOFT MUTE
+ALWAYS ON (no PERSONALIZE toggle — deferred; menu-array surgery is brick-risky).
+emu-verified: hook1 sets the release bit / edge note-off; hook2 drops muted-START, passes
+STOP/retrig/unmuted.  Manual-trig fix bytes identical to `build_trigscale_only.py`.
+
+**Branding**: version string field is a fixed **10 chars** — `1.40C_KYOTI` (11) does NOT fit.
+build_softmute.py defaults to **`140C_KYOTI`** (drop the `_`).  Pass a different 10-char
+string as `argv[1]` to change it.  Internal version code `0178` stays intact.
+
+Outputs: `out/OCTATRACK_OS1.40C_SOFTMUTE_PFFIX.{syx,bin}` (version "140C_KYOTI", EFT ok,
+259 B changed vs stock).  **Not yet hardware-tested.**
+- If good → add the PERSONALIZE toggle for a shippable gated build (patch_notimer-style: add
+  "SOFT MUTE" as a 3rd relocated menu entry; `moveq #15`→`#18`; `lbl_/get_/set_softmute`
+  writing 0x800000dc) and fold into `build.py` (STUBS `("patch_softmute", 0x400d7b40)` +
+  DETOUR `(0x400836d8, "patch_softmute", "pre", "apply-mute funnel")`, EXPECT `4fefffc448d77cfc`).
+- QUICK MUTE screen edge: it also sets `_DAT_46c7ff64` on a confirm/page action — with our
+  `_DAT_8000184e` bit set too, S7 says the frame builder keeps emitting (voice stays alive).
+  May want the detour to also clear `_DAT_46c7ff64` bit `1<<(t+8)` for soft-muted tracks.
+- Optional: neutralise the 45-frame `46c7dfba` release watchdog for soft-muted tracks so a
+  max-REL setting genuinely sustains.
+
+### Does the fix also cover QUICK MUTE?  — almost certainly yes
+Track-key handler for the mute modes = `FUN_40040250(track, evt)` (0x40040250): does double-tap
+/ hold detection (`_DAT_400c0aac` last-key, `_DAT_460d5de0` hold count) then:
+ - single press  → `FUN_40083ab4(track, 1)` → sets `_DAT_460fab40` bit + `FUN_400836d8()`
+ - double-tap    → `FUN_40083ab4(track, 3)`
+ - evt==2        → `FUN_40083ab4(track, 2)`
+ - else          → `FUN_40083e40(track, ...)` (unmute) → `FUN_400836d8()`
+This is the same handler for FUNC+TRACK live mute AND the QUICK MUTE screen — both land on
+`FUN_400836d8` + the `0x?040` voice command. So a detour on `FUN_400836d8` covers both by
+default. The QUICK MUTE screen additionally has `FUN_400834d8` (→ `_DAT_46c7ff64`) and
+`FUN_40083488` (→ `_DAT_46c7fe22` → `_DAT_8000184e` via `FUN_4000ac18`) wired to a
+page-descriptor / confirm action — need to check during patch build whether either independently
+hard-mutes on top of the `0x?040` path (if so, one extra small hook; if the `0x?040` command is
+itself the instant cut, nothing more needed). Keeping QUICK MUTE *instant* while changing only
+FUNC+TRACK would actually be the harder option (they share the code path).
+
+---
+
+## Session 9 — STATE OF PLAY (read this first next time)
+
+### SOFT MUTE — WORKING, shipped as a test build.  `140C_KYOTI`.
+Goal: audio-track mute should let delay/reverb tails ring out instead of the stock instant
+post-FX cut.  **Done** (V6).  Muting an audio track (FUNC+TRACK / MIXER menu / QUICK MUTE) now
+behaves like a single STOP for that track: dry cuts with a fast clean fade (~few ms, no click,
+does NOT honour the AMP REL knob), the track's FX inserts ring their tails, and a muted track's
+sequencer trigs are silent.
+
+**How** — `tools/patch_softmute.s`, two hooks in one 228-B cave @0x400d7400, built by
+`tools/build_softmute.py` (folds in the EFT wrap + make_bin + `-V`).  Mechanism: the per-frame
+mute gate is **`FUN_40004dbc`** — it reads **`_DAT_80000008`** (bit 8+t = track t muted) and
+`clr.w`s that track's level words in the DSP frame double-buffer.
+  - `pre`   @ 0x40004dc6 (`move.l 0x80000008,D5`): unless SOLO — for muted tracks, keep the
+    frame level words (`D5 &= ~(muted<<8)`), maintain `DAT_8000184a |= muted` every frame, and
+    `FUN_40008f84(t)` once on the 0→1 edge (shadow byte @ 0x80006c66).
+  - `pre_v` @ 0x40005178 (voice-cmd queue): drop "start" commands (bit 0x80 set, 0x10 clear)
+    for a muted audio track.
+`_DAT_80000008` is never modified → MUTE LED + pattern-stored mute state keep working.
+
+**Flashable:** `out/OCTATRACK_OS1.40C_SOFTMUTE_PFFIX.{syx,bin}` — also carries the MIDI
+manual-trig fix (`patch_trigscale`, bytes identical to Build A / PLAYSFREEFIX).  Version field
+`140C_KYOTI` (10-char max; `1.40C_KYOTI` = 11, won't fit).  259 B changed vs stock, all in the
+3 hook sites + 2 caves.  ALWAYS ON (no PERSONALIZE toggle).  Revert = flash stock 1.40C.
+
+**Flash history this session (all on the user's MKII):**
+V1/V2/D1 hooked `FUN_400836d8` / its `0x?040` voice command — no effect (not the mute).
+V3 hooked `FUN_40030c60` (the +0x28 mute-flag key handler) — no effect (not the FUNC+TRACK path).
+V4 hooked `FUN_40004dbc` + per-frame `DAT_8000184c` — track stayed fully audible (184c is a
+one-shot; per-frame re-write stutters).  V5 = V4 + edge note-off/maintained `DAT_8000184a` —
+**FX tails rang, dry cut fast+clean, faint 1-frame trig blip**.  V6 = V5 + `pre_v` trig-blip
+fix + `140C_KYOTI` branding.  **V6 not yet flashed.**
+
+### NEXT SESSION — pick up here
+1. **User flashes V6.**  Confirm: FX tails ring, no trig blip, boot screen says `140C_KYOTI`,
+   MIDI manual-trig fix still works, SOLO still hard-cuts, other tracks unaffected.
+2. **SOLO extension** (user asked; not started).  Make solo also let the non-soloed tracks'
+   FX tails ring.  Same function (`FUN_40004dbc`), same technique — V6 currently bails on
+   `tst.b 0x80000037` (SOLO flag).  Plan: emulate the SOLO path, confirm whether soloing sets
+   the same `_DAT_80000008` mute bits for non-soloed tracks (likely) and whether
+   `FUN_40004dbc`'s solo branch (0x40004dd4) uses the same frame-word layout as the normal
+   branch (0x40004e3a).  If yes → remove the SOLO bail + make `pre_v` treat solo-muted tracks
+   as muted.  Solo mask may instead be `_DAT_8000000c` (LED painter `FUN_40083eb0` reads it in
+   the solo branch @0x40083eee; `_DAT_80000037` setters @0x40065172/8e, 0x400654e0/fc).
+   Estimate: 1 emu pass + a V7 build.  Low brick risk.
+3. **PERSONALIZE toggle** (deferred).  Add "SOFT MUTE" as a menu entry writing `0x800000dc`
+   (patch_softmute.s already has the `.ifndef ALWAYS_ON` gate on that byte).  patch_notimer-
+   style: relocate the 3 PERSONALIZE arrays (`OLD_LBL 0x400b2a34` / `OLD_GET 0x400b2a74` /
+   `OLD_SET 0x400b2ac0`, 16 entries) to a cave with 17, repoint the REFS (see build.py lines
+   70-78), bump `moveq #15` @0x40068fb2 → `#16`.  Provide `lbl_/get_/set_softmute` (glyphs
+   0x400b5e90 on / 0x400b5e8e off).  Menu-array surgery is the one thing that has bricked this
+   unit before — do it carefully, verify the 16 stock entries still render.
+4. Optional refinements: dry-decays-over-REL (needs writing AMP env segment regs
+   `pcurs[t]+0x20..0x44` @0x80004f1c stride 0x54 +bank 0x2a0 directly — bigger); cap the
+   number of simultaneous ringing tails in solo.
+
+### Session 9 tooling (all uncommitted)
+`tools/patch_softmute.s`, `tools/build_softmute.py`, `tools/emu_mute.py` (11 scenarios — most
+test the V1/V2 dead-end approach on `FUN_400836d8`, kept as the investigation record; the
+`_softmute_patch()` helper now points at the V6 hook), `tools/GhidraMute{1..8}.java`,
+dumps `out/ghidra/GhidraMute*_session9.txt` + `out/ghidra/emu_mute_session9.txt`.
+The scattered V1-V5 narrative above this section is the working log; THIS section is current.

@@ -238,6 +238,39 @@ compare after flashing R13):
 > after every flash, so the unit is stock until you re-enable them. Worth knowing when
 > testing: a build that looks like it changed nothing may simply have its features off.
 
+### Testing SOFT MUTE (Build C only — always on, no PERSONALIZE switch)
+
+**V6 (ship candidate).**  Muting an audio track (FUNC+[TRACK], the MIXER menu, or QUICK MUTE)
+now behaves like a **single STOP** for that track: the sample audio cuts with a fast clean
+fade, the track's **FX inserts (delay / reverb) ring their tails out**, and a muted track's
+sequencer trigs make no sound.  Two hooks: one on the per-frame mute gate (`FUN_40004dbc`,
+keeps the frame level words + maintains a per-track note-off), one on the voice-command queue
+(`FUN_40005178`, drops "start" commands for muted tracks — kills the 1-frame trig blip that
+V5 had).
+
+The version screen / **SYSTEM STATUS → OS VERSION** reads **`140C_KYOTI`** (the field is a
+fixed 10 characters, so `1.40C_KYOTI` at 11 does not fit).
+
+**Notes:** SOLO is left stock (hard cut).  MUTE LED works.  Mute state saves to the pattern
+normally.  Unmute returns the track from its next trig, not mid-sample.  The dry cut is fast
+(a few ms declick) — it does not fade over the AMP RELEASE time; that would need a much
+bigger change.  SOFT MUTE is always on (no PERSONALIZE toggle yet).
+
+1. Audio track playing, with a **delay or reverb** on it, obvious tail.
+2. **FUNC + [that track's key]** (and try the **MIXER** menu / **QUICK MUTE** — same code).
+   - **Stock 1.40C:** dead silence instantly — dry *and* the FX tail.
+   - **Build C (V6):** dry cuts fast; the delay repeats / reverb tail **ring out**.
+3. With the sequencer running, mute a track with a trig on it — there should be **no blip** on
+   the muted trigs (V5 had a faint one).
+4. **FUNC + [key] again** to unmute.
+5. Regression: MIDI manual-trig fix still works (same bytes as Build A); other tracks
+   unaffected; **SOLO** unchanged; boot screen and OS VERSION say `140C_KYOTI`.
+
+> History (2026-08-28): V1/V2/D1 hooked `FUN_400836d8` / its `0x?040` voice command; V3 hooked
+> `FUN_40030c60`.  None had any effect.  V4 found the real gate (`FUN_40004dbc`); V5 added the
+> note-off (FX tails then rang, dry cut fast, faint trig blip); V6 adds the trig-blip fix +
+> the `140C_KYOTI` branding.
+
 ### Turning the features on
 15. Go to **PROJECT → PERSONALIZE**. Scroll to the bottom: two new entries,
     **NO BANK/PTN TIMER** and **LAZY TRANSITIONS**, both unchecked.
@@ -402,6 +435,16 @@ in PERSONALIZE):
 | `out/OCTATRACK_OS1.40C_MAXO_R13.syx` | MIDI-DIN upgrade. |
 | `out/OCTATRACK_MAXO_R13.bin` | CF-card path. |
 
+**C. MIDI manual-trig fix + SOFT MUTE** — otherwise stock 1.40C (version screen says `1.40C`):
+
+| File | What it is |
+|---|---|
+| `out/OCTATRACK_OS1.40C_SOFTMUTE_PFFIX.syx` | MIDI-DIN upgrade. The Build-A fix **plus** "trig-mute"-style audio-track mutes (§4 "Testing SOFT MUTE"). **SOFT MUTE is always-on in this build — no PERSONALIZE switch.** 4 code hunks, ~280 bytes; byte-identical to stock everywhere else, and the manual-trig fix bytes are identical to Build A. |
+| `out/OCTATRACK_SOFTMUTE_PFFIX.bin` | Same, for the CF-card path. |
+
+> **Not yet hardware-tested.** This is the first flash of the SOFT MUTE detour. If mutes go
+> weird, reflash the rescue OS. Revert = just flash stock 1.40C (nothing persists).
+
 **Rescue (either way):**
 
 | File | What it is |
@@ -417,6 +460,14 @@ EFT_EMIT_CONTAINER=out/elek_pffix.bin \
   vendor/elektron-firmware-tool/elektron-firmware-tool \
   -i downloads/extracted/OCTATRACK_OS1.40C.syx -c 3 out/mainos_trigscale_only.bin \
   -o out/OCTATRACK_OS1.40C_PLAYSFREEFIX.syx            # no -V: keeps the "1.40C" version field
+
+# Build C — manual-trig fix + SOFT MUTE V4 (always-on), on stock
+python3 tools/build_softmute.py                        # -> out/mainos_softmute.bin
+EFT_EMIT_CONTAINER=out/elek_softmute.bin \
+  vendor/elektron-firmware-tool/elektron-firmware-tool \
+  -i downloads/extracted/OCTATRACK_OS1.40C.syx -c 3 out/mainos_softmute.bin \
+  -o out/OCTATRACK_OS1.40C_SOFTMUTE_PFFIX.syx
+python3 tools/make_bin.py out/elek_softmute.bin -o out/OCTATRACK_SOFTMUTE_PFFIX.bin
 python3 tools/make_bin.py out/elek_pffix.bin -o out/OCTATRACK_PLAYSFREEFIX.bin
 
 # Build B — fix + MAXOLYDIAN mods
