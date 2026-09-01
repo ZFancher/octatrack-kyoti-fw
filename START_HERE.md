@@ -8,9 +8,13 @@ update the **Current frontier** section at the end of each session.
 
 ## 0. What loads automatically
 
-Running Claude in `~/Documents/octamax/` auto-loads the project memory
+Running Claude on this Mac auto-loads the project memory
 (`~/.claude/projects/-Users-kyoti-m4/memory/octamax-re-project.md`) — a per-session
 digest of state. Treat it as the summary; this repo's docs are the detail.
+
+Local repo: `~/Documents/octatrack-kyoti-fw/` (was `~/Documents/octamax/` until
+2026-09-01). Published as <https://github.com/ZFancher/octatrack-kyoti-fw>, a fork
+of `mxldyn/octamax`. Remotes: `origin` = your fork, `upstream` = mxldyn (fetch only).
 
 ## 1. Read order for a new chat
 
