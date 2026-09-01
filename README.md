@@ -118,10 +118,27 @@ so a freshly flashed unit is stock until you opt in.
 | **OT+FX** | *soft mute*: the dry signal cuts fast and clean (like a per-track STOP), the track's FX inserts ring their delay/reverb tails out, new trigs on a silenced track make no sound. SOLO silencing folds into the same path. |
 | **DT** | *Digitakt-style sequencer mute*: a voice already sounding keeps playing under its own amp envelope (fades/sustains/loops per the AMP page), its FX ring, and only **new** trigs are suppressed. |
 
-OT+FX is hardware-confirmed on MKI. DT is emulator-verified, not yet flashed.
 Sources: `tools/patch_mutemode.s`, `tools/patch_softmute.s`; emulators
 `tools/emu_mutemode.py`, `tools/emu_solo.py`, `tools/emu_dt.py`; write-ups
 [`NOTES.md`](NOTES.md) "Session 9–13".
+
+#### Hardware-test status — read this before you flash
+
+Every build below bundles **all** of these into one image; the MUTE MODE ones
+have only ever been proven to the extent shown:
+
+| element | on-hardware status (Octatrack MKI) |
+|---|---|
+| Bug 1 manual-trig fix | **confirmed** — flashed 2026-08-28, stall gone, no regression |
+| OT+FX soft **mute** behaviour | behaviour **confirmed** at an earlier implementation (softmute V6, Session 10); the current code (V7) is a rewrite and has **not been re-flashed** |
+| OT+FX applied to **solo** silencing | **not tested on hardware** — emulator only (`emu_solo.py`) |
+| DT sequencer-mute | **not tested on hardware** — emulator only (`emu_dt.py`); `build_mutemode_dt.py` only |
+
+`OT` mode is byte-for-byte stock, so a unit with MUTE MODE left at the default is
+unaffected regardless. The MUTE MODE paths are validated in a ColdFire emulator
+(Unicorn, real image bytes) but the emulator does not model the DSP or the audio
+engine — it proves the control-flow and the frame-word edits, not the sound.
+Flash at your own risk; keep the official `.syx` on hand ([`FLASHING.md`](FLASHING.md)).
 
 ### Carried in from octamax (Maxolydian)
 

@@ -21,6 +21,27 @@ All mods are **OFF by default** (`MUTE MODE = OT`, stored in a battery-backed
 PERSONALIZE word). A freshly flashed unit is indistinguishable from stock until
 you opt in from **PERSONALIZE**. An OS upgrade resets PERSONALIZE.
 
+These builds carry **no** Maxolydian mods (no arp key-scales, lazy transitions,
+BANK/PTN countdown removal, LED indicators, or `MAXOLYDIAN` branding). For those,
+use `tools/build.py` / `sysex/apply_patch.py` instead — see [`sysex/README.md`](sysex/README.md).
+
+### Hardware-test status
+
+Each MUTE MODE build bundles every element below into one image. What has
+actually run on an Octatrack MKI:
+
+| element | status |
+|---|---|
+| Bug 1 manual-trig fix | **hardware-confirmed** (flashed 2026-08-28; also the whole of `build_trigscale_only.py`) |
+| OT+FX soft **mute** | behaviour confirmed at softmute **V6** (Session 10); shipping code is the **V7** rewrite, **not re-flashed** |
+| OT+FX for **solo** silencing | **emulator only** — not tested on hardware |
+| DT sequencer-mute | **emulator only** — not tested on hardware (`build_mutemode_dt.py` only) |
+
+The emulator (Unicorn, real image bytes) proves control-flow and the DSP
+frame-word edits — it does not model the DSP or the audio path, so it does not
+prove how anything *sounds*. `OT` mode is byte-for-byte stock. Flash at your own
+risk.
+
 Each build emits, in `out/`:
 
 ```
