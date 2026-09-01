@@ -2,6 +2,10 @@
 
 Record of findings. Each run of `analyze.sh` leaves evidence in `out/`.
 
+> **New session? Read `START_HERE.md` first.** This log is chronological and starts at
+> 2026-07 recon — do NOT read top-to-bottom. Jump to the newest `## Session N` section and
+> its `STATE OF PLAY` / `NEXT` blocks. Section index: `grep -nE '^## ' NOTES.md`.
+
 ## Phase 0 — Static recon of the public OS  [COMPLETED ✓ 2026-07-26]
 
 Goal: decide whether the payload is **compressed** (feasible) or **strongly encrypted** (blocking),
@@ -1131,7 +1135,12 @@ sibling project dir; (2) trigger the type-6 job with a mask excluding the playin
 ### HARDWARE-VALIDATED: non-playing bank loads from CF without stopping audio
 
 De-risking experiment (throwaway builds, `tools/patch_exp_bankload.s` + `tools/build_exp.py`)
-confirmed on a real MKII the assumption behind the live bank-paging feature.
+confirmed on a real MKI the assumption behind the live bank-paging feature.
+(All on-hardware testing in this repo is on the user's **Octatrack MKI** — the user does
+not own a MKII. Every flash the user has done — Build A, the bank-paging experiments, the
+Session 9 soft-mute V1–V6 — was on the MKI. The stock 1.40C image is byte-identical for
+MKI/MKII; the boot-time `0x46c8d18c` probe is what adapts it, e.g. hiding the MKII-only
+`LED BRIGHTNESS` PERSONALIZE item on the MKI.)
 
 Method: hooked the reload confirm handler FUN_40063bf8 (the sole caller of the poster
 FUN_40022778) to (a) skip the synchronous pre-step FUN_400a10c8 and (b) force the reload
@@ -1159,7 +1168,7 @@ redirect the load path to the sibling project dir) + the sample-pool-sharing usa
 ### S1 HARDWARE-VALIDATED: redirected sibling bank load, no audio stop
 
 Bank paging Stage 1 (tools/patch_bankpage_s1.s, tools/build_bankpage_s1.py) confirmed on the
-MKII. Three detours over R11: (1) gate FUN_40025230 @0x40025244 — global g_redirect (char*)
+MKI. Three detours over R11: (1) gate FUN_40025230 @0x40025244 — global g_redirect (char*)
 overrides the projname==0 default (0x100f8378) when set; (2) trigger at FUN_40063bf8 @0x40063bfe
 — skip pre-step FUN_400a10c8, sprintf("%s_2", 0x100f8378) into a cave buffer, set g_redirect,
 mask = 0xffff & ~(1<<curbank) (0x100b14ce), tail-post via FUN_40022778; (3) done at FUN_40023998
@@ -3159,7 +3168,8 @@ manual-trig fix (`patch_trigscale`, bytes identical to Build A / PLAYSFREEFIX). 
 `140C_KYOTI` (10-char max; `1.40C_KYOTI` = 11, won't fit).  259 B changed vs stock, all in the
 3 hook sites + 2 caves.  ALWAYS ON (no PERSONALIZE toggle).  Revert = flash stock 1.40C.
 
-**Flash history this session (all on the user's MKII):**
+**Flash history this session (all on the user's Octatrack MKI — the only unit used for
+on-hardware testing in this repo; the user does not own a MKII):**
 V1/V2/D1 hooked `FUN_400836d8` / its `0x?040` voice command — no effect (not the mute).
 V3 hooked `FUN_40030c60` (the +0x28 mute-flag key handler) — no effect (not the FUNC+TRACK path).
 V4 hooked `FUN_40004dbc` + per-frame `DAT_8000184c` — track stayed fully audible (184c is a
@@ -3196,3 +3206,346 @@ test the V1/V2 dead-end approach on `FUN_400836d8`, kept as the investigation re
 `_softmute_patch()` helper now points at the V6 hook), `tools/GhidraMute{1..8}.java`,
 dumps `out/ghidra/GhidraMute*_session9.txt` + `out/ghidra/emu_mute_session9.txt`.
 The scattered V1-V5 narrative above this section is the working log; THIS section is current.
+
+---
+
+## Session 10 — MUTE MODE PERSONALIZE entry (test build, not yet flashed)
+
+### What shipped this session
+A new **test build** that puts SOFT MUTE behind a PERSONALIZE toggle instead of ALWAYS_ON.
+The shipped V6 artifacts (`out/OCTATRACK_OS1.40C_SOFTMUTE_PFFIX.*`, ALWAYS_ON) are **untouched**.
+
+  `python3 tools/build_mutemode.py`  ->
+     out/OCTATRACK_OS1.40C_MUTEMODE.syx   (MIDI DIN)
+     out/OCTATRACK_MUTEMODE.bin           (CF card, PROJECT -> OS UPGRADE)
+     version string  `140C_KYOTI`
+     589 bytes changed vs stock 1.40C
+
+Stock 1.40C  +  patch_trigscale (MIDI manual-trig fix, byte-identical to Build A)
+             +  patch_softmute V6 hooks, assembled **gated** (no ALWAYS_ON)
+             +  patch_mutemode (the menu entry)
+
+### PERSONALIZE menu deep dive (full writeup: this section + `out/ghidra/GhidraMenu1_session10.txt`)
+Renderer `FUN_40068e00`, input `FUN_40068fd0`, list-init `FUN_40068fa8`.  Three parallel
+16-entry arrays, contiguous, followed by unrelated data -> not extendable in place:
+  labels  0x400b2a34   `char*`             ref: `move.l #imm,%d5` @0x40068efe  (IMMEDIATE, not lea)
+  getters 0x400b2a74   `char*(*)(void)`    ref: `lea …,%fp`       @0x40068f0a
+  setters 0x400b2ac0   `void(*)(int d,int wrap)`  refs: `lea …,%a0` @0x40069022 / 0x4006903e / 0x40069056
+  (LED-BRIGHT value strings 0x400b2ab4 — LOW/MID/MAX — addressed absolutely, not relocated)
+A **getter just returns a `char*`** drawn in the right column (x=0x4d).  Checkbox items return
+a 1-glyph string (0x400b5e90 on / 0x400b5e8e off); **LED BRIGHTNESS returns "LOW"/"MID"/"MAX"** —
+i.e. a multi-value text option is already a stock, shipping pattern (getter `FUN_40068c80`,
+setter `FUN_4006907c`).  Setter ABI: `delta` @4(sp), `wrap` @8(sp) — [YES]=(+1,wrap), [RIGHT]=
+(+1,clamp), [LEFT]=(-1,clamp).  Same ABI as `set_notimer`.
+Count `FUN_40068fa8`: `moveq #15,%d1 ; sub %d0,%d1`, `%d0 ∈ {0,-1}` from `tst.l 0x46c8d18c`
+=> **15 items, or 16 when 0x46c8d18c != 0**.  `0x46c8d18c` is the boot-time MKI/MKII probe
+(set to 1 on the MKII path, 0 on the MKI) — `LED BRIGHTNESS` (index 15) is the one item gated
+on it, which is why the user's **MKI shows 15 PERSONALIZE items, no LED BRIGHTNESS**.
+**Nothing in the firmware keys off an absolute PERSONALIZE index** — every ref to the menu's
+cursor/scroll/count/rows globals (0x460e4670/68/78/74) lives inside the 0x40068e00..0x40069074
+block.  So the splice position for a new entry is entirely free.
+
+### The surgery (build_mutemode.py — proven build.py technique)
+1. Copy all 3 arrays into the free cave (LBL 0x400d7700 / GET 0x400d7760 / SET 0x400d77c0,
+   68 B each) with **MUTE MODE spliced at index 2** — right after "PREVIEW WITHOUT FX":
+      [0] QUANTIZE LIVE REC  [1] PREVIEW WITHOUT FX  [2] MUTE MODE  [3] MUTE FOCUSES TRK …
+      … [15] EXT LEN GRID-REC  [16] LED BRIGHTNESS  (stays last, stays behind the MKII gate)
+2. Repoint the 5 refs from the linker symbol table (guarded on the original bytes).
+3. `moveq #15` @0x40068fb2 -> `moveq #16`  =>  16 items on the MKI (15 stock + MUTE MODE,
+   LED BRIGHTNESS still hidden), 17 on a MKII.  Adds exactly the one new item on either.
+`patch_mutemode.s` = `lbl_mutemode` "MUTE MODE" + value strings "OT"/"OT+FX" + `val_tbl` +
+`get_mutemode` (return `val_tbl[clamp(0x800000dc,0,NMAX)]`) + `set_mutemode` (clamp on
+[LEFT]/[RIGHT], wrap on [YES], over [0,NMAX]).  `.equ N_MODES,2` — bump to 3 + add `vm_2` for
+the 3rd mode later.
+
+### Flag word 0x800000dc == patch_softmute's GATE
+0 = "OT" (stock instant post-FX cut)   1 = "OT+FX" (soft mute: dry cuts, FX inserts ring).
+Free battery-backed PERSONALIZE word; default 0 => a fresh flash is stock.  OS upgrade resets
+PERSONALIZE.  Persistence across power cycles is inferred, not yet hardware-verified — TEST IT.
+
+### Two fixes to patch_softmute.s this session (affects a fresh build_softmute.py too)
+- **gate now reads the 32-bit word** (`move.l GATE,%d0 ; cmpi.l #1,%d0 ; bne`), was
+  `move.b GATE,%d0 ; beq`.  The `.ifndef ALWAYS_ON` gate path was never on hardware (V1–V6
+  all ALWAYS_ON) and had a **big-endian bug**: the LED-BRIGHTNESS-style setter writes a full
+  word, so `move.b` at 0x800000dc read the MSB (always 0) — the soft path would never engage.
+  Also: `!= 1` (not `!= 0`) so a future mode 2 falls to the stock cut until implemented.
+- **`pre` movem fixed**: `movem.l %d0-%d3/%a0` (5 longs = 20 B) into a `lea (-0x10,%sp)` frame
+  (16 B) scribbled 4 B of `FUN_40004dbc`'s frame every call — latent in V1–V6.  `a0` is unused
+  in `pre`; dropped it -> `movem.l %d0-%d3`.  A fresh `build_softmute.py` (ALWAYS_ON) now
+  differs from the flashed V6 by exactly these 2 mask bytes (010f->000f, ×2).  `pre_v` was
+  already safe (3 longs into 16 B — wasteful, not corrupting; left as-is).
+
+### Verified (static + Unicorn) — `tools/emu_mutemode.py` : ALL GOOD
+relocated arrays = stock[0:2]+MUTE MODE+stock[2:16]; 5 refs repointed; `moveq #16`; 3 detours
+hit their symbols; `get_mutemode` returns OT/OT+FX for MUTE_MODE ∈ {-1,0,1,2,99}; `set_mutemode`
+clamps/wraps correctly over [0,1]; gated `pre` engages the soft path only for MUTE_MODE==1.
+
+### NEXT — hardware test on the MKI
+Flash `out/OCTATRACK_MUTEMODE.bin` (CF) or `.syx` (MIDI).  Confirm:
+1. PERSONALIZE lists **16 items**, `MUTE MODE` is 3rd (after PREVIEW WITHOUT FX), shows `OT`.
+2. The other 15 stock items still render + behave (esp. the neighbours: QUANTIZE LIVE REC,
+   PREVIEW WITHOUT FX, MUTE FOCUSES TRK).
+3. LEFT/RIGHT/YES cycle `OT` <-> `OT+FX`.
+4. `OT`  -> mute = stock instant cut.   `OT+FX` -> mute lets FX tails ring, dry cuts clean,
+   no trig blip; SOLO still hard-cuts; MIDI manual-trig fix still works.
+5. Set `OT+FX`, power-cycle -> setting persists.  OS re-flash -> back to `OT`.
+6. Boot / SYSTEM STATUS shows `140C_KYOTI`.
+Then: 3rd mute mode (user has a design in mind — separate session); SOLO extension still open.
+
+### Session 10 tooling (uncommitted)
+`tools/patch_mutemode.s`, `tools/build_mutemode.py`, `tools/emu_mutemode.py`,
+`tools/GhidraMenu{1,2}.java`, dumps `out/ghidra/GhidraMenu{1,2}_session10.txt`.
+`tools/patch_softmute.s` modified (2 fixes above).
+
+---
+
+## Session 11 — SOFT MUTE extended to SOLO (patch_softmute V7, in the MUTEMODE test build)
+
+**MKI HW status: the Session 10 MUTEMODE build flashed and works well.** V7 rebuilds it with
+solo support folded into the OT+FX mode — no separate toggle.  `python3 tools/build_mutemode.py`
+-> same outputs, version `140C_KYOTI`, now **630 B vs stock**.
+
+### The frame builder's SOLO branch (deep dive: `out/ghidra/GhidraSolo{1,2}_session11.txt`)
+`FUN_40004db8` (hook site 0x40004dc6) branches on **`tst.b 0x80000037`** (the SOLO-mode flag,
+set to 1 @0x400654de / cleared @0x400654fa; the solo-engage handler does NOT touch
+`_DAT_80000008`).  `_DAT_80000008` layout: **bits 0..7 = per-track SOLO, 8..15 = MUTE,
+16..23 = CUE** (confirmed via the AUDIO-CC-OUT emit in case 'L': CC49=mute bit8+t, CC50=solo
+bit t, CC51=cue bit16+t).
+- **not-solo branch** (0x40004e3a): per track, `clr.w` the mute-gated frame word iff bit 8+t set.
+- **solo branch** (0x40004dd4): per track — bit t set (SOLOED) -> keep both words; else the
+  words are AND-ed with **D1 = `(D5.low8 == 0) ? -1 : 0`** (the "is anything soloed?" mask) ->
+  silenced; a non-soloed **and muted** track -> `clr.l` instead.
+  It only ever tests D5 bits 0..15 (D3 starts at 0), never the cue bits.
+
+### V7 mechanism (`tools/patch_softmute.s`, one shadow byte, no new RAM)
+`pre` now computes a single **`silenced`** audio-track set per frame (D2, bits 0..7):
+- not solo: `silenced = mute mask`  ->  clear those mute bits from D5 (as V6).
+- solo + >=1 soloed: `silenced = ~soloed & 0xFF`  ->  **`D5 &= 0xFFFF0000`** so every track
+  hits the "& D1" keep path AND D1 becomes -1 -> FUN_40004db8 keeps *every* track's frame
+  words -> all FX returns ring.
+- solo + none soloed: `silenced = 0` (stock; nothing cut yet).
+Then (shared path): shadow-edge -> `FUN_40008f84(t)` once per newly-silenced track;
+`REL_STATE |= silenced` every frame.  MUTE MODE == OT -> `clr.b SHADOW` + bail (byte stock).
+`pre_v` drops a bare "start" voice-cmd for a silenced track: muted, OR (solo active AND
+>=1 soloed AND this track not soloed).  Retrigs (stop bit set) always pass.
+The shadow at 0x80006c66 is **reused** (widened from "muted mask" to "silenced set"); it is
+now written every frame (incl. 0) so an OT->OT+FX switch or a solo release never leaves it
+stale.  `pre` movem stays `%d0-%d3` (4 longs / 16 B — the Session 10 fix).
+
+Behaviour: soloing overrides mute (stock); a non-soloed track's dry fades (note-off, does NOT
+honour AMP REL) while its FX inserts ring; its trigs are silent while solo is held; releasing
+solo resumes on the next trig (a held note does not come back — same trade-off as direct
+soft mute, which the user is happy with).
+
+Cave layout (build_mutemode.py): patch_softmute V7 330 B @0x400d7400; patch_mutemode moved to
+0x400d7600; menu arrays 0x400d7700/60/c0; patch_trigscale 0x400d7b00.  (ALWAYS_ON build =
+288 B; a fresh `build_softmute.py` would now also carry V7 solo support — the shipped V6
+`OCTATRACK_OS1.40C_SOFTMUTE_PFFIX.*` on disk are untouched.)
+
+### Verified — `tools/emu_solo.py` : ALL GOOD (25 checks)
+Runs the real image bytes.  `pre`: not-solo mute path unchanged; solo+1-soloed -> silenced =
+other 7, REL_STATE=0xFE, D5 bits 0..15 cleared, one note-off each; solo+none-soloed -> no-op;
+solo+also-muted -> still handled; edge de-dupe; OT bail clears shadow; OT->OT+FX keeps the
+first note-off.  `pre_v`: drops muted / solo-non-soloed starts, passes soloed / retrig / OT.
+`tools/emu_mutemode.py` still ALL GOOD.
+
+### NEXT — hardware test on the MKI (in addition to the Session-10 checklist)
+1. Solo a track with `MUTE MODE = OT+FX`: the non-soloed tracks' FX (delay/reverb) tails ring
+   out instead of cutting instantly; their dry stops; their trigs are silent while solo held.
+2. Release solo -> non-soloed tracks resume (on their next trig).
+3. Solo a **muted** track -> it plays (solo overrides mute), stock behaviour.
+4. `MUTE MODE = OT` -> solo cuts instantly, exactly stock.
+5. Re-confirm the direct-mute soft behaviour + MIDI manual-trig fix are unregressed.
+Then: the 3rd mute mode (user has a design in mind).
+
+### Session 11 tooling (uncommitted)
+`tools/GhidraSolo{1,2}.java` + dumps `out/ghidra/GhidraSolo{1,2}_session11.txt`,
+`tools/emu_solo.py`.  `tools/patch_softmute.s` rewritten V6->V7.  `tools/emu_mutemode.py`
+updated (REL_STATE write detected via a mem-write hook, not a hard-coded address).
+
+---
+
+## Session 12 (2026-09-01) — "DT" MUTE MODE (3rd option; built, emu-verified, NOT flashed)
+
+**User away from the MKI for ~2 weeks — build + emulate only this session.**
+
+### What "DT" is (user's spec, clarified mid-session)
+A third `MUTE MODE` value after `OT` and `OT+FX`.  DT = **a pure Digitakt-style trig mute**:
+muting an audio track (or a track silenced by SOLO) does **nothing to the voice engine** —
+the voice that is already sounding keeps playing under **its own amp envelope** exactly as if
+you never muted (fades to silence, sustains, or loops forever, whatever ATK/HOLD/REL +
+LOOP say).  The **only** effect of the mute is that **new sequencer/manual trigs are
+suppressed** until unmute.  FX rings naturally because the whole track keeps running.
+Explicitly **NOT** wanted: forcing the voice into its release phase on mute (that was the
+earlier design guess — rejected by the user).
+
+### Why this is low-risk (vs the 6 HW iterations OT+FX needed)
+DT = **V4's hardware-confirmed behaviour** ("clear the D5 mute/solo bits -> FUN_40004db8
+keeps every DSP-frame level word -> track stays fully audible, voice + FX untouched") **+
+V6's hardware-confirmed `pre_v`** ("drop bare 'start' voice-cmds for a silenced track ->
+no new trigs") **MINUS V5's note-off** (`FUN_40008f84` / `DAT_8000184a`).  Both halves are
+already proven on the user's MKI; DT just runs them together with *less* intervention than
+OT+FX.  No voice-struct / envelope / DSP poking at all.
+
+### The patch (`tools/patch_softmute.s`, compile-gated behind `--defsym DT_MODE=1`)
+Only difference from OT+FX, inside the existing `pre` (@0x40004dc6) + `pre_v` (@0x40005178):
+| step | OT+FX (GATE==1) | DT (GATE==2) |
+|---|---|---|
+| compute `silenced` set, clear D5 mute/solo bits (keep frame words) | yes | yes (identical) |
+| `FUN_40008f84(t)` note-off on the shadow edge | yes | **no** |
+| maintain `DAT_8000184a \|= silenced` every frame | yes | **no** |
+| `pre_v` drops bare-"start" voice-cmds for `silenced` tracks | yes | yes (identical) |
+`pre` gate now `beq p1_active` on `#1` **or** `#2`; the DT branch at `p1_edge` does
+`clr.b SHADOW` (so a live DT->OT+FX switch re-asserts every note-off) + `bra p1_done`.
+`pre_v` gate widened `subq.l #1 ; cmpi.l #1 ; bhi v_stock` (accept modes 1,2).
+All new code is `.ifdef DT_MODE` — a plain `build_mutemode.py` is **byte-identical** to
+before (verified: md5 `6d9ff8ba…` unchanged after the source edits).
+
+### Menu (`tools/patch_mutemode.s`, also `.ifdef DT_MODE`)
+`N_MODES 2->3`, value strings `OT / OT+FX / DT`, `val_tbl` 3rd entry `vm_2`.  Getter/setter
+already parametric on `NMAX` — clamp/wrap now over [0,2].
+
+### Build — `python3 tools/build_mutemode_dt.py [VERSTR]`  (default `140C_KYOTI`)
+Copy of `build_mutemode.py`; assembles patch_softmute + patch_mutemode with `--defsym
+DT_MODE=1`; **separate outputs** so the Session-10/11 artifacts are untouched:
+  `out/OCTATRACK_OS1.40C_MUTEMODE_DT.syx`  (MIDI DIN)
+  `out/OCTATRACK_MUTEMODE_DT.bin`          (CF card, PROJECT -> OS UPGRADE)
+659 B changed vs stock; 394 B differ vs `mainos_mutemode.bin`, **all confined to the
+patch_softmute cave + patch_mutemode cave + relocated menu arrays + the pre_v detour word**
+(build script asserts this — OT/OT+FX/solo paths bit-unchanged).  Caves: patch_softmute
+368 B @0x400d7400, patch_mutemode 130 B @0x400d7600, menu arrays 0x400d7700/60/c0,
+patch_trigscale 62 B @0x400d7b00 — no overlap, ends < 0x400d7c3c.  Manual-trig fix bytes
+identical to `build_trigscale_only.py`.  EFT round-trip OK, version `140C_KYOTI`.
+
+### Verified — `tools/emu_dt.py` : ALL GOOD (runs the real DT image bytes)
+- menu: `get_mutemode` -> OT/OT+FX/DT for MUTE_MODE ∈ {-1,0,1,2,3,99}; `set_mutemode`
+  clamps [0,2] on LEFT/RIGHT, wraps on YES.
+- DT `pre` (gate 2): D5 mute/solo bits cleared, **no `FUN_40008f84`**, `DAT_8000184a`
+  untouched, `SHADOW` cleared; solo+1-soloed -> D5 bits 0..15 cleared; solo+none -> no-op.
+- regressions in the DT image: OT+FX `pre` (gate 1) still note-offs + maintains REL_STATE;
+  OT `pre` (gate 0) bails with the mute bit left set.
+- DT `pre_v` (gate 2): drops muted / solo-non-soloed bare starts; passes retrig / soloed /
+  unmuted; OT+FX still drops, OT still passes.
+`tools/emu_solo.py out/mainos_mutemode_dt.bin` : ALL GOOD (OT+FX + solo unregressed).
+(`tools/emu_mutemode.py` stays pointed at `out/mainos_mutemode.bin` — its N_MODES=2 cases
+are meant for that image; run `emu_dt.py` for the DT build.)
+
+### NEXT — hardware test on the MKI (when the user is back with the unit)
+Flash `out/OCTATRACK_MUTEMODE_DT.bin` (CF) or `.syx` (MIDI).  In addition to re-running the
+Session 10/11 checklists (OT, OT+FX, solo, MIDI manual-trig fix, `140C_KYOTI` boot string):
+1. PERSONALIZE -> MUTE MODE now cycles `OT` <-> `OT+FX` <-> `DT` (LEFT/RIGHT/YES).
+2. `DT`, one-shot sample, medium REL: mute mid-note -> the note **finishes its own amp
+   release** (not the fast OT+FX declick), FX rings; the muted track's trigs are silent;
+   unmute -> silent until the next trig.
+3. `DT`, LOOP sample, HOLD/REL at max: mute -> **the loop keeps sounding indefinitely**;
+   new trigs suppressed; unmute -> loop still going, trigs resume.
+4. `DT` + SOLO: non-soloed tracks' currently-playing voices ride out their envelopes; their
+   trigs silent while solo held; release solo -> resume on next trig.
+5. Switch `DT` -> `OT+FX` while a DT-muted voice is ringing -> it should get the OT+FX
+   note-off on the next frame (the `clr.b SHADOW` re-assert).
+If DT leaves a *plain FLEX one-shot* audible with no envelope motion at all (i.e. the voice
+never advances because something about mute stalls the per-frame updater) -> unlikely
+(FUN_40004db8 is downstream of the voice updater) but the fallback is to also `clr` the
+`46c7ff64` output-mute bit for DT tracks.
+
+### Session 12 tooling (uncommitted)
+`tools/build_mutemode_dt.py`, `tools/emu_dt.py`.  `tools/patch_softmute.s` +
+`tools/patch_mutemode.s` gained `.ifdef DT_MODE` blocks (plain builds byte-unchanged).
+`build_mutemode_dt.py` links its stubs as `out/patch_*_dt.elf` (distinct intermediates -- it
+never clobbers `build_mutemode.py`'s `out/patch_*.elf` that emu_mutemode / emu_solo read
+back).  `tools/emu_solo.py` now picks `patch_softmute_dt.elf` when handed a `*_dt.bin` image.
+Outputs `out/OCTATRACK_*MUTEMODE_DT.*`, `out/mainos_mutemode_dt.bin`, `out/elek_mutemode_dt.bin`.
+Run order no longer matters: `emu_mutemode.py` on the 2-mode image, `emu_dt.py` +
+`emu_solo.py out/mainos_mutemode_dt.bin` on the DT image, all ALL GOOD in any sequence.
+
+---
+
+## Session 13 (2026-09-01) — SCOPING ONLY: "auto-remove an emptied trigless lock" (no work done)
+
+**User idea, feasibility-scoped this session. No RE, no build. This block is the brief for
+whoever picks it up.**
+
+### The wish (user's words, lightly tightened)
+In **LIVE REC** mode, with the sequencer running (recording), the user erases parameter
+locks with **`[NO]` + knob** (the live "clear as the playhead passes" erase). Today, once
+every p-lock has been erased from a step that only ever held p-locks (a "trigless lock" /
+dim-red lock), **the lock stays lit on the 16-step row** — pure visual noise. Wish: when an
+erase pass takes a trigless lock's lock count from 1 -> 0, the trigless lock itself is
+**removed from the pattern** (LED off, step inert).
+
+Constraints from the user:
+- **Only** the pure-p-lock trigless lock. Do **not** touch: trigless trigs that retrig
+  LFOs / one-shot FX envelopes ("green"), sample/audio trigs, MIDI trigs, one-shot trigs,
+  recorder trigs, slide trigs, anything else.
+- Multi-pass semantics: 2 params locked on a step -> one erase pass clearing one param
+  leaves the lock lit; the second pass clearing the last param deletes it.
+- The user can still **place** an empty trigless lock by the normal methods and it must
+  persist — "empty" trigless locks are legal. The deletion fires **only** as the 1->0
+  transition of an erase op, never as a global sweep of empty locks.
+- Gesture is specifically the `[NO]`+knob **LIVE REC** live-erase. (Earlier in the chat the
+  user said GRID REC by mistake, then corrected to LIVE REC.) Whether GRID-mode erases
+  (`[TRIG]`+`[NO]`, CLEAR) should also trigger the deletion is an **open user decision** —
+  default to narrowest (LIVE `[NO]`+knob only).
+
+### Verdict: FEASIBLE, but a real RE project in an untouched subsystem
+Comparable in size to the soft-mute effort: **~3-5 sessions + HW iteration + exported test
+banks**. Brick risk LOW (data-model read + one hook; no PERSONALIZE menu-array surgery).
+The hard part is *behavioural correctness* — the "this trigless lock now holds nothing"
+predicate must never fire on a trig the user wanted to keep.
+
+### What we already have (starting material)
+| Piece | State |
+|---|---|
+| Project DB base `_DAT_46c82456`, pattern stride `0x18b2` | solid, used throughout |
+| Per-track sequenced-data region `base + pat*0x18b2 + trk*0xc` near `+0x8f385` | named "trigs/params" in the engine map (NOTES ~L197); **internal layout NOT mapped** |
+| Trig->voice (`FUN_400977cc`, `FUN_40005030`) | reads "which sample" per step; does not expose the trig-type / p-lock bytes |
+| Trig-LED painter family (`FUN_40083eb0/fdc`, `FUN_400132c4(id,state)` -> 2-bit LED buf `0x460ba98c`) | mapped for **scene** trig lighting only, not normal trig-type LED logic |
+| Scene p-lock blocks `base + pat*0x18b2 + scene*0x100 + 0x8f3e2`, `0x20`/param-group stride | shape hint only; scenes != per-step p-locks |
+
+`COVERAGE.md`: "Trig types / p-locks / sample locks" and "conditional locks / micro timing"
+are both **untouched (unmapped)**. No RE yet on where a step's p-lock bitmap lives, how the
+trig-type flags are encoded, or which handler clears a p-lock live.
+
+### Work plan (when someone picks this up)
+**Phase 0 — model the per-step trig data (1-2 sessions).** Export-and-diff on the MKI
+(mandatory per START_HERE: real exported banks only). User builds targeted patterns:
+a pure trigless lock w/ 2 p-locks; a trigless-trig w/ LFO retrig + 1 p-lock; a manually
+placed empty trigless lock; a sample trig w/ p-locks; recorder + MIDI trig rows. Diff the
+blobs to pin:
+  1. trig-type flag bits (sample / trigless-trig-with-retrig / pure-lock / one-shot / slide;
+     plus the separate recorder-trig and MIDI-trig layers),
+  2. the "which params are locked" bitmap (audio pages + sample-slot lock + LFO p-locks +
+     FX p-locks — OT locks span several param pages),
+  3. anything else attachable to a lock step (trig condition, micro-timing, slide).
+
+**Phase 1 — find the LIVE-REC `[NO]`+knob p-lock-clear handler + hook it (1 session + emu).**
+One detour, *after* the clear: if `trig_type == pure trigless lock` AND locked-bitmap `== 0`
+AND no sample-slot lock AND nothing else attached -> clear the step's trig-type flag. LED
+painter + sequencer then ignore it for free. Predicate must be **conservative**: delete only
+when the step is unambiguously a bare lock; when in doubt, keep it.
+
+**Phase 2 — build + HW iterate (1-2 flash cycles).** Same build scaffold as the mute work
+(guarded binary patch, cave, EFT round-trip, `140C_KYOTI`).
+
+### Risks / open items
+- **Predicate is the whole ballgame.** If trig-type flag and p-lock bitmap aren't
+  independent bits, or we miss a lock category (LFO-designer lock, FX lock, condition),
+  we could delete a wanted trig. Conservative predicate + HW verification mitigate.
+- **Confirm the gesture/handler.** Rock-solid OT live-erase is `[NO]`+knob in LIVE REC;
+  pin that exact routine in Phase 1.
+- **User decision:** LIVE `[NO]`+knob only, or also grid `[TRIG]`+`[NO]` / CLEAR? Default
+  narrowest.
+- **Sample-slot-only lock:** does a trigless lock whose only remaining lock is a sample
+  lock count as "empty"? Default: treat sample lock as a lock -> keep the trig.
+
+### Cheaper fallback (offered, not chosen)
+Cosmetic-only: patch the trig-LED painter to not light a trigless-lock step whose lock
+bitmap is empty. Zero data risk, reflash-reversible, kills the visual-noise complaint — but
+the trig still exists in the pattern (saved, occupies the step, reappears on edit). Still
+needs Phase 0's data model, so not free; could ship first to de-risk. User did not pick this
+— they want actual deletion.
+
+### PERSONALIZE toggle?
+Not discussed. If this ships it would likely want to be opt-in (a 4th behaviour alongside
+MUTE MODE, or its own entry) — but that's menu-array surgery again (the one thing that has
+bricked the MKI before). Decide later.

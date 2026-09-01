@@ -1,33 +1,55 @@
-| patch_softmute V6 -- audio-track mute behaves like a single STOP: the sample audio cuts
-| (fast clean fade), the track's FX inserts ring their delay/reverb tails out, and a muted
-| track's sequencer trigs make no sound.
+| patch_softmute V7 -- audio-track mute (and, V7, SOLO silencing) behave like a single STOP:
+| the sample audio cuts (fast clean fade), the track's FX inserts ring their delay/reverb
+| tails out, and a silenced track's sequencer trigs make no sound.
 |
-| Session 9.  Mechanism (confirmed on hardware): FUN_40004dbc is the per-frame gate -- it
-| reads _DAT_80000008 (bit 8+t = track t muted) and writes `clr.w` into that track's level
-| words in the DSP frame double-buffer (a post-FX cut that also kills the FX return).
+| Session 9 (V1-V6): the mute case.  Session 11 (V7): the SOLO case, same technique.
+|
+| Session 12 (--defsym DT_MODE=1): a third MUTE MODE, "DT".  DT mute is a pure *sequencer*
+| mute -- exactly like a Digitakt trig mute: the voice that is already sounding keeps playing
+| under its OWN amp envelope (fades, sustains, or loops forever, whatever the AMP page says),
+| its FX ring, and only NEW trigs are suppressed while the track is silenced.  Mechanism:
+| the same D5-bit clearing as OT+FX (so FUN_40004db8 keeps every frame level word -> the
+| voice + FX still reach the mix untouched) and the same `pre_v` new-trig drop, but WITHOUT
+| the FUN_40008f84 note-off / DAT_8000184a hold that OT+FX uses to fade the dry signal.
+| GATE (0x800000dc) == 2 selects it.  DT_MODE is compile-gated so a plain build is unchanged.
+|
+| Mechanism (confirmed on hardware, MKI): FUN_40004dbc (entry FUN_40004db8) is the per-frame
+| DSP-frame builder.  It branches on the SOLO flag 0x80000037:
+|   - not solo:  per track, if _DAT_80000008 bit 8+t (muted) -> `clr.w` the frame level word.
+|   - solo:      per track, if _DAT_80000008 bit t (0..7) set (SOLOED) -> keep; else the level
+|                words get AND-ed with 0 (d1, "any track soloed?") -> silenced.  A non-soloed
+|                track that is ALSO muted -> `clr.l` instead.
+| Either way the silencing is a post-FX cut that also kills the FX return.
+|
+| _DAT_80000008 layout:  bits 0..7 = per-track SOLO   bits 8..15 = MUTE   bits 16..23 = CUE.
 |
 | Two hooks, one cave:
 |
-|  1. `pre`   @ FUN_40004dbc 0x40004dc6 (the `move.l 0x80000008,D5`).  Unless SOLO is active,
-|     for every muted track:
-|       - 0->1 edge (vs the shadow in patch RAM): FUN_40008f84(t) once  (per-track note-off)
-|       - every frame: DAT_8000184a |= muted   (maintain the note-off, DSP holds the release)
-|       - D5 &= ~(muted<<8)   -> FUN_40004dbc keeps the frame level words -> FX inserts still
-|         reach the mix -> tails ring
+|  1. `pre`   @ 0x40004dc6 (the displaced `move.l 0x80000008,D5`).  With MUTE MODE == OT+FX,
+|     compute the "silenced" audio-track set for this frame:
+|         not solo   -> silenced = mute mask (bits 8..15 -> 0..7)
+|         solo + >=1 track soloed -> silenced = every non-soloed audio track
+|         solo + none soloed      -> silenced = 0  (stock: nothing is cut yet)
+|     Then:
+|       - keep the frame level words for the silenced tracks by clearing the bits FUN_40004dbc
+|         tests in D5 (not solo: clear the mute bits; solo: clear bits 0..15 so every track is
+|         kept and the "any soloed?" AND-mask D1 becomes -1) -> FX inserts still reach the mix.
+|       - every frame: DAT_8000184a |= silenced   (hold the note-off; the DSP runs the release)
+|       - 0->1 edge vs the patch-RAM shadow: FUN_40008f84(t) once per newly-silenced track.
+|     MUTE MODE == OT clears the shadow and bails -> byte-for-byte stock.
 |
-|  2. `pre_v` @ FUN_40005178 0x40005178 (the voice-command queue).  Drops "start" commands
-|     (bit 0x80 set, bit 0x10 clear) for a muted audio track -> a muted track's trigs never
-|     start a voice, so there is no 1-frame attack blip.
+|  2. `pre_v` @ 0x40005178 (the voice-command queue).  Drops "start" commands (bit 0x80 set,
+|     bit 0x10 clear) for a silenced audio track -> no 1-frame attack blip.
 |
-| _DAT_80000008 itself is untouched, so the MUTE LED and pattern-stored mute state still work.
+| _DAT_80000008 itself is never written, so the MUTE/SOLO LEDs and pattern-stored state work.
 |
 | Assemble:  m68k-elf-as -mcpu=5407 [--defsym ALWAYS_ON=1] ; ld -Ttext=<at> ; objcopy -O binary
 
-    .equ GATE,        0x800000dc     | SOFT MUTE PERSONALIZE flag (0 = stock).  Ignored when ALWAYS_ON.
-    .equ MUTE_STATE,  0x80000008     | bit 8+t: track t muted   bit 16+t: cued
-    .equ SOLO_FLAG,   0x80000037     | non-zero while SOLO is engaged
+    .equ GATE,        0x800000dc     | MUTE MODE word (0 = OT/stock, 1 = OT+FX).  Ignored when ALWAYS_ON.
+    .equ MUTE_STATE,  0x80000008     | bits 0..7 SOLO   bits 8..15 MUTE   bits 16..23 CUE
+    .equ SOLO_FLAG,   0x80000037     | byte, non-zero while SOLO mode is engaged
     .equ REL_STATE,   0x8000184a     | byte: voice t in RELEASE when bit t set
-    .equ SHADOW,      0x80006c66     | patch RAM: last-seen muted mask (8 bits)
+    .equ SHADOW,      0x80006c66     | patch RAM: last frame's "silenced" set (8 bits)
     .equ F_NOTEOFF,   0x40008f84     | FUN_40008f84(t) -- per-track note-off
     .equ BACK,        0x40004dcc     | FUN_40004dbc, after the displaced `move.l 0x80000008,D5`
     .equ BACK_V,      0x40005180     | FUN_40005178, after the displaced prologue
@@ -39,45 +61,83 @@
 pre:
     move.l  MUTE_STATE,%d5              | displaced: `move.l 0x80000008,D5`
     lea     (-0x10,%sp),%sp
-    movem.l %d0-%d3/%a0,(%sp)
+    movem.l %d0-%d3,(%sp)               | 4 longs == the 0x10 reserved
 
     .ifndef ALWAYS_ON
-    move.b  GATE,%d0
-    beq     p1_done
+    move.l  GATE,%d0
+    cmpi.l  #1,%d0                      | MUTE MODE == OT+FX ?
+    beq     p1_active
+    .ifdef DT_MODE
+    cmpi.l  #2,%d0                      | MUTE MODE == DT ?  (same D5 handling, no note-off)
+    beq     p1_active
+    .endif
+    clr.b   SHADOW                      | OT (or unknown): stock; keep the shadow clean for later
+    bra     p1_done
+p1_active:
     .endif
 
+| ---- silenced set -> D2 (bits 0..7) ----
     tst.b   SOLO_FLAG
-    bne     p1_done                    | SOLO -> stock hard cut
+    bne     p1_solo
 
-    move.l  %d5,%d0
-    lsr.l   #8,%d0
-    andi.l  #0xff,%d0                  | d0 = currently-muted mask (bits 0..7)
+    | not solo: silenced = mute mask
+    move.l  %d5,%d2
+    lsr.l   #8,%d2
+    andi.l  #0xff,%d2
+    | keep the muted tracks' frame level words: D5 &= ~(silenced << 8)
+    move.l  %d2,%d0
+    lsl.l   #8,%d0
+    not.l   %d0
+    and.l   %d0,%d5
+    bra     p1_edge
 
+p1_solo:
+    | solo: soloed mask = D5 bits 0..7
+    move.l  %d5,%d2
+    andi.l  #0xff,%d2
+    beq     p1_zero                     | solo engaged but nothing soloed -> nothing silenced
+    eori.l  #0xff,%d2                   | silenced = ~soloed & 0xff  (the 8 audio tracks)
+    | keep EVERY track's frame level words: clear D5 bits 0..15
+    |  -> every track: solo bit clear + mute bit clear -> the "& D1" keep path
+    |  -> D1 = (D5.b == 0) ? -1 : 0  becomes -1 -> words pass through unchanged
+    andi.l  #0xffff0000,%d5
+    bra     p1_edge
+
+p1_zero:
+    moveq   #0,%d2
+
+p1_edge:
+    .ifdef DT_MODE
+| ---- DT: the D5 mute/solo bits are already cleared above (voice + FX keep flowing to the
+|      mix untouched); the voice rides its own amp envelope.  No note-off, no REL_STATE. ----
+    move.l  GATE,%d0
+    cmpi.l  #2,%d0
+    bne     p1_edge_ot
+    clr.b   SHADOW                      | so a live DT -> OT+FX switch re-asserts every note-off
+    bra     p1_done
+p1_edge_ot:
+    .endif
+| ---- shadow edge (always update the shadow) ----
     moveq   #0,%d1
     move.b  SHADOW,%d1
-    move.b  %d0,SHADOW
-    move.l  %d1,%d2
-    not.l   %d2
-    and.l   %d0,%d2                    | d2 = newly-muted (0->1 edge)
-
-    tst.l   %d0
-    beq     p1_done
-
-    moveq   #0,%d1
-    move.b  REL_STATE,%d1
-    or.l    %d0,%d1
-    move.b  %d1,REL_STATE              | DAT_8000184a |= muted
-
-    move.l  %d0,%d1
-    lsl.l   #8,%d1
+    move.b  %d2,SHADOW
     not.l   %d1
-    and.l   %d1,%d5                    | keep the frame level words for muted tracks
+    and.l   %d2,%d1                     | D1 = newly-silenced (0->1 edge)
 
+| ---- maintain REL_STATE |= silenced ----
     tst.l   %d2
+    beq     p1_done
+    moveq   #0,%d0
+    move.b  REL_STATE,%d0
+    or.l    %d2,%d0
+    move.b  %d0,REL_STATE
+
+| ---- note-off the newly-silenced tracks, once ----
+    tst.l   %d1
     beq     p1_done
     moveq   #0,%d3
 p1_loop:
-    btst    %d3,%d2
+    btst    %d3,%d1
     beq     p1_next
     move.l  %d3,-(%sp)
     jsr     F_NOTEOFF
@@ -89,7 +149,7 @@ p1_next:
     bne     p1_loop
 
 p1_done:
-    movem.l (%sp),%d0-%d3/%a0
+    movem.l (%sp),%d0-%d3
     lea     (0x10,%sp),%sp
     jmp     BACK
 
@@ -98,28 +158,45 @@ p1_done:
 | Displaced: `lea (-0xc,SP),SP` + `movem.l {D2,D3,D4},(SP)` (8 B), then resume at 0x40005180.
     .global pre_v
 pre_v:
-    lea     (-0x10,%sp),%sp            | ColdFire: movem needs (An), not -(An)
-    movem.l %d0-%d2,(%sp)              | caller args now at (0x14/0x18/0x1c, sp)
+    lea     (-0x10,%sp),%sp             | ColdFire: movem needs (An), not -(An)
+    movem.l %d0-%d2,(%sp)               | caller args now at (0x14/0x18/0x1c, sp)
 
     .ifndef ALWAYS_ON
-    move.b  GATE,%d0
-    beq     v_stock
+    move.l  GATE,%d0
+    .ifdef DT_MODE
+    subq.l  #1,%d0                      | mode 1 -> 0, mode 2 -> 1
+    cmpi.l  #1,%d0
+    bhi     v_stock                     | MUTE MODE not in { OT+FX, DT }
+    .else
+    cmpi.l  #1,%d0
+    bne     v_stock
+    .endif
     .endif
 
-    move.l  (0x14,%sp),%d0             | d0 = track
-    move.l  (0x18,%sp),%d1             | d1 = cmd
+    move.l  (0x14,%sp),%d0              | d0 = track
+    move.l  (0x18,%sp),%d1              | d1 = cmd
     cmpi.l  #8,%d0
-    bcc     v_stock                    | track >= 8 -> not an audio track
+    bcc     v_stock                     | track >= 8 -> not an audio track
     btst    #7,%d1
-    beq     v_stock                    | not a "start" (bit 0x80 clear)
+    beq     v_stock                     | not a "start" (bit 0x80 clear)
     btst    #4,%d1
-    bne     v_stock                    | has the stop bit (0x10) -> let it through
+    bne     v_stock                     | has the stop bit (0x10) -> let it through
+
+| ---- drop iff this track is "silenced" ----
+    move.l  MUTE_STATE,%d1
     move.l  %d0,%d2
     addi.l  #8,%d2
-    move.l  MUTE_STATE,%d1
-    btst    %d2,%d1
-    beq     v_stock                    | this track not muted
-    | ---- drop the start: return to the caller with D0 = 1 ----
+    btst    %d2,%d1                     | muted (bit 8+t) ?
+    bne     v_drop
+    tst.b   SOLO_FLAG
+    beq     v_stock                     | not solo, not muted -> let it through
+    move.l  %d1,%d2
+    andi.l  #0xff,%d2
+    beq     v_stock                     | solo engaged, nothing soloed -> let it through
+    btst    %d0,%d1                     | this track soloed (bit t) ?
+    bne     v_stock                     | soloed -> let it through
+| fallthrough: solo active + this track not soloed -> drop
+v_drop:
     movem.l (%sp),%d0-%d2
     lea     (0x10,%sp),%sp
     moveq   #1,%d0
