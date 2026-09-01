@@ -395,6 +395,26 @@ CORE = {
         "entry": 0x40023f1c, "end": 0x40024098, "clamps": [],
         "sites": [(0x40023f4c, "h_set_d2")],
     },
+    # --- Wave 19: the .OT SIDECAR READER 0x4008b8d0 -- the "slices never appear on a high slot" bug AND
+    # (almost certainly) the spurious "SAMPLE LOAD ERRORS!" -2 popup. This is the ONLY function that
+    # unmarshals a .ot file (validates FORM/DPS1/SMPA @0x400d1670/74/7e, then reads loopmode/trim/
+    # 64x12 slices/count into SETTINGS[idx]); its one caller 0x4008fb?? builds "<sample>.ot", returns 2
+    # if absent, else opens "r" and passes (stream, type d5, slot d4) straight through. Both its
+    # follow-ups (sanitizer 0x40099374, post 0x40004f9c) were ALREADY migrated -- only this prologue
+    # blocked the chain: STATIC branch `cmpi #128,d4; bhiw 0x4008be16` where the bail returns
+    # **moveq #-2** (the popup!), then resolves SETTINGS-A + STRIDE4#2-A hardcoded. idx>128 -> -2 popup
+    # + no slices; idx==128 passed bhi -> OOB A[128] (same CHECK1 off-by-one class). NOTE: the earlier
+    # census filed site 0x4008b904 as "CLASS-B bank serializer, writes a file, held back on purpose" --
+    # that classification was WRONG (it READS a file and WRITES SETTINGS). FLEX branch (#135 clamp,
+    # 0x100b14f0) stays stock. FLEX flag add 0x4008b950 (S41) migrated to match the copypaste/resetslot
+    # convention. (Found by xref'ing the SMPA magic const after the P43 probe proved +1092 is the field
+    # the AED slice tab draws and markers.work only covers A.)
+    "otreader_0x4008b8d0": {
+        "entry": 0x4008b8d0, "end": 0x4008be2a, "clamps": [0x4008b8ee],
+        "sites": [(0x4008b906, "h_set_a3"),
+                  (0x4008b948, "h_s42_a0"),
+                  (0x4008b952, "h_s41_a0")],
+    },
 }
 
 # --- Wave 14: the OFF-BY-ONE class (audit CHECK 1, 2026-08-20) -------------------------------------
@@ -446,9 +466,9 @@ OFFBYONE_CORE = {
     },
 }
 # NOT included, deliberately:
-#   0x4008b904 (clamp 0x4008b8ee) -- CLASS-B bank/arrangement serializer "FORMDPS1ARRA". Same off-by-one,
-#     but it WRITES a file; changing what it emits could disturb the save path that is now proven working
-#     on HW (bank01.strd carries the high slot correctly). Needs its own analysis first.
+#   0x4008b904 -- WAS held back here under a WRONG classification ("bank/arrangement serializer, writes a
+#     file"). Disproven 2026-09-01: it is the .OT SIDECAR READER (magic DPS1SMPA, opened "r", writes
+#     SETTINGS) -- now migrated as CORE wave 19 "otreader_0x4008b8d0".
 #   0x4008e638 (clamp 0x4008e620) -- guard is `bls`, whose branch polarity here is not the bail-idiom;
 #     audit reports it as REVIEW rather than assuming.
 # --- Wave 15: the `bls` NULL-and-dereference pair (found 2026-08-20 after P31 HW) ------------------
