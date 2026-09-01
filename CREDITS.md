@@ -28,14 +28,27 @@ Nothing here would exist without the projects below.
 - **aPLib** — the OS payload compression; implemented in
   `elektron-firmware-tool` from the public format description.
 
+## Other Octatrack firmware-patching projects
+
+The same "bring your own official OS, patch it, roll your own image, redistribute
+no binary" approach — worth reading alongside this repo:
+
+- **[sambanks/octabam](https://github.com/sambanks/octabam)** (Octabam) — adds
+  original DSP audio effects to the Octatrack MKII by patching new **DSP56300
+  assembly** into the stock OS, with a Python build system that compiles curated
+  effect "remixes" into flashable images. This is the **DSP side** that
+  [`COVERAGE.md`](COVERAGE.md) flags as out of scope here — the natural companion
+  to the ColdFire-side work in this repo.
+- **[emuyia/ems-octakit](https://github.com/emuyia/ems-octakit)** (EMS-Octakit) —
+  a browser-based patcher for OS 1.40C that replaces the 4 Parts per Bank with
+  **256 Kits per Project**.
+- **[bryantysinger/octa-bt-pt](https://github.com/bryantysinger/octa-bt-pt)**
+  (Bryan_T) — a parameter-default patch tool for OS 1.40C (Python / Streamlit):
+  customise the firmware's default values and generate a flashable image from
+  your own copy of the official OS.
+
 ## Community reverse-engineering & documentation
 
-<!-- TODO(zfancher): confirm the exact URLs for these before publishing -->
-
-- **Bryan_T** — long-running Octatrack deep-dive documentation on Elektronauts
-  (sequencer/scene/parameter behaviour). <!-- link: Elektronauts profile / guide thread -->
-- **Em / "Octakit"** — Octatrack tooling. <!-- link: repo URL -->
-- **"Octabam"** — <!-- link + one-line description; confirm the exact name -->
 - **Elektronauts threads** that seeded specific findings here:
   - Octatrack CPU chip model — https://www.elektronauts.com/t/octatrack-cpu-chip-model/93304
   - Modifying Elektron firmware — https://www.elektronauts.com/t/modifying-elektron-firmware/36228
