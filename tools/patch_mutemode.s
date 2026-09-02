@@ -5,10 +5,9 @@
 |
 |   MUTE MODE   0x800000dc   0 = "OT"     -> stock instant post-FX cut
 |                            1 = "OT+FX"  -> patch_softmute: dry cuts, FX inserts ring tails
-|                            2 = "DT"     -> patch_softmute: pure sequencer mute (Digitakt
-|                                            style) -- the sounding voice rides its own amp
-|                                            envelope, only new trigs are suppressed.
-|                                            Built only with --defsym DT_MODE=1.
+|
+| (A third mode, "DT", exists on the wip/mute-mode branch -- emulator-verified only, not
+| shipped here.)
 |
 | 0x800000dc is the same free battery-backed PERSONALIZE word patch_softmute already reads
 | as GATE, so 0 = a freshly-flashed unit behaves exactly like stock.
@@ -21,11 +20,7 @@
 |   [LEFT]  -> (-1, wrap=0)   clamp
 
     .equ MUTE_MODE, 0x800000dc
-    .ifdef DT_MODE
-    .equ N_MODES,   3                | OT / OT+FX / DT      (--defsym DT_MODE=1)
-    .else
     .equ N_MODES,   2                | OT / OT+FX
-    .endif
     .equ NMAX,      N_MODES - 1
 
     .text
@@ -43,17 +38,9 @@ vm_0:
 vm_1:
     .asciz "OT+FX"
     .align 2
-    .ifdef DT_MODE
-vm_2:
-    .asciz "DT"
-    .align 2
-    .endif
 val_tbl:
     .long vm_0
     .long vm_1
-    .ifdef DT_MODE
-    .long vm_2
-    .endif
 
 | ---- getter: return &val_tbl[clamp(MUTE_MODE, 0, NMAX)] ----
     .global get_mutemode

@@ -3301,6 +3301,11 @@ Then: 3rd mute mode (user has a design in mind — separate session); SOLO exten
 
 ## Session 11 — SOFT MUTE extended to SOLO (patch_softmute V7, in the MUTEMODE test build)
 
+> **Branch note (2026-09-01):** everything from here on (V7 solo, Session 12 DT) is
+> **emulator-verified only, never flashed**. It was moved off `main` to the
+> **`wip/mute-mode`** branch. `main` ships `patch_softmute.s` V6b (the Session-10
+> flashed build). To continue this work: `git checkout wip/mute-mode`.
+
 **MKI HW status: the Session 10 MUTEMODE build flashed and works well.** V7 rebuilds it with
 solo support folded into the OT+FX mode — no separate toggle.  `python3 tools/build_mutemode.py`
 -> same outputs, version `140C_KYOTI`, now **630 B vs stock**.
