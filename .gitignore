@@ -13,6 +13,12 @@ ghidra_project/
 # --- Third party (cloned by setup.sh) ---
 vendor/
 
+# --- External RE research: local clone cache (tools/refs/sync.sh) ---
+# Only refs/MANIFEST.toml and refs/MANIFEST.lock are tracked; never the repos.
+refs/*
+!refs/MANIFEST.toml
+!refs/MANIFEST.lock
+
 # --- Local ---
 .DS_Store
 .playwright-mcp/

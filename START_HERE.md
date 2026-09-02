@@ -31,6 +31,8 @@ of `mxldyn/octamax`. Remotes: `origin` = your fork, `upstream` = mxldyn (fetch o
 |---|---|
 | `START_HERE.md` | this — onboarding + current frontier |
 | `NOTES.md` | the full chronological RE log; every finding, every session, every dead end |
+| `reference/kb/*.md` | **distilled knowledge base** — address map + file format + DSP + container + techniques, ours merged with external RE. Read the relevant one before a new patch |
+| `reference/EXTERNAL_RESEARCH.md` | index of the 6 external OT-RE repos + the sync/distill workflow (`tools/refs/`) |
 | `README.md` | project intent, repo layout, and the **build/flash recipe** (§"Building a `.syx` or `.bin`") |
 | `COVERAGE.md` | what firmware subsystems are mapped vs untouched; the DSP-is-a-separate-blob caveat |
 | `ARCHITECTURE.md` | memory map, container format, boot/upgrade chain |
@@ -65,6 +67,7 @@ of `mxldyn/octamax`. Remotes: `origin` = your fork, `upstream` = mxldyn (fetch o
 | Ghidra headless | JDK 21 + Ghidra 12.1.2 paths in the memory file; project `ghidra_project octamax`, `-process section_3_MAIN_OS.bin -noanalysis`; one-shot probe scripts in `tools/ghidra/attic/*.java` (see `tools/ghidra/README.md`), dumps land in `out/ghidra/` |
 | CPU emulation | `tools/emu_*.py` (Unicorn, runs the real image bytes) — one per feature |
 | build a flashable | `tools/build_*.py` → `.syx` (MIDI) + `.bin` (CF card); see README §"Building" |
+| external RE research | `python3 tools/refs/sync.py` (clone/refresh the 6 repos into `refs/`, gitignored) · `python3 tools/refs/whatsnew.py` (what changed upstream → re-distil into `reference/kb/`) |
 
 ## 5. Shipped / in-flight work (2026-09-01)
 
