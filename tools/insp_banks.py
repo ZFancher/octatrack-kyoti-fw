@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2026 Zachary Fancher ("Kyoti")
 # Deserialize each real test bank via the REAL firmware deserializer (FUN_4008ded0) in
 # Unicorn, then dump the per-MIDI-track header bytes and pattern-level scale bytes for
 # patterns 0 and 1, so we can see exactly which track/pattern each test project configured

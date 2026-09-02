@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2026 Zachary Fancher ("Kyoti")
 """
 Verify + emulate the MUTE MODE PERSONALIZE entry in the built image.
 

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2026 Zachary Fancher ("Kyoti")
 """
 TEST BUILD -- stock 1.40C + the MIDI manual-trig fix + SOFT MUTE, this time with a
 PERSONALIZE toggle instead of ALWAYS_ON.

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2026 Zachary Fancher ("Kyoti")
 """
 Emulate the V7 patch_softmute `pre` hook + the real FUN_40004db8 frame builder to prove the
 SOLO soft-silence: with MUTE MODE == OT+FX, a track silenced because another track is soloed

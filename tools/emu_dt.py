@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2026 Zachary Fancher ("Kyoti")
 """
 Emulate the DT (MUTE MODE == 2) path in the DT build, against the real image bytes.
 

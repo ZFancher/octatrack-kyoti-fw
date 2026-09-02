@@ -1,3 +1,5 @@
+| SPDX-License-Identifier: MIT
+| SPDX-FileCopyrightText: 2026 Zachary Fancher ("Kyoti")
 | patch_softmute V7 -- audio-track mute (and, V7, SOLO silencing) behave like a single STOP:
 | the sample audio cuts (fast clean fade), the track's FX inserts ring their delay/reverb
 | tails out, and a silenced track's sequencer trigs make no sound.

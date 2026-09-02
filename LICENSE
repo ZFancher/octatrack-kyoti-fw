@@ -15,6 +15,14 @@ It does NOT cover, and this repository does not redistribute:
   - third-party code fetched at build time into vendor/ (each keeps its own
     license).
 
+Factual information about the Elektron firmware (memory addresses, byte values,
+field offsets, and behavioural descriptions) is stated as fact and is claimed as
+no one's copyrightable expression. Verbatim disassembly or decompiler output of
+the Elektron firmware is deliberately not included in this repository. Source
+files that carry an "SPDX-License-Identifier: MIT" tag are the ones this license
+covers; files without it retain their own authors' rights (notably the upstream
+octamax files).
+
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
 in the Software without restriction, including without limitation the rights

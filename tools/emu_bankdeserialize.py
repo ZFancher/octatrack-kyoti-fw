@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2026 Zachary Fancher ("Kyoti")
 # Run the REAL bank deserializer (FUN_4008ded0) against real bankNN.work bytes in
 # Unicorn, instead of hand-deriving file-offset -> RAM-offset mappings.
 #

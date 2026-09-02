@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2026 Zachary Fancher ("Kyoti")
 # emu_trigbug.py  --  Session 5 (Claude Code)
 #
 # Execution harness for the MIDI manual-trig bug. Loads a REAL deserialized test bank into
