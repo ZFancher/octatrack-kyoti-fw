@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2026 Zachary Fancher ("Kyoti")
 # emu_mute.py -- Session 9. Answer: when you mute an audio track (FUNC+TRACK), does the
 # firmware hard-cut the voice or trigger an amp RELEASE?  And is the FX-send tap pre- or
 # post- the mute gain?

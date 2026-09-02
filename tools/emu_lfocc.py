@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2026 Zachary Fancher ("Kyoti")
 # emu_lfocc.py -- Session 8. Reproduce / locate the "MIDI LFO SETUP knob transmits CC 28-33
 # on the twin audio track's channel" bug (Elektronauts 87588) on OS 1.40C.
 #

@@ -1,3 +1,5 @@
+| SPDX-License-Identifier: MIT
+| SPDX-FileCopyrightText: 2026 Zachary Fancher ("Kyoti")
 | patch_softmute V6b -- audio-track mute behaves like a single STOP: the sample audio cuts
 | (fast clean fade), the track's FX inserts ring their delay/reverb tails out, and a muted
 | track's sequencer trigs make no sound.

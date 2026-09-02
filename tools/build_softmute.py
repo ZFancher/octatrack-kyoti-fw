@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2026 Zachary Fancher ("Kyoti")
 """
 Build a flashable Octatrack OS on TOP OF STOCK 1.40C ONLY (no MAXOLYDIAN mods):
 
