@@ -1,5 +1,4 @@
 # Resolved by tools/refs/sync.py — do not edit by hand.
-# last sync: 2026-09-02T16:42:59
 
 octamax = "251be7a5e65fbd8e3defd5935d9eca8c2b6ff4c8"  # Revert bank paging from the firmware; ship clean R11 (arp + lazy)
 elektron-firmware-tool = "065d18f4195793e61891e387813488ee59f6d1ca"  # elektron-firmware-tool: inspect and modify Elektron OS .syx files

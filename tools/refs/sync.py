@@ -67,9 +67,10 @@ def main(argv: list[str]) -> int:
             return 2
 
     REFS_DIR.mkdir(exist_ok=True)
+    # No timestamp in the lock body — it is tracked, and a time-only diff on every
+    # sync is noise. The wall-clock goes to refs/.last-sync (gitignored) instead.
     lock_lines = [
         "# Resolved by tools/refs/sync.py — do not edit by hand.",
-        f"# last sync: {_dt.datetime.now().isoformat(timespec='seconds')}",
         "",
     ]
     for name, meta in load().items():  # keep lock ordered like the manifest
@@ -83,7 +84,9 @@ def main(argv: list[str]) -> int:
         lock_lines.append(f'{name} = "{head}"  # {subject[:70]}')
 
     LOCK.write_text("\n".join(lock_lines) + "\n")
-    print(f"\nwrote {LOCK.relative_to(REFS_DIR.parent)}")
+    stamp = _dt.datetime.now().isoformat(timespec="seconds")
+    (REFS_DIR / ".last-sync").write_text(stamp + "\n")
+    print(f"\nwrote {LOCK.relative_to(REFS_DIR.parent)}  ({stamp})")
     return 0
 
 
