@@ -4441,9 +4441,22 @@ hooks. User picked **SPATIALIZER (`0x05`) as the donor.**
 | COMPRESSOR proc+0 `0x1ab1` / `0x1871` | `0xf43f8` / `0x107349` | `move r0,n6` + `move #$61,r4` (2 w) → `jsr <scdet>` (`0d0ab7` / `0d0877`) + `nop` |
 | dispatch table `X:0x215[5]` init / `X:0x235[5]` proc | `0xe1f45`+ / `0xf5610`+ | SPATIALIZER's id-`0x05` entries → null stub (`0x7c8`/`0x7c9` A, `0x588`/`0x589` B) — SPATIALIZER now passes audio through |
 
+**SPATIALIZER is removed from both FX choosers** (not just degraded) — it was bad UI to
+leave a dead entry selectable. Mechanism (octabam `PARAM_PAGES` §5e): the two chooser lists
+are NUL-terminated arrays of `E+0x38` descriptor pointers — `FX1 = 0x400d6060` (11 entries),
+`FX2 = 0x400d6090` (15) — SPATIALIZER at position 7 in both. Drop its pointer, shift the
+rest up, move the terminator. Then rebuild `ID2POS = 0x400d6150` (`u32[id]` → cursor
+position): `id 0x05 → 0` (a legacy project that still stores SPATIALIZER lands the chooser
+cursor on NONE) and every id past position 7 shifts down one. Result: FX1 10 entries, FX2 14
+— both well above the renderer's fixed 7-row viewport, so no garbage rows. A legacy project
+with SPATIALIZER still *shows* "SPAT" on the slot (id-lookup table untouched) and passes
+audio through (null stub); re-selecting anything drops it.
+
 **Verified:**
 - byte-diff vs stock: **exactly 2 words** changed at each detour site, all surrounding stock
   code byte-identical; SPATIALIZER word 37+ untouched (harmless dead).
+- FX1/FX2 chooser lists after: `NONE FLTR EQ DJEQ PHSR FLNG CHOR COMB COMP LOFI [DEL PLTE
+  SPRG DARK]` — no SPAT; `ID2POS` consistent with the new positions.
 - both patched payloads still parse **100%** (`dsp_modmap`); image round-trips (aPLib+ELEK
   checksum OK); Bug-1 fix byte-identical to `build_trigscale_only.py`.
 - **`emu_sc_dsp.py --patched`** (real cave at SPATIALIZER `0x868`, real detour in the

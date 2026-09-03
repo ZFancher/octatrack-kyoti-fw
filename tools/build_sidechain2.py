@@ -10,8 +10,10 @@ COMPRESSOR page 2, descriptor slot 8) PLUS the DSP side:
   * SPATIALIZER (effect id 0x05) is DONATED.  Its 261-word P region in each
     payload is overwritten with the 37-word side-chain cave (tools/patch_sc_dsp.asm,
     `sctap` + `scdet`), and its X:0x215 / X:0x235 dispatch entries are retargeted
-    to the null passthrough stub -- so a project that still selects SPATIALIZER
-    just passes audio through.
+    to the null passthrough stub.  It is also REMOVED from the FX1 and FX2
+    chooser lists (0x400d6060 / 0x400d6090) + ID2POS (0x400d6150), so it is not
+    selectable at all -- a legacy project that still stores it shows "SPAT" and
+    passes audio through, and the chooser cursor lands on NONE.
 
   * `jsr sctap` is spliced over `move x:>$208,r6` at the dispatcher's per-track
     FX1 entry (func_0004a7 / func_00029c), so every track publishes its pre-FX
@@ -73,6 +75,19 @@ DSP = {
 }
 SC_SRC = ROOT / "tools/patch_sc_dsp.asm"
 NOP = 0x000000
+
+# --- hide SPATIALIZER (donated -> passthrough) from the FX choosers ---
+#  Two lists of descriptor pointers (E+0x38 each), NUL-terminated; the renderer
+#  scans to the terminator, so removing an entry + shifting the rest + moving
+#  the terminator is enough.  SPATIALIZER (E=0x400d4904) sits at position 7 in
+#  both.  ID2POS (u32[id] -> cursor position) is rebuilt: id 0x05 -> 0 (a legacy
+#  project that still stores SPATIALIZER lands the chooser cursor on NONE), and
+#  every id past position 7 shifts down one.
+FX1_LIST, FX1_LEN = 0x400d6060, 11
+FX2_LIST, FX2_LEN = 0x400d6090, 15
+ID2POS = 0x400d6150
+SPAT_P = 0x400d4904 + 0x38          # the SPATIALIZER descriptor pointer in the lists
+SPAT_POS = 7
 
 
 def w3(v):                       # 24-bit little-endian word
@@ -247,6 +262,37 @@ def main():
         img[prc_off:prc_off + 3] = w3(d["stub_proc"])
         print(f"    X:0x215[5] init  -> P:0x{d['stub_init']:05x}   "
               f"X:0x235[5] proc -> P:0x{d['stub_proc']:05x}  (SPATIALIZER -> passthrough)")
+
+    # ---------------- hide SPATIALIZER from the FX choosers ----------------
+    print("\n=== ColdFire: remove SPATIALIZER from the FX1/FX2 chooser ===")
+
+    def u32(a):
+        return int.from_bytes(img[o(a):o(a) + 4], "big")
+
+    def wr32(a, v):
+        img[o(a):o(a) + 4] = v.to_bytes(4, "big")
+
+    for base, ln, tag in ((FX1_LIST, FX1_LEN, "FX1"), (FX2_LIST, FX2_LEN, "FX2")):
+        entries = [u32(base + i * 4) for i in range(ln)]
+        assert u32(base + ln * 4) == 0, f"{tag} list terminator missing"
+        assert entries[SPAT_POS] == SPAT_P, \
+            f"{tag}[{SPAT_POS}] is 0x{entries[SPAT_POS]:08x}, expected SPATIALIZER 0x{SPAT_P:08x}"
+        new = entries[:SPAT_POS] + entries[SPAT_POS + 1:]        # drop position 7
+        for i, v in enumerate(new):
+            wr32(base + i * 4, v)
+        wr32(base + len(new) * 4, 0)                              # new terminator
+        print(f"  {tag} chooser: {ln} -> {len(new)} entries (SPATIALIZER dropped)")
+
+    # ID2POS: id 0x05 -> 0 ; every id at a cursor position > SPAT_POS shifts down 1
+    wr32(ID2POS + 0x05 * 4, 0)
+    moved = []
+    for idv in range(0x20):
+        pos = u32(ID2POS + idv * 4)
+        if idv != 0x05 and pos > SPAT_POS:
+            wr32(ID2POS + idv * 4, pos - 1)
+            moved.append((idv, pos, pos - 1))
+    print(f"  ID2POS: id 0x05 -> 0; shifted {len(moved)} entries down "
+          f"({', '.join(f'0x{i:02x}:{a}->{b}' for i, a, b in moved)})")
 
     OUT.write_bytes(bytes(img))
     changed = sum(1 for a, b in zip(stock, img) if a != b)
