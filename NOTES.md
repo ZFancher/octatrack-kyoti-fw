@@ -2452,7 +2452,7 @@ Tooling notes:
   regression test (PLAYS FREE + Direct + Per-Track scale, step-1/step-2 MIDI trigs, manual
   trig, sequencer stopped → stock plays only C, fixed plays C then C#).
 
-### Failure playbook — DONE (`FLASHING.md` §6, and `octamax_handoff_7.md` for the next session)
+### Failure playbook — DONE (`FLASHING.md` §6)
 
 `FLASHING.md` §6 "If flashing fails, or the flashed OS misbehaves" covers: always-recover-first
 (STARTUP MENU → MIDI UPGRADE → stock `.syx`); classify into (a) transfer never completed →
