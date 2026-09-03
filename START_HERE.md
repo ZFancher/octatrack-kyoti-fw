@@ -18,11 +18,14 @@ of `mxldyn/octamax`. Remotes: `origin` = your fork, `upstream` = mxldyn (fetch o
 
 ## 1. Read order for a new chat
 
-1. **This file** (constraints + current frontier).
+1. **This file** — §6 says which branch the current work is on (`main` vs `wip/mute-mode`).
+   Check out that branch before reading further; each branch's `START_HERE.md` / `NOTES.md`
+   reflects its own state.
 2. **`NOTES.md`** — the RE log. **Do not read top-to-bottom** (it starts at 2026-07 recon).
    Jump to the newest `## Session N` section and the most recent
    `### … STATE OF PLAY` / `### NEXT …` blocks. Section index: `grep -nE '^## ' NOTES.md`.
-3. **Task-specific docs** from the map below.
+3. **`reference/kb/*.md`** for anything touching the descriptor table, file formats, DSP, or
+   the container; **task-specific docs** from the map below.
 4. Only then open `tools/*` and `out/ghidra/*` for the subsystem in question.
 
 ## 2. Document map — what each file is for
@@ -68,10 +71,13 @@ of `mxldyn/octamax`. Remotes: `origin` = your fork, `upstream` = mxldyn (fetch o
 | build a flashable | `tools/build_*.py` → `.syx` (MIDI) + `.bin` (CF card); see README §"Building" |
 | external RE research | `python3 tools/refs/sync.py` (clone/refresh the 6 repos into `refs/`, gitignored) · `python3 tools/refs/whatsnew.py` (what changed upstream → re-distil into `reference/kb/`) |
 
-## 5. Shipped / in-flight work (2026-09-01)
+## 5. Shipped / in-flight work
 
-Two branches: **`main`** ships only what has been on hardware; **`wip/mute-mode`**
-carries the untested continuation (solo, DT). `octamax-main` tracks upstream.
+Two branches. **`main`** is the stable line: only hardware-tested build tooling,
+plus the shared knowledge base. **`wip/mute-mode`** (this) is the active
+frontier — everything not yet on hardware: the DT and solo mute modes, a
+DIRECT JUMP pattern-change mode, and an in-progress DSP side-chain compressor.
+`octamax-main` tracks `upstream/main`.
 
 | Thread | State |
 |---|---|
@@ -82,6 +88,7 @@ carries the untested continuation (solo, DT). `octamax-main` tracks upstream.
 | ↳ **OT+FX for SOLO** (non-soloed tracks keep FX tails) | `patch_softmute.s` **V7**, **`wip/mute-mode` only** — emulator-verified (`emu_solo.py`), never flashed. |
 | ↳ **DT** (Digitakt-style pure sequencer mute) | **`wip/mute-mode` only** — emulator-verified (`emu_dt.py`, `build_mutemode_dt.py`), never flashed. |
 | Maxolydian mods (branding, no BANK/PTN countdown, lazy Part transitions, arp key-scales, LED dirty indicators) | Not in the KYOTI builds. `tools/build.py` / `sysex/`; see `CREDITS.md`. |
+| **External-RE knowledge base** (`main`, Session 16) | `reference/kb/*.md` — address-keyed distillate of 6 prior-art repos (octabam DSP map, OctaLib file formats, octa-bt-pt descriptor table `0x400d2fe4`–`0x400d5e04`, the bank-file p-lock region). `python3 tools/refs/sync.py` populates the `refs/` cache; `reference/EXTERNAL_RESEARCH.md` is the index. |
 
 Build outputs on `main` (all `140C_KYOTI`, all carry the Bug-1 fix):
 - `build_trigscale_only.py` → `out/OCTATRACK_*PLAYSFREEFIX.*` — Bug-1 fix only, version stays `1.40C`.
@@ -92,150 +99,59 @@ Build outputs on `main` (all `140C_KYOTI`, all carry the Bug-1 fix):
 
 ## 6. Current frontier — UPDATE THIS EACH SESSION
 
-**As of 2026-09-01 (post-Session-13, repo published):**
+**As of 2026-09-03. You are on `wip/mute-mode`** — the active branch. `main` merged in
+(Session 16 KB infra: `refs/` + `tools/refs/` + `reference/kb/`; run `tools/refs/sync.py`
+to populate the `refs/` cache — `build_sidechain2.py` imports `refs/octabam/tools/dsp_modmap.py`).
+Everything below is here, emulator-verified, **nothing flashed**.
 
-- Repo published as `github.com/ZFancher/octatrack-kyoti-fw`. **`main` was trimmed to
-  ship only hardware-tested tooling**: Bug-1 fix + MUTE MODE `OT`/`OT+FX` (V6b). The V7
-  solo rewrite and DT mode moved to **`wip/mute-mode`** (pushed, emulator-verified only).
-- The user is **away from the MKI for ~2 weeks** — build + emulate only, no flashing.
-- To resume the untested work: `git checkout wip/mute-mode`. Open risks there:
-  - **DT**: whether the DSP keeps advancing a plain FLEX one-shot's amp envelope while the
-    frame words flow untouched (should — `FUN_40004db8` is downstream of the voice updater).
-    Fallback: also clear the `46c7ff64` output-mute bit for DT tracks.
-  - **solo**: the V7 "silenced set" path — `NOTES.md` "Session 11 → NEXT".
-- Hardware test checklists waiting (on `wip/mute-mode`): `NOTES.md` "Session 12 → NEXT" (DT),
-  "Session 11 → NEXT" (OT+FX solo). "Session 10 → NEXT" (menu + persistence) applies to `main`.
-- Not started: any refinement past DT; DSP56300 extraction (a separate project — see
-  `COVERAGE.md` and `sambanks/octabam` in `CREDITS.md`).
+| thread | state | detail |
+|---|---|---|
+| **DT** mute mode | built, `emu_dt.py` clean · `build_mutemode_dt.py` | `NOTES.md` "Session 12" |
+| **OT+FX → SOLO** (softmute V7) | built, `emu_solo.py` clean · `build_mutemode.py` on this branch | `NOTES.md` "Session 11" |
+| **4th MUTE MODE** — instant cut + FX tails + resume-at-playhead | RE'd, not built; gated on the same HW unknown as DT | `NOTES.md` "Session 14" |
+| **DIRECT JUMP** pattern-change mode | built — `patch_directjump.s` / `build_directjump.py` → `OCTATRACK_*DIRECTJUMP.*`, `emu_directjump.py` clean | `NOTES.md` "Session 15" (+ continued) |
+| **DSP side-chain compressor** | see below | `NOTES.md` "Session 17" (+ continued 1–8) |
 
-**Session 14 (2026-09-01, `wip/mute-mode`, RE only):** scoped a **4th MUTE MODE** — instant
-dry cut + FX tails + *resume at playhead* (stock-OT unmute). `FUN_40004db8` fully disassembled
-(`tools/emu_otfx.py`, ALL GOOD): its only mute lever is zeroing the post-FX MAIN word; no
-pre-FX voice control there. Candidate = keep MAIN word open (V6 D5-trick) + force the
-per-voice pre-FX amp array `0x46c7ff42[t]` to 0 (filled every frame by `FUN_4000d16c` at
-`0x4000d36e`), voice struct untouched. Two HW-only unknowns (is `0x46c7ff42` pre-FX? does the
-DSP keep advancing a 0-amp voice?). **DT rests on the same 2nd unknown — flash DT first to
-settle it, then build this.** Rename on landing: `OT / OT+FX (new) / OT+FX TRIG / DT`.
-Full writeup: `NOTES.md` "Session 14".
+The shared HW unknown for **DT** and the **4th mode**: does the DSP keep advancing a
+0-amp / envelope-riding voice while the frame level words flow untouched? Flashing DT
+settles it. (`FUN_40004db8` is downstream of the voice updater, so it should.)
 
-**Session 15 (2026-09-02, `wip/mute-mode`, RE only):** feasibility of an Elektron-style
-**DIRECT JUMP** pattern-change mode (switch immediately, keep the step position, load the
-new Part at once). **Verdict: FEASIBLE, medium effort**, entirely in the mapped sequencer
-engine. Found the cue choke point `FUN_400a0570` (pending pattern → `DAT_800065bf/c0`), the
-master step counter `_DAT_800065b4` (zeroed in every one of `FUN_400a1eea`'s 3 pattern-reload
-blocks), and pattern length `_DAT_800065b6`. Design = 1 detour on `FUN_400a0570` (arm an
-immediate switch) + a LAZY-PART-style save/restore-with-modulo stub around the reload block,
-plus a NORMAL/DIRECT JUMP PERSONALIZE toggle (MUTE MODE template). Full writeup + function
-map + open items: `NOTES.md` "Session 15".
+### Side-chain compressor — where it stands
 
-**Session 15 continued:** mapped the real per-step pattern switch in `FUN_400a1eea` at the
-instruction level (commit at `0x400a44d0`; master step `DAT_800065b6`; CHAIN-AFTER gate; MIDI
-Program Change = `FUN_4009e884`, sent 2 steps early). **DIRECT JUMP BUILT (S1+S2+S3, NOT
-FLASHED):** `tools/patch_directjump.s` (menu `DIRECT JUMP : OFF/ON` in free word `0x800000a8`
-+ 3 hooks — arm/PC-send `0x400a4006`, gate-bypass `0x400a42fa`, playhead-resume `0x400a4840`)
-+ `tools/build_directjump.py` → `out/OCTATRACK_OS1.40C_DIRECTJUMP.{syx,bin}`, 684 B vs stock.
-`tools/emu_directjump.py` ALL GOOD (stubs in isolation). Behaviour: a manually cued pattern
-switches on the next step tick, keeps the playhead position, loads the new Part at once, PC
-~1 step ahead; arranger/chain untouched. Full writeup + HW-only unknowns in `NOTES.md`
-"Session 15 continued" → "S2 + S3 BUILT".
+External **KEY**-track input for the DynamiX COMPRESSOR. It's a DSP job, not ColdFire —
+the compressor is 180 DSP words (`P:0x01aa4` payload A / `P:0x01864` B; id `0x18`), the
+ColdFire never sees audio. octabam's DSP load-map + module table transfer to our image
+verbatim (SHA `164f3122…`, MKI==MKII). COMPRESSOR fully reversed: param map `r6+$0..5` =
+ATK/REL/THRS/RAT/GAIN/MIX, `+$c` = RMS. **Sidechain tap point:** the detector reads
+`x:(r0)+` @`0x1ab3`; the dry/wet path re-anchors via `n6`, so redirecting *only* the
+detector to a shared-Y `keybus` is dry-signal-safe. Publish tap = `func_0004a7` (`P:0x004a7`),
+copy `X:0` → `keybus[track]`. `keybus` = abs-Y `0x800–0xC00`, quad-buffered, same-core only.
+DSP56300 toolchain (`dsp_asm` + `dsp_host`) built in `vendor/` (gitignored; scratchpad
+`build_dsp_asm.sh`).
 
-**Session 17 (2026-09-02, `wip/mute-mode`, RE only):** feasibility of an **external
-side-chain (key-track) input for the DynamiX COMPRESSOR**. **Verdict: the real feature is a
-DSP project, not a ColdFire one** — the compressor is 180 DSP words (`P:0x01aa4`, octabam);
-the ColdFire never sees audio, so no CPU-only lever changes the detector input. Three routes:
-(1) ColdFire-only *trig-synced ducking* — cheap (~2–4 sessions), not real side-chain;
-(2) real DSP side-chain scoped to same-bank pairs (key/target both in T1–4 or both T5–8) via
-octabam's shared-Y-scratch bus + a modified COMPRESSOR module + page-2 menu params on
-`E=0x400d5a4a` — 8–15+ sessions, needs a DSP56300 toolchain stood up, brick risk on the lone
-MKI; (3) full 8×8 = route 2 + octabam's cross-core XBUS. "Feed while muted" is ~free (tap
-pre-mute-gate; stock mute only zeroes the post-FX MAIN word). Cheap first step regardless of
-route: disassemble `out/dsp_region.bin`, confirm `P:0x01aa4` lines up in our image. Full
-writeup: `NOTES.md` "Session 17".
+| build | contents | status |
+|---|---|---|
+| `build_sidechain.py` → `SIDECHAIN.*` | `KEY` menu param only (COMPRESSOR pg2, descriptor slot 8), DSP inert | `emu_sidechain.py` clean |
+| `build_sidechain2.py` → `SIDECHAIN2.*` | + 37-word DSP hooks (`patch_sc_dsp.asm` = `sctap`+`scdet`) over a **donated SPATIALIZER** (also pulled from the FX1/FX2 choosers + ID2POS) | `emu_sc_dsp.py --patched` + `emu_sidechain.py` clean |
+| `build_sidechain3.py` → `SIDECHAIN3.*` | all four pg2 params (`KEY`/`KFLT`/`KGAIN`/`MON`), no DSP — independent of step 2 | `kfilt_fmt` LP/OFF/HP emu-verified |
 
-**Session 17 continued — cheap step DONE:** octabam's DSP load-map parser
-(`refs/octabam/tools/dsp_modmap.py`, dep-free) runs unmodified on our
-`out/raw/section_3_MAIN_OS.bin` (SHA256 `164f3122…`, byte-identical MKI/MKII). Both payloads
-parse 100 %. The `X:0x215` dispatch table decodes entry-for-entry to octabam's `DSP.md`
-table — **COMPRESSOR id `0x18` → init `P:0x01aa4` / process `P:0x01ab1`, 180 words**
-(payload A; B = `P:0x01864`, same size). Null passthrough stub confirmed at `P:0x007c8/9`.
-**octabam's whole DSP address map transfers to our MKI image verbatim.** Artifacts:
-`out/dsp/payload_{A,B}.mem`, `out/dsp/{A,B}_P01aa4_compressor.bin` (gitignored, regen via
-`dsp_modmap.py`).
+Not emulable: the actual gain-reduction-from-`keybus` chain — `dsp_host` can't run the stock
+compressor end-to-end, so it's a hardware test.
 
-**Session 17 continued (2) — DSP56300 disassembler BUILT + COMPRESSOR fully reversed:**
-`vendor/dsp56300/build/.../dsp56kDisassemble` built (from `dsp56300/dsp56300`, minimal
-target; script = scratchpad `dsp_toolchain_setup.sh`, run by user in Terminal; `vendor/`
-gitignored). Full disasm `out/dsp/A_P01aa4_compressor.asm` (180 words, 6 stages). **Param
-map:** `r6+$0`ATK `+$1`REL `+$2`THRS `+$3`RAT `+$4`GAIN `+$5`MIX (pg1) · `+$c`RMS (pg2).
-**Sidechain tap point found:** the detector reads `x:(r0)+` at `0x1ab3`–`0x1ab9` (square →
-pair-max → Y:0x61); the dry/wet path re-anchors via `move n6,r0`, so detection & gain-apply
-are independent passes → **redirecting only the detector read to a shared-Y `keybus[KEY]`
-keys off another track with zero effect on the dry signal.** DSP delta ≈ a few words + a
-free page-2 `KEY` param (`r6+$d`). Null stub `P:0x007c9` ABI confirmed.
+### Blocker & NEXT
 
-**Session 17 continued (3)+(4):** design settled — bipolar `KEY FLT` (LP↔HP, LP is the
-kick-isolation case), dynamic same-core-only `KEY` chooser (count 5, core-relative value,
-custom formatter reads edit-track — disconnected tracks *unreachable* not just hidden),
-self-key = internal-sidechain (harmless). **DSP per-track dispatcher mapped** (`P:0x0041e`,
-4 tracks/core, effects use `X:0x0000` as the audio buffer, `func_0004a7` = the dispatch).
-**Publish injection point found: `func_0004a7` (`P:0x004a7`)** — inject ~10 w to copy `X:0`
-→ `keybus[coreBase+x:0x420]` where `X:0` is guaranteed = the track's FX-chain input.
-`keybus` = abs-Y `0x800+`; same-core only ⇒ no cross-core races. 4-step build order in
-`NOTES.md` "Session 17 continued (4)". MKI DSP flash de-risked (a MKI user flashed octabam
-fine).
+The user is away from the MKI — build + emulate only. The stack waits on one hardware
+session, in order:
 
-**Session 17 continued (5) — BUILD STEP 1 DONE (menu only, emu-clean, NOT flashed):**
-`tools/{patch_sidechain.s,build_sidechain.py,emu_sidechain.py}` →
-`out/OCTATRACK_OS1.40C_SIDECHAIN.{syx,bin}`. Adds `KEY` to COMPRESSOR page 2 (descriptor
-slot 7): count 5 (`OFF`+4), dynamic formatter `key_fmt` renders `T1..T4` / `T5..T8` from
-the edit-track global `0x100b14cc` so disconnected tracks are unreachable. DSP untouched
-(KEY inert). Full COMPRESSOR descriptor map + step-1 pokes + HW-test checklist in `NOTES.md`
-"Session 17 continued (5)".
+1. **Flash DT** — settles the shared "does the DSP keep advancing a 0-amp voice?" unknown
+   (DT + the 4th mute mode both rest on it). Checklist: `NOTES.md` "Session 12 → NEXT".
+2. **Flash `SIDECHAIN2`** — HW test plan in `NOTES.md` "Session 17 continued (8)".
+3. If (2) good → **side-chain step 3 DSP** (`KEY FLT` filter + `KEY GAIN` + `SC LISTEN`;
+   ~224 dead SPATIALIZER words of P-space headroom).
+4. **Flash `DIRECTJUMP`** — 5 HW unknowns in `NOTES.md` "Session 15 continued".
+5. Then: build the 4th mute mode; OT+FX-solo checklist (`NOTES.md` "Session 11 → NEXT").
 
-**Session 17 continued (6) — STEP 2 DESIGN done** (`NOTES.md` "Session 17 continued (6)").
-keybus ring `Y:0x800–0xC00`, quad-buffered from day one (8 tracks × 4 buf × 32 w); `x:0x420`
-**confirmed = absolute track index** (A inits 4→T5-8, B inits 0→T1-4). Hook 1 = publish tap
-detour @`func_0004a7` (copy `X:0` → `keybus[x:0x420]`); Hook 2 = detector redirect detour
-@`0x1ab1` in COMPRESSOR (dry path untouched via `n6`). Cross-core = additive v2 (rotation
-counter + read-2-back). **P-space is the wall (33 free words in payload A) → must reclaim a
-stock FX for the code cave: proposed SPATIALIZER (261 w) — USER DECISION.**
-
-**Session 17 continued (7) — STEP 2 DSP hooks WRITTEN + ISOLATION-VALIDATED (not flashed):**
-DSP toolchain complete (`vendor/dsp56300/.../dsp_asm` + `dsp_host`, via scratchpad
-`build_dsp_asm.sh`). `tools/patch_sc_dsp.asm` = `sctap` (publish tap) + `scdet` (detector
-redirect), **37 words**, assembles clean, round-trips. `tools/emu_sc_dsp.py` runs them under
-dsp56kEmu — **ALL GOOD**: sctap copies `X:0`→`keybus[track]`, scdet redirects the detector to
-`keybus[KEY]` when set / leaves it when OFF. (dsp_host can't run the *stock* compressor
-end-to-end → the audio outcome is a HW test.) Page-2 params pack 2-per-word → step 1's `KEY`
-moved to descriptor **slot 8**; rebuilt, `emu_sidechain.py` still passes.
-
-**Session 17 continued (8) — STEP 2 BUILT (not flashed):** `tools/build_sidechain2.py` →
-`out/OCTATRACK_OS1.40C_SIDECHAIN2.{syx,bin}` (~467 B vs stock). = stock + Bug-1 fix + KEY menu
-+ DSP hooks. **SPATIALIZER (`0x05`) donated** — its P region holds the 37-word `sctap`+`scdet`
-cave in both payloads; dispatch entries → null stub; **and it's removed from the FX1/FX2
-choosers + ID2POS** so there's no dead selectable entry. `jsr sctap` at the dispatcher FX1
-entry, `jsr scdet` at COMPRESSOR proc+0. Byte-diff clean, payloads parse 100%,
-`emu_sc_dsp.py --patched` + `emu_sidechain.py` **ALL GOOD**. Not HW-verified: the actual
-gain-reduction-from-keybus chain (dsp_host can't run the stock compressor).
-
-**Step-3 menu scaffolding built:** `tools/build_sidechain3.py` → `SIDECHAIN3.{syx,bin}` =
-stock + Bug-1 + all four page-2 params (`KEY` `KFLT` `KGAIN` `MON`), **no DSP** — fully
-independent of the step-2 framework. `kfilt_fmt` (LP/OFF/HP) emu-verified.
-
-**Committed:** `wip/mute-mode` `a2dba20` (steps 1/2/3 + RE) + `9aecd28` (SPATIALIZER chooser
-removal). Not pushed. `refs/` is untracked on `wip` — this branch predates `main`'s KB infra
-(the `refs/*` gitignore + `tools/refs/sync.py`, session 16); `build_sidechain2.py` imports
-`refs/octabam/tools/dsp_modmap.py`, so **merge `main` into `wip`** eventually (NOTES.md will
-conflict).
-
-**NEXT: (a) flash `SIDECHAIN2` + run the HW test plan (`NOTES.md` "Session 17 continued
-(8)"); (b) if good → step 3 DSP (`KEY FLT` filter + `KEY GAIN` + `SC LISTEN`; 224 dead
-SPATIALIZER words of headroom).**
-
-**Next likely tasks:** HW-flash DIRECT JUMP (5 unknowns listed in NOTES); flash DT (Session
-14's key unknown), then the 4th mute mode; the side-chain decision (Session 17); more ideas;
-or unrelated RE. Point the new chat here first, then the relevant `NOTES.md` Session section.
-
-**Backlog idea (scoped, not started):** auto-remove a trigless lock once a LIVE-REC
-`[NO]`+knob erase clears its last p-lock. Feasible, ~3-5 sessions, needs the (unmapped)
-per-step trig/p-lock data model first. Full brief: `NOTES.md` "Session 13 — SCOPING ONLY".
+**Backlog (scoped, not started):** auto-remove a trigless lock once a LIVE-REC `[NO]`+knob
+erase clears its last p-lock. Needs the per-step trig/p-lock data model — `main`'s
+Session-16 bank p-lock region map (`tools/inspect_bank.py`) is the starting point. Full
+brief: `NOTES.md` "Session 13 — SCOPING ONLY".
