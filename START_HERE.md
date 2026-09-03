@@ -130,9 +130,91 @@ switches on the next step tick, keeps the playhead position, loads the new Part 
 ~1 step ahead; arranger/chain untouched. Full writeup + HW-only unknowns in `NOTES.md`
 "Session 15 continued" → "S2 + S3 BUILT".
 
+**Session 17 (2026-09-02, `wip/mute-mode`, RE only):** feasibility of an **external
+side-chain (key-track) input for the DynamiX COMPRESSOR**. **Verdict: the real feature is a
+DSP project, not a ColdFire one** — the compressor is 180 DSP words (`P:0x01aa4`, octabam);
+the ColdFire never sees audio, so no CPU-only lever changes the detector input. Three routes:
+(1) ColdFire-only *trig-synced ducking* — cheap (~2–4 sessions), not real side-chain;
+(2) real DSP side-chain scoped to same-bank pairs (key/target both in T1–4 or both T5–8) via
+octabam's shared-Y-scratch bus + a modified COMPRESSOR module + page-2 menu params on
+`E=0x400d5a4a` — 8–15+ sessions, needs a DSP56300 toolchain stood up, brick risk on the lone
+MKI; (3) full 8×8 = route 2 + octabam's cross-core XBUS. "Feed while muted" is ~free (tap
+pre-mute-gate; stock mute only zeroes the post-FX MAIN word). Cheap first step regardless of
+route: disassemble `out/dsp_region.bin`, confirm `P:0x01aa4` lines up in our image. Full
+writeup: `NOTES.md` "Session 17".
+
+**Session 17 continued — cheap step DONE:** octabam's DSP load-map parser
+(`refs/octabam/tools/dsp_modmap.py`, dep-free) runs unmodified on our
+`out/raw/section_3_MAIN_OS.bin` (SHA256 `164f3122…`, byte-identical MKI/MKII). Both payloads
+parse 100 %. The `X:0x215` dispatch table decodes entry-for-entry to octabam's `DSP.md`
+table — **COMPRESSOR id `0x18` → init `P:0x01aa4` / process `P:0x01ab1`, 180 words**
+(payload A; B = `P:0x01864`, same size). Null passthrough stub confirmed at `P:0x007c8/9`.
+**octabam's whole DSP address map transfers to our MKI image verbatim.** Artifacts:
+`out/dsp/payload_{A,B}.mem`, `out/dsp/{A,B}_P01aa4_compressor.bin` (gitignored, regen via
+`dsp_modmap.py`).
+
+**Session 17 continued (2) — DSP56300 disassembler BUILT + COMPRESSOR fully reversed:**
+`vendor/dsp56300/build/.../dsp56kDisassemble` built (from `dsp56300/dsp56300`, minimal
+target; script = scratchpad `dsp_toolchain_setup.sh`, run by user in Terminal; `vendor/`
+gitignored). Full disasm `out/dsp/A_P01aa4_compressor.asm` (180 words, 6 stages). **Param
+map:** `r6+$0`ATK `+$1`REL `+$2`THRS `+$3`RAT `+$4`GAIN `+$5`MIX (pg1) · `+$c`RMS (pg2).
+**Sidechain tap point found:** the detector reads `x:(r0)+` at `0x1ab3`–`0x1ab9` (square →
+pair-max → Y:0x61); the dry/wet path re-anchors via `move n6,r0`, so detection & gain-apply
+are independent passes → **redirecting only the detector read to a shared-Y `keybus[KEY]`
+keys off another track with zero effect on the dry signal.** DSP delta ≈ a few words + a
+free page-2 `KEY` param (`r6+$d`). Null stub `P:0x007c9` ABI confirmed.
+
+**Session 17 continued (3)+(4):** design settled — bipolar `KEY FLT` (LP↔HP, LP is the
+kick-isolation case), dynamic same-core-only `KEY` chooser (count 5, core-relative value,
+custom formatter reads edit-track — disconnected tracks *unreachable* not just hidden),
+self-key = internal-sidechain (harmless). **DSP per-track dispatcher mapped** (`P:0x0041e`,
+4 tracks/core, effects use `X:0x0000` as the audio buffer, `func_0004a7` = the dispatch).
+**Publish injection point found: `func_0004a7` (`P:0x004a7`)** — inject ~10 w to copy `X:0`
+→ `keybus[coreBase+x:0x420]` where `X:0` is guaranteed = the track's FX-chain input.
+`keybus` = abs-Y `0x800+`; same-core only ⇒ no cross-core races. 4-step build order in
+`NOTES.md` "Session 17 continued (4)". MKI DSP flash de-risked (a MKI user flashed octabam
+fine).
+
+**Session 17 continued (5) — BUILD STEP 1 DONE (menu only, emu-clean, NOT flashed):**
+`tools/{patch_sidechain.s,build_sidechain.py,emu_sidechain.py}` →
+`out/OCTATRACK_OS1.40C_SIDECHAIN.{syx,bin}`. Adds `KEY` to COMPRESSOR page 2 (descriptor
+slot 7): count 5 (`OFF`+4), dynamic formatter `key_fmt` renders `T1..T4` / `T5..T8` from
+the edit-track global `0x100b14cc` so disconnected tracks are unreachable. DSP untouched
+(KEY inert). Full COMPRESSOR descriptor map + step-1 pokes + HW-test checklist in `NOTES.md`
+"Session 17 continued (5)".
+
+**Session 17 continued (6) — STEP 2 DESIGN done** (`NOTES.md` "Session 17 continued (6)").
+keybus ring `Y:0x800–0xC00`, quad-buffered from day one (8 tracks × 4 buf × 32 w); `x:0x420`
+**confirmed = absolute track index** (A inits 4→T5-8, B inits 0→T1-4). Hook 1 = publish tap
+detour @`func_0004a7` (copy `X:0` → `keybus[x:0x420]`); Hook 2 = detector redirect detour
+@`0x1ab1` in COMPRESSOR (dry path untouched via `n6`). Cross-core = additive v2 (rotation
+counter + read-2-back). **P-space is the wall (33 free words in payload A) → must reclaim a
+stock FX for the code cave: proposed SPATIALIZER (261 w) — USER DECISION.**
+
+**Session 17 continued (7) — STEP 2 DSP hooks WRITTEN + ISOLATION-VALIDATED (not flashed):**
+DSP toolchain complete (`vendor/dsp56300/.../dsp_asm` + `dsp_host`, via scratchpad
+`build_dsp_asm.sh`). `tools/patch_sc_dsp.asm` = `sctap` (publish tap) + `scdet` (detector
+redirect), **37 words**, assembles clean, round-trips. `tools/emu_sc_dsp.py` runs them under
+dsp56kEmu — **ALL GOOD**: sctap copies `X:0`→`keybus[track]`, scdet redirects the detector to
+`keybus[KEY]` when set / leaves it when OFF. (dsp_host can't run the *stock* compressor
+end-to-end → the audio outcome is a HW test.) Page-2 params pack 2-per-word → step 1's `KEY`
+moved to descriptor **slot 8**; rebuilt, `emu_sidechain.py` still passes.
+
+**Session 17 continued (8) — STEP 2 BUILT (not flashed):** `tools/build_sidechain2.py` →
+`out/OCTATRACK_OS1.40C_SIDECHAIN2.{syx,bin}` (380 B vs stock). = stock + Bug-1 fix + KEY menu
++ DSP hooks. **SPATIALIZER (`0x05`) donated** — its P region holds the 37-word `sctap`+`scdet`
+cave in both payloads; its dispatch entries → null stub (passthrough). `jsr sctap` at the
+dispatcher FX1 entry, `jsr scdet` at COMPRESSOR proc+0. Byte-diff clean, payloads parse 100%,
+`emu_sc_dsp.py --patched` **ALL GOOD**. Not HW-verified: the actual gain-reduction-from-keybus
+chain (dsp_host can't run the stock compressor).
+
+**NEXT: (a) flash `SIDECHAIN2` + run the HW test plan (`NOTES.md` "Session 17 continued
+(8)"); (b) if good → step 3 (`KEY FLT` filter + `KEY GAIN` + `SC LISTEN`; 224 dead
+SPATIALIZER words of headroom now).**
+
 **Next likely tasks:** HW-flash DIRECT JUMP (5 unknowns listed in NOTES); flash DT (Session
-14's key unknown), then the 4th mute mode; more ideas; or unrelated RE. Point the new chat
-here first, then the relevant `NOTES.md` Session section.
+14's key unknown), then the 4th mute mode; the side-chain decision (Session 17); more ideas;
+or unrelated RE. Point the new chat here first, then the relevant `NOTES.md` Session section.
 
 **Backlog idea (scoped, not started):** auto-remove a trigless lock once a LIVE-REC
 `[NO]`+knob erase clears its last p-lock. Feasible, ~3-5 sessions, needs the (unmapped)
