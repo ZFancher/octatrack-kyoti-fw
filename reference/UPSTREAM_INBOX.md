@@ -18,6 +18,10 @@ _(none — initial sync 2026-09-02, MANIFEST.lock is the baseline)_
 ## Distilled
 
 - 2026-09-02  OctaLib@6e2438e  bank/pattern/part file offsets            [ kb/file-format.md ]
+- 2026-09-02  (our RE, DEMO bank01.work)  full TRAC layout + p-lock array (64x32B @+0x62)
+              + PART FX-id bytes; tools/inspect_bank.py                   [ kb/file-format.md ]
+- 2026-09-02  octabam@e1dcfa9  SETTINGS-tree menu cluster (FUN_40064908/64c18/5578c,
+              24B row struct) + FUN_4006d57c signature; 27-fn name diff   [ kb/memory-map.md, kb/techniques.md ]
 - 2026-09-02  octabam@e1dcfa9  DSP56721 chip model + boot/upload map     [ kb/dsp56300.md ]
 - 2026-09-02  octa-bt-pt@e970dd0  FX/machine descriptor table (0x400d2fe4-0x400d5e04),
               effect id codes, DSP module-map parser, AMF mpysu->mpyuu, ELUP cipher
