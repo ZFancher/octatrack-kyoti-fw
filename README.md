@@ -137,6 +137,15 @@ On this branch `patch_softmute.s` is **V7**: the same soft-cut mechanism that wa
 confirmed on hardware for mute (Session 10), plus the SOLO extension, which is
 emulator-only. Full status for every feature is in the table near the end.
 
+**A fourth mode is designed and reverse-engineered but not built** — `OTFX`:
+instant dry cut, FX tails ring, and unmute **resumes the sample at the playhead**
+(the current `OT+FX` and `DT` are *trig-mutes* — the track stays silent until the
+next trig). Landing it makes the menu `OT / OTFX / OTFX-T / DT-T` (no suffix =
+playhead-resume, `-T` = trig-mute; the current `OT+FX` becomes `OTFX-T`, `DT`
+becomes `DT-T`). The per-frame mute gate `FUN_40004db8` is fully disassembled;
+two DSP-behaviour unknowns remain, and the plan is to flash `DT` first to settle
+them. Write-up: [`NOTES.md`](NOTES.md) "Session 14".
+
 ### DIRECT JUMP — an Elektron-style immediate pattern change  ·  *emulator only, not flashed*
 
 A `DIRECT JUMP : OFF / ON` PERSONALIZE toggle (`OFF` by default, stored in a free
@@ -185,6 +194,7 @@ emulators `tools/emu_sidechain.py`, `tools/emu_sc_dsp.py`.
 | MUTE MODE menu + `OT+FX` soft **mute** mechanism | `build_mutemode.py` | **confirmed** — the Session-10 build (softmute V6b, shipped on `main`) was flashed and works |
 | ↳ the **SOLO** extension (softmute V7) | `build_mutemode.py` (this branch) | **emulator only**, never flashed |
 | **DT** sequencer-mute mode | `build_mutemode_dt.py` | **emulator only**, never flashed |
+| MUTE MODE 4th option (`OTFX` playhead-resume) | — | **reverse-engineered only**, not built |
 | **DIRECT JUMP** pattern-change mode | `build_directjump.py` | **emulator only** (stub-level — see the section above), never flashed |
 | side-chain `KEY` menu + formatter | `build_sidechain.py` / `build_sidechain3.py` | **emulator only**, never flashed |
 | side-chain DSP hooks | `build_sidechain2.py` | hooks **emulator-verified** (dsp56kEmu); audio path untested, never flashed |

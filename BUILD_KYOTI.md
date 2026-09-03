@@ -23,6 +23,7 @@ build is byte-for-byte reproducible from the stock file.
 | `python3 tools/build_trigscale_only.py` | `1.40C` (unchanged) | **Bug 1 fix only** — the Plays-Free MIDI manual-trig stall — on otherwise-stock 1.40C |
 | `python3 tools/build_mutemode.py` | `140C_KYOTI` | Bug 1 fix + **MUTE MODE** toggle: `OT` (stock) / `OT+FX` (soft mute — dry cuts clean, FX tails ring; **and, on this branch, soloed-out tracks get the same soft cut**) |
 | `python3 tools/build_mutemode_dt.py` | `140C_KYOTI` | as above **+ a third mode `DT`** — pure sequencer mute (a sounding voice rides its own AMP envelope; only new trigs are suppressed) |
+| *(a fourth mode `OTFX` — instant cut + FX tails + **playhead-resume** unmute — is reverse-engineered but **not built**; NOTES "Session 14")* | — | — |
 | `python3 tools/build_softmute.py` | `140C_KYOTI` | Bug 1 fix + the same soft mute **always on**, no menu entry |
 | `python3 tools/build_directjump.py` | `140C_KYOTI` | Bug 1 fix + a **DIRECT JUMP** `OFF`/`ON` PERSONALIZE toggle: a manually cued pattern switches on the next step tick, keeps the playhead position, loads the new Part at once (arranger/chain untouched) |
 | `python3 tools/build_sidechain.py` | `140C_KYOTI` | Bug 1 fix + a `KEY` parameter on the COMPRESSOR page — **menu only, DSP untouched** (does nothing audible; proves the control surface) |
@@ -45,6 +46,7 @@ use `tools/build.py` / `sysex/apply_patch.py` instead — see [`sysex/README.md`
 | MUTE MODE menu + `OT+FX` soft **mute** mechanism | **hardware-confirmed** — the Session-10 build (softmute V6b, on `main`) was flashed and works |
 | soft cut extended to **SOLO** (softmute V7 — this branch's `build_mutemode.py`) | **emulator only**, never flashed |
 | **DT** mode (`build_mutemode_dt.py`) | **emulator only**, never flashed |
+| MUTE MODE 4th option (`OTFX` playhead-resume) | **reverse-engineered only** — not built; landing it renumbers the menu to `OT / OTFX / OTFX-T / DT-T` |
 | **DIRECT JUMP** (`build_directjump.py`) | **emulator only** — the hooks are stub-tested; `FUN_400a1eea` has instructions Unicorn can't run. Never flashed |
 | side-chain `KEY` menu + formatter (`build_sidechain.py`, `build_sidechain3.py`) | **emulator only**, never flashed |
 | side-chain DSP hooks (`build_sidechain2.py`) | hooks **emulator-verified** under dsp56kEmu; the audio result is untested |
