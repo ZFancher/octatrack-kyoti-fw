@@ -1,0 +1,59 @@
+# External Octatrack RE research — clone manifest.
+#
+# `tools/refs/sync.sh` reads this file, clones/fetches each repo into refs/<dir>/
+# at the pinned commit, and writes the resolved hashes to refs/MANIFEST.lock.
+# `tools/refs/whatsnew.sh` shows commits on the upstream default branch that are
+# newer than the pin, so we know what to re-distill into reference/kb/.
+#
+# NOTHING under refs/ is committed except this file and MANIFEST.lock — mixed and
+# absent licenses, and this project redistributes no third-party material.
+# The durable asset is the distilled, attributed knowledge base in reference/kb/.
+#
+# Fields:
+#   url    — clone URL
+#   branch — upstream branch to track for whatsnew (usually main/master)
+#   pin    — commit to check out; "HEAD" until first sync pins a real hash here
+#   side   — which side of the machine this repo informs: coldfire | dsp | file-format | tooling
+#   use    — one line: what we mine it for
+
+[repo.octamax]
+url    = "https://github.com/mxldyn/octamax.git"
+branch = "main"
+pin    = "HEAD"
+side   = "coldfire"
+use    = "upstream of this fork; container/update-chain analysis, patch/build pipeline, PERSONALIZE-menu map, the first behaviour mods. Track for new mods + newly named functions."
+
+[repo.elektron-firmware-tool]
+url    = "https://github.com/mischa85/elektron-firmware-tool.git"
+branch = "main"
+pin    = "HEAD"
+side   = "tooling"
+use    = "ELEK container pack/unpack, aPLib, .bin/.syx transports. Vendored separately in vendor/; kb only needs the format notes and any format fixes."
+
+[repo.OctaLib]
+url    = "https://github.com/snugsound/OctaLib.git"
+branch = "main"
+pin    = "HEAD"
+side   = "file-format"
+use    = "on-CF project/bank/part/arrangement struct layouts. Feeds the still-unmapped per-step trig / p-lock / sample-lock data model (NOTES Session 13 backlog)."
+
+[repo.ems-octakit]
+url    = "https://github.com/emuyia/ems-octakit.git"
+branch = "main"
+pin    = "HEAD"
+side   = "file-format"
+use    = "CLOSED-SOURCE (repo = README + issue templates only). Browser patcher, 4 Parts/Bank -> 256 Kits/Project. Only the behavioural README is usable; watch for a future open-source release or docs."
+
+[repo.octa-bt-pt]
+url    = "https://github.com/bryantysinger/octa-bt-pt.git"
+branch = "main"
+pin    = "HEAD"
+side   = "coldfire"
+use    = "parameter-default patch tool (OS 1.40C). Locations of default-value tables in the MAIN OS image — address-map contributions."
+
+[repo.octabam]
+url    = "https://github.com/sambanks/octabam.git"
+branch = "main"
+pin    = "HEAD"
+side   = "dsp"
+use    = "adds DSP56300 effects to the MKII by patching new DSP assembly + a Python build system. The DSP side COVERAGE.md flags as out of scope here; mapped, not patched."

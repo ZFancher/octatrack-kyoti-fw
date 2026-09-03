@@ -1,0 +1,8 @@
+# Resolved by tools/refs/sync.py — do not edit by hand.
+
+octamax = "251be7a5e65fbd8e3defd5935d9eca8c2b6ff4c8"  # Revert bank paging from the firmware; ship clean R11 (arp + lazy)
+elektron-firmware-tool = "065d18f4195793e61891e387813488ee59f6d1ca"  # elektron-firmware-tool: inspect and modify Elektron OS .syx files
+OctaLib = "6e2438ebae7687ad50b43f098b19bc1de1b8f4b9"  # Merge pull request #9 from snugsound/feature/release-macos-0.1.1.0
+ems-octakit = "1817ffb6e9f1cfa58592c2d44cedea304200ed7a"  # update readme
+octa-bt-pt = "e970dd0f9841ce5f648c2a257342cb8a3a05b54a"  # added the ability to upload presets and some built-in presets that I l
+octabam = "e1dcfa9fbd7460b807bd1651d08474ddae233608"  # Merge pull request #57 from sambanks/hello-world
