@@ -201,16 +201,27 @@ end-to-end → the audio outcome is a HW test.) Page-2 params pack 2-per-word �
 moved to descriptor **slot 8**; rebuilt, `emu_sidechain.py` still passes.
 
 **Session 17 continued (8) — STEP 2 BUILT (not flashed):** `tools/build_sidechain2.py` →
-`out/OCTATRACK_OS1.40C_SIDECHAIN2.{syx,bin}` (380 B vs stock). = stock + Bug-1 fix + KEY menu
+`out/OCTATRACK_OS1.40C_SIDECHAIN2.{syx,bin}` (~467 B vs stock). = stock + Bug-1 fix + KEY menu
 + DSP hooks. **SPATIALIZER (`0x05`) donated** — its P region holds the 37-word `sctap`+`scdet`
-cave in both payloads; its dispatch entries → null stub (passthrough). `jsr sctap` at the
-dispatcher FX1 entry, `jsr scdet` at COMPRESSOR proc+0. Byte-diff clean, payloads parse 100%,
-`emu_sc_dsp.py --patched` **ALL GOOD**. Not HW-verified: the actual gain-reduction-from-keybus
-chain (dsp_host can't run the stock compressor).
+cave in both payloads; dispatch entries → null stub; **and it's removed from the FX1/FX2
+choosers + ID2POS** so there's no dead selectable entry. `jsr sctap` at the dispatcher FX1
+entry, `jsr scdet` at COMPRESSOR proc+0. Byte-diff clean, payloads parse 100%,
+`emu_sc_dsp.py --patched` + `emu_sidechain.py` **ALL GOOD**. Not HW-verified: the actual
+gain-reduction-from-keybus chain (dsp_host can't run the stock compressor).
+
+**Step-3 menu scaffolding built:** `tools/build_sidechain3.py` → `SIDECHAIN3.{syx,bin}` =
+stock + Bug-1 + all four page-2 params (`KEY` `KFLT` `KGAIN` `MON`), **no DSP** — fully
+independent of the step-2 framework. `kfilt_fmt` (LP/OFF/HP) emu-verified.
+
+**Committed:** `wip/mute-mode` `a2dba20` (steps 1/2/3 + RE) + `9aecd28` (SPATIALIZER chooser
+removal). Not pushed. `refs/` is untracked on `wip` — this branch predates `main`'s KB infra
+(the `refs/*` gitignore + `tools/refs/sync.py`, session 16); `build_sidechain2.py` imports
+`refs/octabam/tools/dsp_modmap.py`, so **merge `main` into `wip`** eventually (NOTES.md will
+conflict).
 
 **NEXT: (a) flash `SIDECHAIN2` + run the HW test plan (`NOTES.md` "Session 17 continued
-(8)"); (b) if good → step 3 (`KEY FLT` filter + `KEY GAIN` + `SC LISTEN`; 224 dead
-SPATIALIZER words of headroom now).**
+(8)"); (b) if good → step 3 DSP (`KEY FLT` filter + `KEY GAIN` + `SC LISTEN`; 224 dead
+SPATIALIZER words of headroom).**
 
 **Next likely tasks:** HW-flash DIRECT JUMP (5 unknowns listed in NOTES); flash DT (Session
 14's key unknown), then the 4th mute mode; the side-chain decision (Session 17); more ideas;
