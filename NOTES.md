@@ -3959,3 +3959,678 @@ Build: `python3 tools/build_directjump.py` → `out/OCTATRACK_OS1.40C_DIRECTJUMP
 `tools/patch_directjump.s`, `tools/build_directjump.py`, `tools/emu_directjump.py`. Scratch
 dumps `dj{1..13}.txt` + `a1eea.txt` in the session scratchpad. Committed dumps
 `out/ghidra/GhidraDirectJump{1..4}_session15.txt`, `out/ghidra/GhidraDJ12_session15.txt`.
+
+
+## Session 17 (2026-09-02, `wip/mute-mode`, RE / feasibility only) — external side-chain (key-track) input for the DynamiX COMPRESSOR
+
+### The ask (user)
+
+Add **side-chain compression** to the stock OT compressor. The user's vision: on a track that
+has COMPRESSOR in an FX slot, pick **one of the 8 audio tracks as the "key"** whose level
+drives the gain reduction on the target track; integrate the UI into the compressor FX
+page(s); and offer an option to let the **key track feed the detector even when the key
+track is muted**.
+
+### What side-chain compression is (for the record)
+
+A compressor lowers gain when its **detector** (a.k.a. sidechain) input rises above THRS.
+Normally detector = the signal being compressed. *Side-chain / key* compression feeds the
+detector from a **different** signal, so track A ducks in response to track B's dynamics —
+the classic kick-keys-the-bass/pad "pumping". Real side-chain follows the key **audio's
+envelope** continuously (responds to level, not just note events), and usually offers a
+key filter / "listen". That last point is what separates it from Route 1 below.
+
+### The hard structural fact — this is a DSP feature, not a ColdFire one
+
+The DynamiX COMPRESSOR runs **on the DSP** (DSP56721, 2 cores), not the ColdFire. Confirmed
+via octabam (`refs/octabam/docs/DSP.md` @ e1dcfa9): dispatch id `0x18` → process `P:0x01ab1`,
+**180 words at `P:0x01aa4`**, control-flow contained (not a record-spanner). The ColdFire OS
+— everything this repo patches — **never touches PCM samples**: it assembles per-track voice
+parameters and DMAs frame blocks to the DSP (`0x400031a0` frame routine; `FUN_40001d4c`
+uploads the DSP program at boot). Which signal the detector listens to is chosen *inside*
+those 180 DSP words, from the effect's own track buffer.
+
+⇒ **There is no ColdFire-only lever that changes what the detector hears.** You cannot build
+an envelope follower on a CPU that never sees the audio. A *true* audio side-chain requires
+**DSP56300 assembly** + a DSP build/flash pipeline — exactly the scope `COVERAGE.md` fences
+off as "a separate project," and which **octabam has already built out** (for a reverb/delay
+send bus), MKII-flashed only. Our own `out/dsp_region.bin` is extracted but **never
+disassembled**.
+
+### Three routes, ascending cost
+
+**Route 1 — ColdFire-only "trig-synced ducking" (NOT real side-chain).**
+The ColdFire *does* know when a track fires a trig (sequencer, mapped Sessions 3–6). Add a
+per-track `DUCK FROM Tn / DEPTH / RELEASE` that applies a downward volume envelope to the
+target, re-triggered by the key track's trigs — automation of the existing per-track AMP VOL
+in the shipped patch style (menu + detour), no DSP work.
+- ✗ It is *trigger* ducking, not *signal* ducking: fixed shape regardless of the key's actual
+  level/content; nothing for a THRU/external key with no trigs, or a key whose loudness
+  varies p-lock to p-lock; and it doesn't "feed the compressor" — it side-steps it.
+- Does **not** match what the user described, but it is the only route that is cheap
+  (~2–4 sessions) and carries no brick risk.
+
+**Route 2 — DSP side-chain, key & target in the SAME bank of four (real, big).**
+Reuse octabam's proven "fake a bus in shared Y scratch" mechanism (`refs/octabam/docs/BUS.md`,
+`XBUS.md`):
+1. **Key tap** — publish each track's pre-FX audio block into a per-track slot in absolute Y
+   scratch (≥ `0x800`, the region octabam proved safe in both payloads). Cheapest: extend the
+   **passthrough stub** `P:0x007c9` (runs for every FX slot set to `NONE`, id 0) to also do
+   `in → keybus[myTrackSlot]`. Then the constraint is just "key track has one FX slot = NONE"
+   (usually true). Alternatives: a dedicated `SC SEND` insert (costs a real FX slot on the
+   key track, octabam-`send`-style), or — bigger — hook the frame builder so every track taps
+   unconditionally.
+2. **Modified COMPRESSOR module** — same 180-word engine, detector reads `keybus[KEY]` instead
+   of / blended with `r0` when the new `KEY` param ≠ OFF. Needs the disassembly to find the
+   detector tap point and to check the ~200-word / 2,724-word-payload budget for the extra
+   branch + a one-pole key HP.
+3. **ColdFire menu** — add page-2 params to the COMPRESSOR descriptor (`E = 0x400d5a4a`,
+   `E_0x96 = 0x400d5ae0`). Page 2 currently holds only `RMS` at slot index 6; ~5 page-2
+   encoder slots are free — **pure data** per octabam `PARAM_PAGES.md` §5 (names, ranges,
+   the per-parameter enable bitmap at `P+0x18a`/`P+0x18e`, `P = E + 0x38`). Add `KEY`
+   (OFF / T1..T8) and optionally `SC SRC` (PRE / POST-mute).
+- **Same-core constraint**: core 0 = tracks 5–8, core 1 = tracks 1–4 (octabam, measured,
+  inverted from the natural guess). A pair split across that boundary needs the **cross-core
+  accumulator** with octabam's 4-rotating-buffer race fix — three hardware-only race bugs,
+  months of MKII bring-up (`XBUS.md`). So v1 = "key and target must both be in T1–4, or
+  both in T5–8."
+- **"Feed even when muted" is essentially free and is the natural behaviour.** Stock mute
+  only zeroes the post-FX MAIN output word (`FUN_40004dbc`, our soft-mute finding, Session 9);
+  the muted voice still renders and its pre-FX audio still exists on the DSP. Tap pre-mute-gate
+  ⇒ a muted key still keys. The `POST` option (mute also kills the key) is the one that would
+  need the extra gate.
+- **Effort**: this is the largest single piece of work in the project's history. Prereq:
+  stand up a DSP56300 toolchain — disassemble `out/dsp_region.bin` (octa-bt-pt points at
+  `vendor/dsp56300/.../dsp56kDisassemble -le`; octabam has a full assembler + `tools/dsp_host`
+  emulator + collision-checked build). Then module dev + emu + **DSP flash to the user's
+  only MKI** — untested territory: octabam DSP images are MKII-flashed only, though the stock
+  1.40C file is **byte-identical MKI/MKII** (our `ARCHITECTURE.md` + octabam `FLASHING.md`),
+  so addresses should line up and the image is "plausibly compatible" — an MKI owner is the
+  test pilot. Estimate **8–15+ sessions**, with brick risk that the ColdFire menu patches
+  don't carry.
+
+**Route 3 — full any-key → any-target (8×8).** Route 2 + octabam's cross-core XBUS machinery.
+Much more; the cross-core races are only diagnosable on hardware.
+
+### Recommendation
+
+- Want it soon / low-risk → **Route 1**, sold honestly as trig ducking, not side-chain.
+- Want the real thing → **Route 2, scoped to same-bank pairs.** It is a "commit to a DSP
+  toolchain" decision. Best done leaning on octabam's existing toolchain rather than
+  rebuilding it. **Cheap first step, worth doing regardless of route:** disassemble
+  `out/dsp_region.bin` / run octa-bt-pt's `dsp_modmap.py` against
+  `out/raw/section_3_MAIN_OS.bin`, locate our COMPRESSOR's 180 words, confirm octabam's
+  `P:0x01aa4` lines up in our image.
+
+### Open questions before any Route-2 build
+
+1. Confirm MKI DSP payload addresses == octabam's MKII numbers (stock file byte-identical ⇒
+   very likely; verify `P:0x01aa4` COMPRESSOR against our own extract).
+2. Does a DSP effect know its own track index (to index `keybus[slot]`)? octabam derives
+   dispatch *position* from `r7` (`r7 == 0x6200` = core-0 position 0); need the full
+   `r7 → track` map including the core split.
+3. Detector tap point inside the 180 words + is there program-space headroom for the
+   source-select branch and a key filter (2,724 words/payload shared budget).
+4. COMPRESSOR page class is `0x400328e4` (shared with DJ EQ / reverbs / LO-FI) — confirm a
+   new page-2 slot renders + p-locks like RMS does.
+
+### Session 17 continued — the "cheap first step" DONE: octabam's DSP map lands 1:1 on our MKI image
+
+Ran octabam's `tools/dsp_modmap.py` (self-contained, dep-free — only needs
+`out/raw/section_3_MAIN_OS.bin`) unmodified against our image. Results:
+
+- **Our stock image SHA256 = `164f31224bf61181e3f50e7dec40df9afcae5b16dbf6e4c0d0cc5e986af0a84e`**
+  — the same hash NOTES L150 recorded, and the same bytes octamax/octa-bt-pt/octabam
+  analysed. MKI and MKII ship the byte-identical 1.40C file (confirmed, not just inferred).
+- The load-map parser consumes **100 %** of both DSP payloads (A @ `0x400e2324`, 79 563 B,
+  98 modules, 26 221 words · B @ `0x400f59ef`, 77 061 B, 91 modules, 25 408 words). Field
+  order `ac` = `(addr, count)`.
+- **Dispatch table `X:0x215` (64 words = 32 init @ `0x215` + 32 process @ `0x235`) decodes
+  cleanly and matches octabam's `DSP.md` table entry-for-entry** in payload A:
+
+  | id | init | process | effect | | id | init | process | effect |
+  |---|---|---|---|---|---|---|---|---|
+  | 0x04 | P:0x007d1 | P:0x007dd | FILTER | | 0x14 | P:0x01000 | P:0x01055 | PLATE |
+  | 0x05 | P:0x00aa8 | P:0x00ab2 | SPATIALIZER | | 0x15 | P:0x01252 | P:0x012be | SPRING |
+  | 0x0c | P:0x00bad | P:0x00bb2 | EQUALIZER | | 0x16 | P:0x01679 | P:0x0171b | DARK |
+  | 0x0d | P:0x01d71 | P:0x01d7d | DJ EQ | | **0x18** | **P:0x01aa4** | **P:0x01ab1** | **COMPRESSOR** |
+  | 0x10 | P:0x00cc7 | P:0x00cd8 | PHASER | | 0x19 | P:0x007c8 | P:0x007c9 | MULTIBCOMP → null stub |
+  | 0x11 | P:0x00d96 | P:0x00da3 | FLANGER | | 0x1c | P:0x01b58 | P:0x01b75 | LO-FI |
+  | 0x12 | P:0x00eb7 | P:0x00ed7 | CHORUS | | 0x08 | P:0x007c8 | P:0x007c9 | DELAY → null stub |
+  | 0x13 | P:0x01eca | P:0x01edc | COMB | | 0x00 | P:0x007c8 | P:0x007c9 | (null passthrough stub) |
+
+- **COMPRESSOR module confirmed**: `P:0x01aa4`, **180 words** (image `0x400f47d1`) in payload
+  A; `P:0x01864`, 180 words (image `0x40107722`) in payload B. Both dispatch tables point at
+  it for id `0x18`. Payload B's whole effect block sits `0x210` lower than A's (smaller
+  prologue) but is otherwise the same layout — octabam's "B differs in address, not
+  structure" holds.
+- The **null passthrough stub** octabam's Route-2 key-tap idea wants to extend is confirmed
+  present at `P:0x007c8` (init) / `P:0x007c9` (process) in payload A — 9 words — the target
+  of ids 0x00, 0x08 (DELAY), 0x19 (MULTIBCOMP) and every other unimplemented id.
+
+**Verdict on the cheap step: octabam's entire DSP address map transfers to our MKI image
+verbatim. No re-derivation needed.** A Route-2 build can reuse octabam's `dsp_modmap.py` /
+`dsp_disasm_all.py` / `dsp_host` toolchain directly.
+
+**Not done (belongs to Route 2 proper):** instruction-level disassembly of the 180
+compressor words — needs the DSP56300 disassembler (`vendor/dsp56300/.../dsp56kDisassemble`,
+the Virus-emu tool; octabam's `make setup` builds it: Homebrew + cmake + clone/build the
+`dsp56300` C++ emulator). That build is the real first task of Route 2, not part of the
+confirmation.
+
+### Artifacts (all gitignored under `out/dsp/`, regenerable)
+
+- `out/dsp/payload_A.mem`, `payload_B.mem` — flat `<u8 space><u32 addr><u32 count>` + u32
+  words per module, terminator `space==0xff` (octabam `--dumpmem` format; feeds `dsp_host`).
+- `out/dsp/A_P01aa4_compressor.bin` (540 B), `out/dsp/B_P01aa4_compressor.bin` — the raw
+  180-word COMPRESSOR module, LE 24-bit words. Disassemble once the toolchain exists:
+  `dsp56kDisassemble -in out/dsp/A_P01aa4_compressor.bin -pc 1aa4 -le`.
+- Regenerate: `python3 refs/octabam/tools/dsp_modmap.py [--dumpmem A out.mem | --extract A 1aa4 out.bin]`
+  from the repo root (needs `refs/` synced — `python3 tools/refs/sync.py`; octabam pinned
+  at `e1dcfa9`).
+
+### Session 17 continued (2) — DSP56300 disassembler built + the COMPRESSOR fully reversed
+
+**Toolchain:** built `vendor/dsp56300/build/source/disassemble/dsp56kDisassemble` from
+`github.com/dsp56300/dsp56300` (`--depth 1`, no patches, target `dsp56kDisassemble` only —
+minimal surface; the MPYRI emu-patch + `dsp_host` are only needed for *emulation*, add later
+if Route 2 goes ahead). Build script: scratchpad `dsp_toolchain_setup.sh`; log
+`out/dsp/toolchain_setup.log`. Ran by the user in Terminal (auto-mode blocks the clone/brew).
+`vendor/` is gitignored.
+
+**Full disassembly saved:** `out/dsp/A_P01aa4_compressor.asm` (payload A, `-pc 1aa4 -le`),
+`out/dsp/B_P01864_compressor.asm` (payload B — byte-identical logic, relocated). 180 words,
+one `rts`-terminated init + one process routine, ABI = octabam's stub contract
+(`r0` in / `n7` samples / 2 interleaved channels; writes output back in place via `r0`).
+
+**Null passthrough stub `P:0x007c9`** (the Route-2 key-tap host) disassembled — confirms
+`move r0,r1 ; do n7 { a=x:(r0)+ ; b=x:(r0)+ ; x:(r1)+=a ; x:(r1)+=b } ; rts`. 9 words,
+in-place, exactly the ABI spec.
+
+#### COMPRESSOR process routine — the six stages (`0x1ab1`–`0x1b57`, payload A)
+
+| # | addr | what | params read |
+|---|---|---|---|
+| 0 | `1ab1` | `move r0,n6` — **anchor the true input pointer** (used again in 4 & 6) | — |
+| 1 | `1ab3`–`1ab9` | **detector input**: `x:(r0)+` stream → square (`mpy x0,x0`) → running pair-max (`maxm`) → write n7 power samples to **Y:0x61+** | — (reads `r0` audio) |
+| 2 | `1aba`–`1ac2` | read page-2 param, `asr #$10` → 0..127, index one-pole coeff `x:(param+$7811)` | **`r6+$c`** = RMS (detector time-constant) |
+| 3 | `1ac3`–`1aca` | leaky-integrator RMS smoother `a += k·(det−a)` over Y:0x61 → smoothed 48-bit env to **Y:0x62+**; state in `r7+$15/$19` | — |
+| 4 | `1acb`–`1afb` | **gain curve**, per sample: `clb/normf` + `LOG[$6c00+m]` → log(env); `− THRS·k`; `× RAT-slope` (`maci #$c04000`); `clr ifmi` (knee floor); `EXP[$7400+frac]` → linear; store gain → Y:0x62+ | **`r6+$2`=THRS, `r6+$3`=RAT** |
+| 5 | `1afb`–`1b1c` | attack/release ballistics on the gain: coeff `ATK=X[$7811+p·$80]` (`r6+$0`), `REL=X[$7891+p·$80]` (`r6+$1`); `cmp`→pick ATK if gain rising else REL; one-pole; state `r7+$11/$12` | **`r6+$0`=ATK, `r6+$1`=REL** |
+| 6 | `1b1d`–`1b57` | `move n6,r0` (**re-anchor**); wet = in·gain → Y:0x40+; makeup `r6+$4`²; dry/wet from `r6+$5`; per-block coeff ramp (Y:0xc8+, `r7+$1a/$1b`, first-block gate `r7+$f` bit0); mix wet+dry → **write back to `r0` in place** | **`r6+$4`=GAIN(makeup), `r6+$5`=MIX** |
+
+**Parameter map (confirms octa-bt-pt registry):** `r6+$0` ATK · `+$1` REL · `+$2` THRS ·
+`+$3` RAT · `+$4` GAIN · `+$5` MIX (page 1) · `+$c` RMS (page 2, slot 6).
+Coeff tables (payload-A X): `0x7811` attack/RMS, `0x7891` release, `0x6c00` log, `0x7400` exp.
+State block: `r7+$f` flags (bit0 = first-block), `+$10` const `0x20c5`, `+$11/$12` gain
+ballistics, `+$13` unused?, `+$15/$19` detector env (48-bit), `+$1a/$1b` mix ramp.
+
+#### ⇒ The Route-2 sidechain tap point is now known
+
+Stage 1's detector reads **`x:(r0)+`** (the effect's own input). The dry/wet path in stages
+4 & 6 does **not** use r0's post-loop value — it re-loads `move n6,r0` — so **detection and
+gain-application are independent passes over the buffer.** Redirecting *only* stage 1's read
+(`0x1ab3` + the `x:(r0)+` in the `0x1ab6/0x1ab7` loop) to a shared-Y `keybus[KEY]` buffer
+keys the compressor off another track **with zero effect on its dry signal** — the cleanest
+possible tap. DSP-side delta ≈ a handful of words: a source-select branch gated on a new
+`KEY` param (free page-2 slot `r6+$d`), plus optionally a 1-pole HP on the key. Fits the
+180-word module or a small cave (payload budget ~2,724 words).
+
+**Still open (unchanged):** (a) the *publish* side — who fills `keybus[t]` with track t's
+pre-FX audio. Extending the null stub `P:0x007c9` is trivial (`a,y:(r_kb)+`) but only fires
+for FX slots = NONE; unconditional tap = frame-builder hook (bigger, unmapped). (b) same-DSP-
+core constraint (key+target both T1–4 or both T5–8). (c) `r7 → track index` map for
+`keybus[slot]`. (d) MKI DSP flash is untested territory.
+
+### Session 17 continued (3) — user design constraints for the side-chain build
+
+**1. MKI DSP flash de-risked.** User saw a MKI owner flash octabam (a DSP-patched image)
+with no problems. Open item (d) "MKI DSP flash is untested territory" downgraded from a real
+risk to "very likely fine" — the stock 1.40C file is byte-identical MKI/MKII and now there's
+a field data point. Still our own first DSP flash, so treat with the usual care, but not a
+blocker.
+
+**2. Key filter — LOW-pass, not the reflexive high-pass.** My earlier "1-pole HP on the
+key" was the *internal* side-chain convention (comp keys off its own full-range signal →
+HPF the detector ~80–150 Hz so bass energy doesn't dominate). This feature is an **external
+key**, and the user's instinct is right: keying off a full-spectrum drum loop and wanting
+*only the kick* to drive the ducking calls for a **LPF / band-pass around the kick band**
+(~50–120 Hz), rejecting hats/snare. Decision: **one bipolar `KEY FLT` knob** — `64` = off,
+turn down = LPF sweeping ~2 kHz→40 Hz (isolate the thump), turn up = HPF sweeping
+40 Hz→2 kHz (the classic detector HPF, still available for whoever wants it). Covers both
+in one page-2 slot. DSP: 2-pole (12 dB/oct) state-variable on the key stream ≈ 20–30 words
+(1-pole is too gentle to pull a kick out of a loop with hats). Formatter shows
+`LP 120` / `OFF` / `HP 200`.
+
+**3. Dynamic KEY chooser — same-core tracks only, and that's all it can reach.** FEASIBLE.
+Mechanism (octabam `PARAM_PAGES.md` §7 + `FUN_40031da4`):
+- `KEY` param `E+0xd2` count = **5** (`OFF` + 4). Value stored = **core-relative index 0–4**.
+- Custom A-formatter (`E+0x11a`, sig `fmt(char *buf, int value)`, *may read globals*): read
+  the current edit-track number; value 0 → `"OFF"`; values 1–4 → `"T1".."T4"` when track ∈
+  1–4, `"T5".."T8"` when track ∈ 5–8. `B`-widget = 0 (plain dial prints the A text).
+  ~20-byte code cave (proven pattern; cave region `0x400d7000–0x400d7c3c`, and our build
+  already ships/pins a ColdFire cave).
+- DSP resolves `keybus[coreBaseTrack + (value − 1)]` where coreBase = 1 or 5.
+- Result: a compressor on T3 can only ever select `OFF/T1/T2/T3/T4` — **disconnected tracks
+  are not merely hidden, they are unreachable.** Exactly the user's ask.
+- Own-track *is* offered (harmless — `KEY=own` + `KEY FLT` = the internal-side-chain-filter
+  case, a bonus).
+- Future-proof: if the cross-core bus (octabam XBUS) is ever adopted, bump count to 9 and
+  the formatter shows all 8 — the design doesn't fight that later.
+- **To find at build time:** the "current edit-track" global (a caller of `FUN_40031da4`
+  passes it; candidates near `0x46c7dd26` — the word the page-class handler already checks).
+
+**Proposed page-2 layout** (packed from `r6+$c`; octabam warns page-2 r6 offsets are
+"less certain — verify"): `RMS`(existing, `r6+$c`) · `KEY`(`+$d`) · `KEY FLT`(`+$e`) ·
+`KEY GAIN`(`+$f`, key drive into the detector — a loop's kick may be quiet) ·
+`SC LISTEN`(`+$10`, OFF/ON monitor the filtered key) · one spare.
+
+**4. Self-key (`KEY = own track`) — analysed.** Not a bug, not a feedback loop: the
+detector always reads an input-side signal, the compressed output is only written back at
+the very end (`0x1b53`), and `keybus[t]` is never fed from the compressor's output. Worst
+case a gain-bounded 1-frame wobble, never instability. `KEY = own` is **"internal
+sidechain"**: `KEY FLT` centred → identical to `KEY = OFF`; `KEY FLT` engaged → detector
+hears a filtered copy of the track's own signal while the full signal is compressed (the
+classic de-ess / stop-the-bass-pumping move). Keep it selectable.
+- **But it exposes the tap-placement trap.** If `keybus[t]` is filled by extending the NONE
+  passthrough stub, the tap sits wherever the NONE slot is: compressor in **FX1** + FX2 =
+  NONE → the FX2 stub runs *after* the compressor and would publish the **compressed**
+  output, so self-key (and any same-track dependency) keys off a 1-frame-delayed feedback of
+  the comp's own output. Messy, not dangerous.
+- ⇒ **Prefer the frame-builder / dispatcher tap** (pre-FX, unconditional) so `keybus[t]` is
+  always the clean track input regardless of FX-slot layout. Belt-and-braces: DSP
+  short-circuits `KEY == ownTrack` to read `r0` directly (still filtered). This firms open
+  item (a) toward "map the per-track pre-FX tap point," away from the stub hack.
+
+### Session 17 continued (4) — DSP per-track dispatcher mapped; publish injection point found
+
+Disassembled the DSP frame engine's per-track FX loop (payload A): modules `P:0x002bf` +
+`P:0x003a1` (setup) + `P:0x0041e` (dispatcher, 429 w) + `P:0x005cb` (per-track
+filter/AMP/env). Key structure:
+
+**Per-track loop** `func_000385` → `0x53c bne func_000385`, **4 iterations** (`x:0x418`
+counter `0x20 → 0x80`, `+0x20`/track) = **4 tracks per DSP core** (confirms octabam).
+Per iteration:
+- `0x385`–`0x39f`: pick this track's param descriptors (`x:0x415`/`x:0x416` + track offset
+  → `x:0x208` a-side, `x:0x419` b-side); decode split point `a = x:(r2+$1e)>>8 & 0xf` →
+  `x:0x20c`=split, `x:0x20d`=`0x10-split`, `x:0x20e`=`split*2` (buffer offset for the 2nd
+  segment).
+- `0x3a1`–`0x41d`: unpack the compact per-track FX param block (`x:0x209`, stride **0xA8**)
+  into the working param area (`X:0x40+` and the `r6` blocks).
+- `0x426`–`0x4a6`: frame-context setup + **crossfader/scene param morph**; a 16-tap input
+  filter at `0x498` writes the track's audio into **`X:0x0000`** (crossfade path). Tracks
+  the crossfader doesn't touch `beq func_0004a7` — skip straight to dispatch, `X:0` already
+  holding their input.
+- **`func_0004a7`**–`0x50d`: **the dispatch.** FX1 (id `x:(r6+$1b)`) then FX2 (id
+  `x:(r6+$1c)`), each: optional `INIT_TABLE[id]` (`x:(r1+$215)`) call on id-change, then
+  `PROCESS_TABLE[id]` (`x:(r1+$235)`) — called **twice** for a split block (a=0 seg with
+  `r0=0`, then a=1 seg with `r0=x:0x20e`), once (`r0=0`) otherwise. `r6` advances `+6`
+  (`n6`), state ptr `x:0x20a` advances `+0x100` per effect.
+- `0x50e`–`0x53c`: mix `X:0` working buffer → per-track output slot `x:0x206` (stride
+  **0x40**); advance `x:0x420` (**per-track counter**, +1), `x:0x209 += 0xA8`,
+  `x:0x206 += 0x40`, `x:0x418 += 0x20`; loop.
+
+**⇒ Publish injection point for `keybus[t]`: `func_0004a7` (`P:0x004a7`).** At that PC
+`X:0x0000` is guaranteed to hold the track's FX-chain input (FX1's process reads it on the
+very next call; both the crossfade path — 16-tap filter at `0x498` — and the skip path have
+finalised it by `0x4a7`). Inject ~10 words: `copy X:0 (2·n7 words) → keybus[coreBase +
+idx]`, `idx` from `x:0x420`. **No dependence on how `X:0` was filled upstream** — by
+definition it is the chain input at that instant. Sidesteps the octabam "stock buffer
+convention is hard to fully reconstruct" problem (`refs/octabam/docs/DSP.md` §6b).
+
+**`keybus`**: absolute Y at `0x800+` (octabam's proven-safe-in-both-payloads region), e.g.
+`Y:0x800`, 8 slots × 0x20 w. Each core writes its own 4 slots, the compressor reads any of
+its **same-core** 4 → **no cross-core traffic, none of octabam's XBUS race machinery
+needed.**
+
+**Build-time unknowns still to nail (all small):**
+1. `x:0x420` exact semantics — 0-based? per-core (0–3) or absolute (0–7 / 4–7)? where reset
+   each block? (Determines `coreBase` arithmetic.)
+2. **Which 4 tracks each payload serves** — octabam measured A=T5–8 / B=T1–4 but flags it
+   "settle empirically" (octa-bt-pt disagrees). Confirm on our image / HW before indexing.
+3. Free page-2 `r6` offset for `KEY` (octabam: page-2 offsets "less certain — verify").
+4. ColdFire: the "current edit-track" global for the dynamic KEY formatter (caller of
+   `FUN_40031da4`).
+5. Program-space budget: payload ~2,724 w shared; compressor 180→~230, dispatcher +~10,
+   `KEY FLT` filter +~30 → need a cave / reclaim (octabam reclaims the 3 FX2 reverbs; we
+   only need ~70 w, much less drastic).
+
+### Proposed build order (each a checkpoint, emulate-then-flash)
+
+1. **Menu-only, no DSP:** add `KEY`/`KEY FLT` page-2 params to the COMPRESSOR descriptor +
+   the dynamic formatter; DSP ignores them. Proves the ColdFire side + the formatter on HW.
+2. **keybus plumbing:** dispatcher tap at `0x4a7` + compressor detector redirect, `KEY`
+   only (no filter). Emulate with `dsp_host`, then HW: kick on T1 keying a pad's comp on T2.
+3. **`KEY FLT`** (2-pole SVF on the key stream) + `KEY GAIN`.
+4. **`SC LISTEN`** monitor + polish.
+
+### Session 17 continued (5) — BUILD STEP 1 DONE: KEY parameter on the COMPRESSOR page (menu only, emu-clean, NOT flashed)
+
+`tools/patch_sidechain.s` + `tools/build_sidechain.py` + `tools/emu_sidechain.py`.
+Output: `out/OCTATRACK_OS1.40C_SIDECHAIN.{syx,bin}` (`140C_KYOTI`), 154 B vs stock.
+Base = stock 1.40C + `patch_trigscale` (Bug-1 fix, byte-identical to
+`build_trigscale_only.py`). **The DSP is untouched — KEY does nothing audible yet.**
+
+**COMPRESSOR descriptor RE'd in full** (`E = 0x400d5a4a`, entry size `0x192`, 31-entry
+table `0x400d2e52…0x400d5f00`). Layout (E-relative, confirms octabam PARAM_PAGES §2 +
+corrects §7's P-offset confusion — there is **no separate enable bitmap**, a slot is
+visible iff its name is non-blank):
+
+| off | field |
+|---|---|
+| `E+0x3b` | u8 effect id (`0x18`) |
+| `E+0x3c` / `E+0x41` | abbr / full name, NUL-term |
+| `E+0x4e` | 12 × 6 B param names (6 pg1 + 6 pg2), blank = hidden encoder |
+| `E+0x96` | 12 × u8 default |
+| `E+0xa2` | 12 × u32 min |
+| `E+0xd2` | 12 × u32 **value count** (128 = 0–127 continuous, N = an N-way select) |
+| `E+0x102` | 12 × u32 **A** = per-slot text formatter `void fmt(char *buf,int val)` |
+| `E+0x132` | 12 × u32 **B** = per-slot widget drawer (`0` = plain dial, prints A's text) |
+| `E+0x162` | 12 × u32 **C** = per-slot page-class handler (`0` = default; else `0x40032814` / `0x400328e4`) |
+
+Stock COMPRESSOR params: `[0]ATK [1]REL [2]THRS [3]RAT [4]GAIN [5]MIX` (pg 1) ·
+`[6]RMS` (pg 2) · `[7..11]` blank-named, vestigial (counts 2/128/2/128/128).
+
+**Step-1 edits — all data pokes on slot 7 + one formatter cave:**
+| addr | was → now |
+|---|---|
+| `0x400d5ac2` name[7] | `000000000000` → `"KEY\0\0\0"` |
+| `0x400d5b38` count[7] | `2` → `5` (OFF + 4) |
+| `0x400d5ae7` default[7] | `1` → `0` (OFF) |
+| `0x400d5b68` A[7] | `0` → `key_fmt` (`0x400d7000`) |
+| `0x400d5b98` B[7] | `0x400475f8` → `0` (plain dial) |
+| (`0x400d5b08` min[7] asserted `0`; C[7] left `0`) |
+
+**`key_fmt`** (80 B cave @ `0x400d7000`): `fmt(buf,val)` — `val 0` → rewrite stack args
++ tail-`jmp` `sprintf`(`0x40013a08`)`(buf,"OFF")` (mimics stock `FUN_4003c14c`); `val 1..4`
+→ `sprintf(buf,"T%d", coreBase + val - 1)` where `coreBase = 1` if `*(u8)0x100b14cc` (current
+edit-track) `< 4` else `5`. So a compressor on T3 shows only `OFF/T1/T2/T3/T4`, one on T6
+only `OFF/T5/T6/T7/T8` — **disconnected tracks are unreachable, per the design ask.**
+
+**Validation:** build round-trips (aPLib + ELEK checksum OK); manual-trig fix byte-identical;
+adjacent descriptor entry (MBC) intact. `emu_sidechain.py` (real cave under Unicorn, sprintf
+stubbed) — **ALL GOOD**: 8 tracks × values 0–4 all format correctly, both "chooser set"
+checks pass.
+
+**HW test (`NOTES` build-order step 1):** flash `OCTATRACK_OS1.40C_SIDECHAIN.syx`. Put
+COMPRESSOR in an FX slot → FX SETUP **page 2** → the encoder after `RMS` is `KEY`. Confirm:
+(a) shows `OFF` by default, scrolls `OFF→T1→T2→T3→T4` on tracks 1–4 and `OFF→T5..T8` on
+5–8; (b) p-locks + survives PART save / project reload; (c) nothing else on the compressor
+page changed; (d) no crash/glitch entering the page or turning the knob. Revert = flash
+stock `downloads/extracted/OCTATRACK_OS1.40C.syx`. **Then → step 2 (keybus plumbing).**
+
+### Session 17 continued (7) — STEP 2 DSP code written + assembles clean (38 words/payload); dsp_asm+dsp_host built
+
+**Toolchain complete:** `vendor/dsp56300/build/.../dsp_asm` + `dsp_host` built (octabam's,
+staged from `refs/octabam/tools/dsp_host/`). `dsp_asm` constraints found the hard way:
+**no directives / no constants / no `jmp` / no `jcc`** — only relative b-forms, labels
+substituted textually (as `$disp` for branches). So the code uses literals, a build-time
+`@KADJ@` token, and **ends each routine with `rts`** (the build hand-encodes `jsr <cave>`
+at the detour sites; control returns via `rts`, no branch-back).
+
+**`tools/patch_sc_dsp.asm`** — assembled at `-org 1da0` for the payload-B variant,
+**38 words**, round-trips clean through the disassembler:
+- `sctap` (12 w): `x:$420 → idx*$80`; `r1 = Y:$800 + that`; `do #$20 { X:0 → Y:(r1)+ }`;
+  displaced `move x:>$208,r6` + `move #$6,n6`; `rts`.
+- `scdet` (26 w): displaced `move r0,n6`; `b = x:(r6+$d)` (KEY) `>>16`; `tst b; beq` → if 0,
+  `move #$61,r4`; `rts` (stock self-detect). Else `@KADJ@` (`sub #1,a` B / `add #3,a` A →
+  abs track); `r1 = Y:$800 + abs*$80`; `do #$20 { Y:(r1)+ → X:$40 }`; `move #$40,r0`;
+  `move #$61,r4`; `rts`.
+- Both payloads = 38 words (`@KADJ@` is one instruction either way).
+
+**Detour encoding (build, hand-written bytes):**
+- dispatcher `func_0004a7` (A) / `func_00029c` (B) — **byte-identical** stock (`move x:>$208,r6`
+  `66f000 000208` + `move #$6,n6` `3e0600`): `jsr sctap` (2 w) + `nop` (1 w) over the 3-word
+  span... wait, that span is `move x:>$208,r6`(2w) + `move #$6,n6`(1w) = 3 w. `jsr` long = 2 w
+  + 1 `nop`. Cave reproduces both moves then `rts` → lands at `func_..+3`.
+- COMPRESSOR proc+0 `0x1ab1` (A) / `0x1871` (B) — byte-identical (`move r0,n6` `221e00` +
+  `move #$61,r4` `346100`): `jsr scdet` (2 w) exactly over the 2-word span. Cave `rts` →
+  `proc+2`.
+
+**Placement — donor still required.** 38 > payload A's 33 free words. A `bsr kbslot` refactor
+saves only ~2 w (36). Confirmed there is no quick win:
+- payload B free space (~600 w) is **not loader-record-backed** → needs payload-stream surgery.
+- the dead-bootstrap tail (`P:0x30048+`) is a HW-only safety question (shared-window), not a
+  desktop probe.
+So a flashable step 2 needs a donor module in **both** payloads (overwrite its words in
+place + point its dispatch-table init/proc entries at the null stub). Recommend SPATIALIZER
+(`0x05`, 261 w). This can't be deferred to step 3 after all.
+
+**Step-2 hooks VALIDATED in isolation** — `tools/emu_sc_dsp.py`, dsp56kEmu, **ALL GOOD**:
+- `sctap`: for track idx 0/3/7, `keybus[idx]` (Y:`0x800 + idx*0x80`) == the 32 words of `X:0`
+  after the run; the rest of the ring untouched.
+- `scdet`: `KEY=0` → `X:$40` untouched (stock self-detect); `KEY=1` → `X:$40` == `keybus[0]`
+  (CORE_BASE 0, abs = KEY−1); `KEY=4` → `X:$40` == `keybus[3]`.
+- The `jsr scdet` detour byte-patch (`0bf080 <org>` over `move r0,n6` + `move #$61,r4`) is
+  asserted against the real payload-B COMPRESSOR module inside the harness.
+
+**dsp_host can't run the stock COMPRESSOR end-to-end** (it sets `r7=0x200`, targets octabam's
+own effects) — so the full "detector's gain reduction tracks keybus" chain is a **hardware**
+test, not a desktop one. The isolation harness covers the hook mechanics; the audio outcome
+is HW.
+
+**Page-2 param packing found (octabam `PARAM_PAGES` / dsp_host, "cost months"):** each page-2
+descriptor word holds **two** controls — slot 6→`r6+$c` bits16-23, slot 7→`r6+$c` bits8-15,
+slot 8→`r6+$d` bits16-23, slot 9→`r6+$d` bits8-15, … So **step 1's KEY moved from descriptor
+slot 7 → slot 8** (`r6+$d` knob = what `scdet`'s `asr #$10` reads). RMS stays slot 6; slot 7
+blank → a stock-normal page-2 gap (CHORUS/EQ do the same). `build_sidechain.py` updated,
+`emu_sidechain.py` re-passes, image re-built (150 B vs stock).
+
+**Still to do for step 2:** (1) donor pick (37 w > payload A's 33 free — a `bsr` refactor
+saves ~2 w, not enough); (2) `build_sidechain2.py` — DSP-payload patcher: assemble
+`patch_sc_dsp.asm` per payload (`@KADJ@` = `add #3,a` A / `sub #1,a` B), place at the donor
+`-org` (`jsr` short-form-reachable, ≤ `$fff`), hand-encode the 2 detours (`jsr` short =
+`0d0<addr>` 1 w; long = `0bf080 <addr>` 2 w), retarget the donor's `X:0x215`/`X:0x235`
+dispatch entries to the null stub; (3) `keybus` Y-region runtime-safety (inherit octabam
+§11, watch on HW); (4) HW validation.
+
+Doc note for users: `X:0` at the tap point is **post-AMP-VOL** — mute keeps a key track
+keying (mute is downstream), but AMP VOL 0 kills the key. Silence a key track with mute.
+
+### Session 17 continued (8) — STEP 2 BUILT (SPATIALIZER donor, both payloads); emu-clean; NOT flashed
+
+`tools/build_sidechain2.py` → **`out/OCTATRACK_OS1.40C_SIDECHAIN2.{syx,bin}`** (`140C_KYOTI`,
+**380 B vs stock**). = stock 1.40C + Bug-1 fix + step-1 KEY menu (slot 8) + the step-2 DSP
+hooks. User picked **SPATIALIZER (`0x05`) as the donor.**
+
+**DSP patch, per payload (A / B):**
+| target | file A / B | change |
+|---|---|---|
+| SPATIALIZER P region (`0xaa8` / `0x868`, 261 w) | `0xf1371` / `0x1042c2` | first 37 w overwritten with the `sctap`+`scdet` cave (assembled per payload, `@KADJ@` = `add #3,a` / `sub #1,a`); the other 224 w become dead code |
+| dispatcher FX1 entry `func_0004a7` / `func_00029c` | `0xf008d` / `0x10307d` | `move x:>$208,r6` (2 w) → `jsr <sctap>` (`0d0aa8` / `0d0868`, 1 w) + `nop`; the following `move #$6,n6` left in stock |
+| COMPRESSOR proc+0 `0x1ab1` / `0x1871` | `0xf43f8` / `0x107349` | `move r0,n6` + `move #$61,r4` (2 w) → `jsr <scdet>` (`0d0ab7` / `0d0877`) + `nop` |
+| dispatch table `X:0x215[5]` init / `X:0x235[5]` proc | `0xe1f45`+ / `0xf5610`+ | SPATIALIZER's id-`0x05` entries → null stub (`0x7c8`/`0x7c9` A, `0x588`/`0x589` B) — SPATIALIZER now passes audio through |
+
+**Verified:**
+- byte-diff vs stock: **exactly 2 words** changed at each detour site, all surrounding stock
+  code byte-identical; SPATIALIZER word 37+ untouched (harmless dead).
+- both patched payloads still parse **100%** (`dsp_modmap`); image round-trips (aPLib+ELEK
+  checksum OK); Bug-1 fix byte-identical to `build_trigscale_only.py`.
+- **`emu_sc_dsp.py --patched`** (real cave at SPATIALIZER `0x868`, real detour in the
+  compressor module, regenerated payload-B `.mem`) — **ALL GOOD**: `sctap` copies `X:0` →
+  `keybus[idx]`; `scdet` KEY=0 leaves the detector, KEY=1→`keybus[0]`, KEY=4→`keybus[3]`.
+
+**NOT verified — hardware only** (dsp_host can't run the stock compressor):
+1. the compressor's detector actually producing gain reduction *driven by* the keybus signal;
+2. the `do #<$20` copy count vs the real frame's `n7` (isolation copied a fixed 32 correctly);
+3. `Y:0x800–0xBA0` keybus region runtime-safe in both payloads (octabam §11 says ≥`0x800`
+   is safe — watch for hash/instability);
+4. muted-key behaviour (design says free — mute is downstream of the `X:0` tap);
+5. SPATIALIZER→passthrough is graceful on a project that still selects it;
+6. no glitch on the first FX1 dispatch of a split block.
+
+### Session 17 continued (8) — HW test plan (do this after flashing SIDECHAIN2)
+
+1. **No-regression:** every existing check (OT/OT+FX mute — wait, MUTEMODE is NOT in this
+   build; it's stock+trigscale+sidechain — so: Bug-1 manual-trig, boot string `140C_KYOTI`,
+   all stock FX except SPATIALIZER unchanged, SPATIALIZER now = clean passthrough).
+2. **KEY menu** (step-1 checklist): `COMPRESSOR` → FX page 2 → `KEY` after `RMS`, `OFF` +
+   `T1..T4` / `T5..T8` per bank, p-locks, survives save/reload.
+3. **The feature:** kick loop on T1, pad on T2 with `COMPRESSOR` (THRS low, RAT high,
+   ATK fast, REL ~med), `KEY = T1`. Expect the pad to duck on every kick. Sweep the
+   target across T2/T3/T4 and the key across T1/T2/T3/T4.
+4. **Muted key:** mute T1 — ducking should continue. Then set T1 `AMP VOL` 0 — ducking
+   should stop (tap is post-AMP-VOL; documented).
+5. **Cross-bank is inert:** `COMPRESSOR` on T2, `KEY = T3` works; there is no way to pick
+   T5–T8 from T2 (formatter). A compressor on T5 keyed by T5–T8 also works (payload A).
+6. **Stress:** compressors on several tracks all keyed; FX2 slot also in use; split trigs;
+   listen for clicks / hash / runaway on the ducking envelope.
+
+### Session 17 continued (6) — STEP 2 DESIGN: keybus plumbing, quad-buffered from day one
+
+Design for the DSP side: publish each track's pre-FX audio to a shared Y ring, and
+redirect the COMPRESSOR's detector to read a chosen track's ring instead of its own input.
+**Cross-core assessed (`XBUS.md`): octabam hardware-confirms it works.** Our case drops 2 of
+octabam's 3 race classes (no accumulate ⇒ no clear ⇒ no clear-vs-read / clear-vs-write); only
+the torn-read race remains, fixed by quad-buffer + read-2-back + a per-core rotation counter
+seeded at init. **Step 2 ships same-core only; the ring is laid out quad-buffered now so v2
+(any-core) is additive, not a rewrite.**
+
+#### Confirmed this session
+
+- **`x:0x420` = the absolute 0-based track index (0..7)** during the per-track dispatch,
+  valid at `func_0004a7`, `+1` per track. Payload A inits it to **4** (`P:0x000381`
+  `move #$4,x0; move x0,x:>$420` → tracks 5–8); **payload B inits it to 0** (`P:0x00017a`
+  → tracks 1–4). This is an independent, instruction-level confirmation of octabam's
+  marker-flash result: **payload A serves T5–8, payload B serves T1–4.**
+- Effects' audio buffer is **`X:0x0000`** (`r0 = 0` for a normal block; `r0 = x:0x20e` =
+  `2·splitpoint` for a split block's 2nd segment). Detector in COMPRESSOR reads `x:(r0)+`.
+- **P-space is the wall.** Payload A P code ends at `0x01fdf` — **33 free words** (octabam
+  `CHIP.md`). Payload B ends at `0x01d97` — ~617 free. No general free pool.
+
+#### `keybus` — the ring (Y memory, absolute)
+
+```
+KB_BASE   = Y:0x800                     (octabam: abs-Y >= 0x800 is the region proven
+                                         safe across both payloads' module maps, DSP.md §11)
+per track : 4 buffers x 32 words (16 stereo samples = one max block, interleaved L/R)
+layout    : slot(track, gen) = KB_BASE + track*0x80 + (gen & 3)*0x20
+extent    : 8 tracks * 0x80 = 0x400 words  ->  Y:0x800 .. Y:0xC00
+rotation  : KB_GEN_A = Y:0xC00 (byte), KB_GEN_B = Y:0xC01   (v2 only; step 2 leaves them 0)
+```
+Y:0x800–0xC00 is unclaimed in both payload module maps (largest stock Y module is
+`Y:0x290`, 1024 w, ending `0x690`; then `Y:0x715`). Build asserts it.
+
+#### Donor for the code — **DECISION NEEDED**
+
+~32 w (step 2) → ~130 w (through v2) of P-space code. Payload A has only 33 free words, so
+reclaim one stock effect's P region and point its dispatch entries at the null stub (graceful
+passthrough, octabam's pattern for absent effects). **Proposed: SPATIALIZER** (id `0x05`,
+`P:0x00aa8` A / `P:0x00868` B, **261 words**, self-contained — octabam verified max CF target
+`0x00baa` is inside). It is the least-used OT stock effect and 261 w covers all four steps
+plus v2. Alternatives: COMB (`0x13`, 277 w) or LO-FI (`0x1c`, 537 w). Reclaimed region =
+`SC_CAVE`. (Payload B could instead use its 617 free words and keep SPATIALIZER on T1–4, but
+the asymmetry isn't worth it.)
+
+#### Hook 1 — the publish tap (dispatcher, both payloads)
+
+Detour at **`func_0004a7`** — replace `move x:>$208,r6` + `move #$6,n6` (payload A; the
+equivalent 2 instrs in B) with `jmp SC_CAVE:tap`. At that PC `X:0x0000` holds this track's
+FX-chain input and `x:0x420` = its absolute index. `tap`:
+```
+  r1 = KB_BASE + x:0x420 * 0x80 + (KB_GEN[core] & 3) * 0x20     ; step 2: gen = 0
+  r0 = 0                                                        ; X:0 source
+  do #16 { move x:(r0)+,a  x:(r0)+,b ; move a,y:(r1)+  b,y:(r1)+ }   ; 32 words, mono-safe
+  move x:>$208,r6 ; move #$6,n6                                 ; displaced originals
+  jmp func_0004a7 + <len of displaced>
+```
+~12 words. Runs once per track per block, for every track regardless of its FX assignment —
+so any track can be a key.
+
+#### Hook 2 — the detector redirect (COMPRESSOR process, both payloads)
+
+Detour at **`0x1ab1`** — replace `move r0,n6` + `move #$61,r4` (0x1ab1–0x1ab2) with
+`jmp SC_CAVE:detect`. `detect`:
+```
+  move r0,n6                       ; (0x1ab1) dry path anchor -- UNCHANGED, keeps dry clean
+  move x:(r6+$d),a ; asr #$10,a,a  ; a = KEY param 0..4        (page-2 slot 7)
+  beq  d_own                       ; KEY 0 -> stock: detector reads X:0 (own track)
+  add  #CORE_BASE-1,a              ; CORE_BASE = 0 (payload B) / 4 (payload A)  -> abs track
+  r1 = KB_BASE + a*0x80 + (readgen & 3)*0x20    ; step 2: readgen = 0 ; v2: KB_GEN[core]-2
+  move #$40,r0                     ; stage the key block into X:0x40..0x60 (free during
+  do #16 { move y:(r1)+,x0 ; move x0,x:(r0)+   (x2 for L/R) }   ;  detection; wet uses it later)
+  move #$40,r0                     ; detector now streams from the key copy
+d_own:
+  move #$61,r4                     ; (0x1ab2) displaced
+  jmp  0x1ab3
+```
+~20 words. **The dry/wet path is untouched** — it re-anchors via `n6` at `0x1b1f`/`0x1b46`,
+so redirecting only the detector has zero effect on the compressed signal. `X:0x40..0x60` is
+free during detector stages 1–5 (COMPRESSOR first writes `X:0x40` in stage 6, `0x1b1e`).
+
+**`CORE_BASE`** is a per-payload build constant (`--defsym CORE_BASE=4` for A, `=0` for B),
+because the KEY param stores a core-relative `1..4` and the ColdFire formatter already renders
+it as the right absolute track. Same-core is therefore enforced structurally — a `1..4` value
+can only ever resolve to one of this core's own 4 ring slots.
+
+#### Step 2 vs v2 (any-core)
+
+| | step 2 (same-core) | v2 (any-core) |
+|---|---|---|
+| ring layout | quad-buffered (built now) | unchanged |
+| `gen` in both hooks | constant 0 | `KB_GEN[core]`, read side `- 2` |
+| rotation counter | — | `KB_GEN_A/B`, `+1` once per block per core at the first dispatch (housekeeping hook, seeded at init — octabam: "NOT self-healing") |
+| KEY param count | 5 (`OFF`+4) | 9 (`OFF`+8), `CORE_BASE` drops out, DSP reads `keybus[value-1]` |
+| formatter | core-aware `T1..T4`/`T5..T8` | shows all 8 |
+| validation | `dsp_host` (single-core, exact) + HW | HW **track×track sweep** (octabam: races relocate) |
+
+#### Word count — step 2 does NOT fit payload A's 33 free words
+
+Hand-estimate: `tap` ≈ 17 w, `detect` ≈ 17 w → **~34 words inlined** (no shared helper) in
+payload A, which has **33 free**. Payload B (617 free) is fine. So step 2 is **right on the
+edge** — 1–7 words over depending on how tight the golf is. Not the clean "single-core needs
+no donor" it looked like; it needs either a couple of words shaved or a few spare words from
+outside the 33. Step 3 (the `KEY FLT` 2-pole SVF, +~30 w) is where a donor becomes
+unavoidable. Options:
+- **(a) reclaim the donor now** (SPATIALIZER 261 w etc.) — clean, unblocks steps 2–4 + v2.
+- **(b) dead bootstrap region** — `P:0x30048+` (payload A) / `P:0x38000+` (B) hold stock
+  bootstrap code that is dead after boot (octabam: "`0x31000`/`0x32000` bootstraps … dead
+  after boot"; but `0x30000–0x30047` is live per-frame staging — off-limits). ~100 dead
+  words if it verifies. Costs no effect. Risk: in the shared window; needs a probe.
+- **(c) hand-golf to ≤33 w** — inline, drop the helper, copy `n7·2` not a fixed 32; fragile.
+
+Recommend (a). User picked "decide later" before this count was known — revisit.
+
+**(d) — read an existing per-track buffer instead of tapping — RE'd, DOES NOT PAN OUT.**
+Traced the per-track audio flow:
+- **`X:0` is a single reused working buffer.** Per track: raw playback audio arrives in `X:0`
+  → `func_0005d0`→`func_0006b7`→`func_0006f7` filters + amp-envelopes it **in place**
+  (`x:(r0)+` → `x:(r1)+`, both `r0=r1=0`) → optional crossfade/scene pass (also in place) →
+  FX1/FX2 (in place) → `func_00055a` mixes `X:0` into the per-track out slot. `X:0` is
+  overwritten by the next track. **No per-track-persistent pre-FX copy exists.**
+- The crossfade path (`0x468`–`0x472`) does read a raw per-track input via
+  `r0 = x:0x202 − 0xc0 (+0x240 wrap)`, but `x:0x202/203/205/207` are **rolling** frame-DMA
+  pointers set by the ISR/frame-context routine, not per-block-stable per-track arrays.
+- `x:0x206` (per-track out, stride `0x40`) IS persistent but is **post-FX** and its block
+  base is a rolling pointer (advanced `0x100`/block in the prologue + `0x40`×4 in the loop) —
+  usable only after more RE, and post-FX isn't the wanted signal.
+
+⇒ **The tap (hook 1) is unavoidable.** Step 2 = ~34 w in payload A, 33 free. Since **step 3
+(the `KEY FLT` filter) needs a donor no matter what**, the clean call is **take the donor
+now** (option a — SPATIALIZER) rather than golf step 2 into 33 w and then donor step 3
+anyway. Golf (c) was a bad suggestion — retracted. Dead-bootstrap (b) stays a fallback if
+the user wants to keep every stock effect: `P:0x30048+` (~99 w after the live `0x30000–47`
+staging), needs a runtime probe, shared-window aliasing risk.
+
+#### Build-time still-open
+
+1. Payload B's `func_0004a7` equivalent PC + the exact 2 instrs to displace (disasm
+   `B_P00221.asm` around the 6 `jsr (r2)` block).
+2. Confirm `Y:0x800–0xC00` untouched at runtime in both payloads (octabam's §11 proof
+   inherited; watch in the HW test).
+3. `dsp_host` harness for step 2: seed `X:0`, run the tap + a COMPRESSOR instance with
+   `KEY` set, assert its detector consumed the seeded key block (adapt octabam
+   `tools/dsp_host` `-pokey`/`-peeky`).
+4. Donor decision (SPATIALIZER / COMB / LO-FI / dead-bootstrap-region probe).
+
+### Session 17 tooling
+
+`out/dsp/` (gitignored): `payload_{A,B}.mem`, `{A,B}_P01aa4/01864_compressor.{bin,asm}`,
+`A_P007c8_stub.bin`, `A_P0041e_dispatch.asm`, `A_P00{282,2bf,3a1,5cb,6f4}.asm`,
+`B_P00{167,1a4,221}.asm`, `toolchain_setup.log`. `vendor/dsp56300/` (gitignored) — the built
+disassembler. Scratchpad: `dsp_toolchain_setup.sh`. **Committed:** `tools/patch_sidechain.s`,
+`tools/build_sidechain.py`, `tools/emu_sidechain.py` (step 1). No Ghidra runs.
+Sources: `refs/octabam/docs/{DSP,BUS,XBUS,PARAM_PAGES,CHIP,MODULES,FLASHING}.md` +
+`tools/dsp_modmap.py` @ e1dcfa9, `refs/octa-bt-pt/patch_tool/registry.json` +
+`addresses.json` @ e970dd0, `reference/kb/{dsp56300,memory-map}.md` (on `main`), our
+`COVERAGE.md` / `ARCHITECTURE.md`.
