@@ -3549,3 +3549,413 @@ needs Phase 0's data model, so not free; could ship first to de-risk. User did n
 Not discussed. If this ships it would likely want to be opt-in (a 4th behaviour alongside
 MUTE MODE, or its own entry) — but that's menu-array surgery again (the one thing that has
 bricked the MKI before). Decide later.
+
+---
+
+## Session 14 (2026-09-01) — RE for a 4th MUTE MODE: "instant cut + FX tails + resume at playhead"
+
+**Branch `wip/mute-mode`. RE + emulation only — nothing built or flashed. User away from MKI ~2 wks.**
+
+### The ask
+A mode that combines the best of OT and OT+FX: mute cuts the dry **instantly**, the track's
+FX-insert tails **ring out**, AND unmute **resumes the sample where the playhead would be**
+(like stock OT), not "silent until the next trig" (OTFX-T / DT-T).  Menu goes 3 -> 4 values.
+
+**Names decided by the user (2026-09-01).**  Taxonomy: no suffix = unmute resumes at the
+playhead (like OT); `-T` = trig-mute (only a new trig restarts).
+
+| MUTE MODE value | `GATE` (0x800000dc) | behaviour |
+|---|---|---|
+| `OT`     | 0 | stock -- instant cut, FX tails die, unmute resumes at playhead |
+| `OTFX`   | 1 | **new (this session)** -- instant dry cut, FX tails ring, unmute resumes at playhead |
+| `OTFX-T` | 2 | the current V6b/V7 OT+FX -- instant dry cut (note-off), FX tails ring, **trig-mute** |
+| `DT-T`   | 3 | the current DT -- voice rides its own amp envelope, FX tails ring, **trig-mute** |
+
+Renumbering vs the `wip/mute-mode` build (0=OT, 1=OT+FX, 2=DT): old 1 -> 2, old 2 -> 3.  OS
+upgrade resets PERSONALIZE so no migration issue.  `OTFX-T` is 6 chars -- `OT+FX` (5) rendered
+fine on the MKI (Session 10); the value column at x=0x4d should hold ~8, but verify against
+`FUN_40068e00` at build time and fall back to `OTFXT` if it clips.
+
+### Why the four behaviours differ — the mute lever, pinned down
+`FUN_40004db8` (the per-frame mute/solo/cue gate, HW-confirmed as *the* gate) was fully
+disassembled (`m68k-elf-objdump -m m68k:5407`, the r2/Ghidra decompiles were both wrong on the
+inner branch) and re-run on real bytes (`tools/emu_otfx.py` — ALL GOOD).  Per track it writes
+**4 u16 words** (8 B/track) into the buffer at `0x80003c10`, from three source arrays
+`A=0x80000c60` (stride 4), `B=0x80000c80` (stride 2), `C=0x8000485a` (stride 8):
+
+| word | value | gate |
+|---|---|---|
+| `frame[8t+0]` | `A[t].word1` | **CUE** bit (16+t) — CUE-send level |
+| `frame[8t+2]` | `A[t].word0` | soloed(t) → keep; else **MUTE** bit (8+t) → **0**; else any-track-soloed → 0 — **MAIN mix level** |
+| `frame[8t+4]` | `B[t]` | **ungated** (pan) |
+| `frame[8t+6]` | `C[t].word0` | **ungated** (pan) |
+
+So **mute's only lever in this function is zeroing the post-FX MAIN-mix word** (`frame[8t+2]`).
+Stock OT does exactly that and nothing else → voice untouched (cursor + envelope keep running
+→ resume works) but the FX-return dies because it shares that one post-FX bus word.  V6/V7's
+`D5 &= ~(muted<<8)` keeps `frame[8t+2]` open (→ tails reach MAIN) and then kills the dry
+*upstream at the voice* via `FUN_40008f84` note-off — which frees the voice (45-frame
+`46c7dfba` watchdog) → no resume.  DT keeps the word open and does nothing else → a sustained
+voice stays audible through the "mute".  **There is no pre-FX voice control in `FUN_40004db8`;
++4/+6 are pan and useless here.**
+
+### The candidate mechanism for the new mode
+Keep `frame[8t+2]` open (the V6 `pre` D5-trick, like DT) **and** force the **per-voice
+pre-FX amp level to 0** for muted tracks — without touching the voice struct, so its sample
+cursor keeps advancing and unmute just restores the level.
+
+The per-voice amp array is **`0x46c7ff42`** (stride 4, 8 voices; sits right below
+`_DAT_46c7ff64` the post-FX MAIN mute).  It is filled **every frame** by `FUN_4000d16c`'s
+voice loop: `d0 = FUN_400068e4(t, DAT_800000e0, cmd&0xf, 0x10)` (returns voice-struct `+0x18`
+= the current amp-envelope output) then **`0x4000d36e: move.l %d0,(%a2)+`** with `a2 = 0x46c7ff42`,
+`d3 = t`.  `FUN_400068e4` is the control-rate envelope updater (voice struct base `0x80004f1c`,
+stride `0x54`, +`0x2a0` double-buffer; env slopes at +0x24/28/2c, position at +0xc).
+
+**Hook (3rd site, gated on the new mode only):** detour `0x4000d36c` (8 B: `jsr (a3)` +
+`move.l d0,(a2)+` + `movea.l (160,sp),a1`) → cave: run the `jsr FUN_400068e4`, then if track
+`d3` is muted (`0x80000008` bit 8+d3) or solo-silenced → `moveq #0,d0`, then the displaced
+`move.l d0,(a2)+` / `movea.l (160,sp),a1`, resume `0x4000d374`.  Because `0x46c7ff42[t]` is
+recomputed every frame, zeroing it is non-destructive — unmute (stop zeroing) restores it.
+
+Companion changes for the new mode (`OTFX`, `GATE == 1`):
+- `pre` (0x40004dc6): clear D5 mute/solo bits (keep MAIN word) — **no** note-off, **no**
+  `REL_STATE` — identical to the `DT-T` branch.  (Gate branches renumber: `OTFX-T` = the old
+  note-off path moves to `GATE == 2`; `DT-T` to `GATE == 3`.)
+- `pre_v` (0x40005178): **do NOT drop** bare starts (unlike `OTFX-T`/`DT-T`) — a trig fired
+  while muted should start a voice that advances silently (amp-zeroed) so unmute picks it up
+  mid-sample, matching stock OT.
+
+### Two unknowns that only a hardware flash can settle
+1. **Is `0x46c7ff42` pre- or post-insert-FX?**  If post-FX, zeroing it = stock OT (tail dies)
+   and the mode is pointless.  Believed pre-FX (amp envelope is classically pre-FX; the array
+   is per-*voice* not per-*track*, distinct from the post-FX `46c7ff64`).
+2. **Does the DSP keep advancing the voice's sample cursor while `0x46c7ff42[t] == 0` for
+   many frames**, or does it treat zero-amp / non-refreshed as "free the voice"?  If it frees
+   it → collapses to OT+FX-TRIG (no resume).
+   Fallbacks: write a tiny non-zero amp (e.g. `1`) instead of `0`; or also keep the
+   `46c7faa4[t]` refresh slot alive.
+3. Minor: an abrupt 0 may click — may need a 1-frame ramp.
+
+### Recommendation: flash DT first
+**DT rests on the *same* unknown #2** (Session 12 NEXT, "does the DSP keep advancing a plain
+FLEX one-shot while the frame words flow untouched").  Flashing the existing
+`OCTATRACK_MUTEMODE_DT.bin` answers it:
+- DT loop-sample test (item 3) shows the voice audibly keeps running → unknown #2 = **YES**,
+  and this new mode becomes low-risk (build it next).
+- DT shows the voice stalls → this mode needs the fallback path and both need a rethink.
+
+So the order is: **flash DT → confirm the voice keeps advancing → then build the new mode**
+as menu value 1 of `OT / OTFX / OTFX-T / DT-T`.
+
+### Menu / naming caveat
+Values (user-chosen): `OT` / `OTFX` / `OTFX-T` / `DT-T`.  Value column (renderer
+`FUN_40068e00`, x=0x4d) — stock values there are ≤5 chars (`LOW/MID/MAX`), our shipped
+`OT+FX` = 5 rendered fine on the MKI (Session 10).  **`OTFX-T` = 6** — the column at x=0x4d
+should hold ~8 glyphs but VERIFY against `FUN_40068e00` at build time; fall back to `OTFXT`
+if it clips.  Menu-array surgery itself is unchanged (still one spliced entry, still
+`moveq #15→#16`); only `N_MODES 4` + the value strings + the `pre`/`pre_v` gate branches change.
+
+### Session 14 tooling (uncommitted)
+`tools/emu_otfx.py` (runs the real `FUN_40004db8` — ALL GOOD),
+`tools/ghidra/attic/GhidraOTFX{1,2,3}.java`, dumps `out/ghidra/GhidraOTFX{1,2,3}_session14.txt`.
+No `patch_*` / `build_*` changes yet.
+
+---
+
+## Session 15 (2026-09-02, `wip/mute-mode`, RE / feasibility only) — "DIRECT JUMP" pattern-change mode
+
+### The ask (user)
+
+An Elektron-style **Direct Jump** option for manually sequencing patterns: selecting a new
+pattern switches to it **immediately** (not quantised to the pattern boundary), and playback
+**continues from the step position the previous pattern was at** instead of restarting at
+step 1. The new pattern's **Part loads instantly** on the switch (opposite of the shelved
+LAZY PART mod — and note LAZY PART is *not* in the current `build_mutemode.py` build, so
+instant Part load is already the stock behaviour here).
+
+### Verdict: FEASIBLE, medium effort. All in already-mapped territory (sequencer engine,
+### Sessions 3–6). No DSP RE, no new subsystem.
+
+### Function / global map found this session (Ghidra headless, `tools/ghidra/attic/GhidraDirectJump{,2,3,4,5}.java`)
+
+| symbol | role |
+|---|---|
+| **`FUN_400a0570(bank, pat, loopStart, loopEnd, p5)`** | **the cue-pattern primitive — single choke point for every pattern change** (manual trig, arranger, chain). If `_DAT_800065b8==1` (sequencer running): stashes the pending pattern in `DAT_800065bf/c0`, loop points in `_DAT_80006630/34`, posts a kernel event, returns — the actual switch happens later in the step engine. If stopped: writes the ACTIVE `DAT_800065bd/be` directly + tempo + Part path. Called from `FUN_4004a100` (arranger row) and `FUN_4004a654`; the manual PTN-key path funnels here too. |
+| `DAT_800065bd` / `DAT_800065be` | **ACTIVE** (playing) bank / pattern |
+| `DAT_800065bf` / `DAT_800065c0` | **CUED** (pending) bank / pattern |
+| `DAT_800065bc` | plays-free per-track "SEQ SYNC PICKUP" pattern (`FUN_400618d8`, `FUN_4004b040`) — NOT the general cue |
+| **`_DAT_800065b4`** | **master step position — reset to 0 in every pattern-reload block** |
+| **`_DAT_800065b6`** | current pattern length − 1 (reloaded from the scale tables `DAT_400aba50` / `DAT_400e21e0+…+0x8e54` in every reload block) |
+| `_DAT_800065b2` | secondary / loop-region counter (reset to 0 or `_DAT_8000663a`) |
+| `_DAT_800065d3 .. _DAT_800065e3` | per-track step positions (8 bytes), reset in the same blocks |
+| `DAT_80006687` ← `DAT_80006688` | CHAIN-AFTER countdown / its reload value |
+| `_DAT_80006514` | second countdown (chained-list / arranger path) |
+| `_DAT_46c8028a` | "reload now" flag — gates the **immediate** reload block in the step engine |
+| **`FUN_400a1eea`** (per-step engine, 12 KB) | holds **3+ near-identical pattern-reload blocks**, gated respectively on `DAT_80006687→0`, `_DAT_80006514→0`, `_DAT_46c8028a≠0`. **Each block: `_DAT_800065b4 = 0` (step reset) + reload `_DAT_800065b6` (length) + re-init per-track note/voice scratch + load Part/scene arrays** from `DAT_400e21e0 + bank*0x9b340 + pat*0x8ed8`. |
+| `FUN_400a1030(bank, pat)` | commit-pattern-to-active, called from the step engine's boundary handler `candidate_400a10d2` |
+| `FUN_400a0ef8` / `FUN_400a0734` | compute `DAT_80006688` (the countdown) from the CHAIN AFTER value / arrangement row (`param_1*6` units) |
+| `FUN_400866c4` | project text-state parser; has the `PATTERN_CHANGE_CHAIN_BEHAVIOR=` case (also `PATTERN_CHANGE_AUTO_SILENCE_TRACKS`) |
+| menu strings (file offsets) | `0xb5b28` "PATTERN CHANGE", `0xb5b37` "CHAIN AFTER", `0xb5b43` "SILENCE TRACKS", `0xb7487` "CHAIN BEHAVIOR", `0xb74d6` "PLAYS FREE" |
+
+### Why it's feasible
+
+1. **One choke point.** `FUN_400a0570` is where *every* pattern cue lands — one hook covers
+   manual trigs, chains, arranger.
+2. **The reload machinery already exists** (3 copies in `FUN_400a1eea`). Direct Jump does not
+   need new switch logic; it needs to (a) make a reload fire *now* instead of at the boundary,
+   and (b) not zero `_DAT_800065b4`.
+3. **Step position is a plain fast-RAM global** (`_DAT_800065b4`, + the 8-byte per-track
+   array). Save/restore-with-modulo around the reload block is exactly the stub idiom already
+   used by LAZY PART (`tools/patch.s`) and sticky scenes (`patch_scene2.s`).
+4. **Instant Part is free** — the reload block loads the new Part as part of a normal pattern
+   change, which is what the user wants.
+5. **Menu surgery is proven** — the MUTE MODE PERSONALIZE entry (Session 10,
+   `patch_mutemode.s` + `build_mutemode.py`: relocate label array, bump count, splice entry)
+   is the template.
+
+### DEEP TRACE (2nd pass, same session) — the real pattern-switch path
+
+The 3 countdown-gated reload blocks in `FUN_400a1eea` (`DAT_80006687→0`, `_DAT_80006514→0`,
+`_DAT_46c8028a≠0`) are the **arranger / RELOAD / chained-list** paths. A **plain manual
+pattern change while running does NOT use them.** It is handled inline in the **main per-step
+handler** of `FUN_400a1eea` (~`0x400a3f80`–`0x400a4bd0`):
+
+```
+per-step tick:
+  DAT_800065b6 = DAT_800065b6 + 1                       ; advance master step   (0x400a3fa? )
+  if (DAT_800065b6 >= DAT_400aba50[DAT_8000663d])       ; >= pattern length
+      DAT_800065b6 = 0                                   ; wrap
+  if (DAT_800065b6 == 2)  -> FUN_4009e884(pending)       ; 2-steps-early PART preload
+  else if (DAT_800065b6 == 0) {                          ; *** pattern boundary ***
+      _DAT_800065b4 = _DAT_800065b2 ; _DAT_800065b2++    ; bar counter
+      DAT_8000663d  = pattern scale index (reloaded)
+      iVar19 = DAT_400d80dc[ chainBehaviour ]            ; CHAIN AFTER interval  (table below)
+      iVar5  = (pending pattern != active)               ; "real change pending"
+      if ( switch-point reached, gated on _DAT_800065b2 % iVar19 ) {
+          DAT_800065c1/c2 = old active pat/bank          ; remember outgoing (for "keep source part" test)
+          DAT_800065be = DAT_800065c0                    ; *** COMMIT pending -> active pattern ***  (~0x400a43xx)
+          DAT_800065bd = DAT_800065bf                    ;                       bank
+          _DAT_80006628 = _DAT_80006630 (= loop start)   ; base for the per-track position math
+          _DAT_8000662c = _DAT_80006634 (= loop end)
+          FUN_40000c3c(0x460d17ae, &DAT_400d8167/69/6b)  ; notify UI (pattern/part LEDs)
+          ... rebuild scene masks, mute masks ...
+          iVar6 = _DAT_80006628 * patternLen             ; absolute tick base  (~0x400a4a??)
+          for t in 0..7 (audio) then 0..7 (MIDI):        ; recompute per-track positions
+              DAT_800065e4[t] (audio step-in-track), DAT_800065f4[t] (MIDI),
+              companion arrays DAT_80006604/14, DAT_800065c3/cb   ; all from iVar6 % trackLen
+          _DAT_800065b2 = _DAT_8000662a
+          DAT_800065b6 = 0                               ; *** master step reset to 0 ***
+      }
+  }
+```
+
+**`DAT_400d80dc` (CHAIN AFTER lookup, u32):**
+`[0]=-1(PLEN) [1]=1 [2]=2 [3]=3 [4]=4 [5]=6 [6]=8 [7]=12 [8]=16 [9]=24 [10]=32 [11]=48
+[12]=64 [13]=96 [14]=128 [15]=192 [16]=256` (then a MIDI-clock variant `[17..]`). Global
+setting = `DAT_8000004e`; per-pattern override = pattern blob `+0x8e56` (used if ≥ 0).
+`-1`/PLEN → gate uses the pattern's own length; `N` → gate is `barCounter % N == 0`.
+**No stock value switches mid-pattern** — the commit is unconditionally inside the
+`DAT_800065b6 == 0` (boundary) branch.
+
+**Corrected global roles:**
+- **`DAT_800065b6`** (byte) = **master step position** (0..len-1, wraps). *This* is the one to
+  preserve. (Earlier pass mislabelled `_DAT_800065b4` as the step counter.)
+- `_DAT_800065b4` (word) = latched bar counter (`= _DAT_800065b2` at each boundary).
+- `_DAT_800065b2` (word) = running bar counter.
+- `DAT_800065d3..e2` (16 B) = per-track "step limit" (len-1), filled by the countdown blocks.
+- `DAT_800065e4[8]` / `DAT_800065f4[8]` (u16) = per-track current step (audio / MIDI),
+  recomputed at the boundary from `_DAT_80006628 * len`.
+- `_DAT_80006628` / `_DAT_8000662c` = active loop-region start / end (in bars);
+  `_DAT_80006630` / `_DAT_80006634` = the *pending* loop region (set by `FUN_400a0570`).
+
+### Design (concrete)
+
+**Trigger:** PERSONALIZE toggle `PTN CHG : NORM / DIR` — free battery-backed bit near
+`0x800000dc` (MUTE MODE word). MUTE MODE menu surgery is the template
+(`patch_mutemode.s` + `build_mutemode.py`).
+
+**One detour, in the main per-step handler of `FUN_400a1eea`**, placed right after the
+`DAT_800065b6 + 1` / wrap logic and before the `== 0` boundary test:
+
+```
+if (g_directjump_mode && sequencer running && pending pattern set && pending != active) {
+    curStep = DAT_800065b6                      ; where we are right now
+    DAT_800065b6 = 0                            ; force the boundary branch THIS tick
+    _DAT_80006630 = <curStep expressed in the loop-start units>   ; so the per-track
+    _DAT_80006628-feeding path                                    ; math resumes at curStep
+    (bypass the CHAIN-AFTER gate: shadow chainBehaviour = index 1 / value 1, or
+     patch the branch, for this one tick only)
+}
+```
+
+Then an **exit stub** after the boundary handler: it has just set `DAT_800065b6 = 0` and the
+per-track arrays for "start of pattern". Overwrite `DAT_800065b6 = curStep % newLen` and, if
+the `_DAT_80006630` trick above did not already place them, fix
+`DAT_800065e4[t]` / `DAT_800065f4[t]` = `curStep % trackLen[t]`. Clear the one-shot.
+
+**Best case** (needs a build to confirm): setting `_DAT_80006630`/`_DAT_80006628` to the
+current position *before* the boundary handler runs lets the firmware's own per-track math
+(`iVar6 = _DAT_80006628 * len`, then `% trackLen` per track) produce the right positions —
+then the exit stub only has to fix the master `DAT_800065b6`. That would make the whole
+feature ≈ one detour + a ~15-instruction stub.
+
+**Instant Part / scene:** free — the boundary handler already loads them on the commit. (And
+LAZY PART is not in the `build_mutemode.py` build, so nothing to fight.)
+
+**"Instant" vs "next step":** forcing the wrap makes the switch land on the next step tick
+(≤ 1/16 at scale 16). Audibly identical to truly-instant for the sequencer (trigs fire on
+step edges anyway); only a still-ringing voice from the old pattern differs — same as a
+stopped→pattern-change on stock OT.
+
+### Open items before a build
+
+1. **Exact detour address + displaced bytes** in `FUN_400a1eea`'s per-step handler
+   (`~0x400a3fa0`, just after the `DAT_800065b6++`/wrap). Needs a clean Ghidra *listing*
+   (not decompile) of `0x400a3f80–0x400a4060` with bytes — the r2 disasm desyncs here
+   (ColdFire), and `GhidraDJ10`'s listing-dump approach returned nothing (fix: disassemble
+   the function first, iterate `getInstructions(body)`).
+2. **CHAIN-AFTER gate bypass** for the forced mid-bar boundary — cleanest is a per-tick
+   shadow of `DAT_8000004e`/`+0x8e56` = index 1; confirm nothing else reads it in that window.
+3. **`_DAT_80006630` units** — is it bars, steps, or ticks? Determines whether the
+   "feed current position as loop-start" shortcut works or the exit stub must rebuild the
+   per-track arrays. Read the boundary handler's `iVar6 = _DAT_80006628 * len` site and
+   `FUN_4009e884`.
+4. **Per-track PLAYS-FREE / per-track-scale tracks** — those keep independent positions
+   (`DAT_800065d3..e2` limits, separate advance); decide whether DIRECT JUMP preserves them
+   (same modulo) or lets them re-home.
+5. **Scope v1** to manual pattern selection only — do not change ARRANGER or pattern CHAIN
+   (their commits share this handler but are gated differently; the `g_directjump` check must
+   also require "not in arranger mode": `DAT_800065bc == -1` / arranger-active flag).
+6. Emulation harness (`tools/emu_directjump.py`) before flash, per project norm — though
+   `FUN_400a1eea` has Unicorn-unsupported instrs (like the frame builder), so the harness may
+   only be able to exercise the stub in isolation with a hand-built state, as `emu_otfx.py` did.
+
+### Staged build plan
+
+- **S1 — menu toggle only.** `PTN CHG : NORM/DIR` PERSONALIZE entry, stored + read back, does
+  nothing yet. Independently flashable, zero audio risk. Confirms the menu surgery (value
+  column width: `DIR` = 3 chars, fine).
+- **S2 — crude trigger, no position preservation.** Detour forces the immediate boundary
+  when DIR + pending. Expect: pattern switches instantly but restarts at step 1 (like DIRECT
+  START). HW-test that the switch is glitch-free and the Part swaps.
+- **S3 — position preservation.** Add the `_DAT_80006630` pre-set + exit stub. HW-test that
+  playback continues at the playhead, incl. shorter destination pattern.
+- **S4 — polish.** Per-track plays-free handling, arranger/chain exclusion, edge cases.
+
+### Session 15 continued — address-level map of the per-step switch, and S1 built
+
+**Full listing of `FUN_400a1eea`'s per-step handler** (`out/ghidra/GhidraDJ12_session15.txt`,
+via `GhidraDJ12.java` — the working listing-dump recipe: `dec.decompileFunction` first to
+force disassembly, then `lst.getInstructions(body)`):
+
+| addr | what |
+|---|---|
+| `0x400a3f94` | `moveq #1,D0 ; cmp.l (0x800065b8).l,D0 ; bne.w 0x400a4d36` — bail unless running |
+| `0x400a3fdc` | `move.b (0x800065b6).l,D0 ; addq.l #1,D0 ; move.b D0,(0x800065b6).l` — **advance master step** |
+| `0x400a3ff8` | `cmp.l (0x0,A0,D1*4),D0` (A0=`0x400aba50`, D1=`DAT_8000663d` scale idx) `; blt 0x400a4006` |
+| `0x400a3ffe` | `clr.b D1 ; move.b D1,(0x800065b6).l` — **wrap step → 0** |
+| `0x400a4006` | `tst.b (0x8000667e).l ; beq.w 0x400a412e` — `8000667e`≠0 = "stop after this pattern" path |
+| `0x400a412e` | `move.b (0x800065b6).l,D1 ; moveq #2,D4 ; cmp.l D0,D4 ; bne.w 0x400a421a` — step==2? |
+| `0x400a413e`–`0x400a421a` | **step==2**: CHAIN-AFTER gate (below); on switch-point → `FUN_4009e884(pendBank,pendPat)` @`0x400a4210` = **2-steps-early Part preload**, then `bra 0x400a4b9a` |
+| `0x400a421a` | `tst.b D1 ; bne.w 0x400a4b9e` — **step==0?** (D1 = step); else it's a mid-pattern tick → `LAB_400a4ba0` |
+| `0x400a4220`–`0x400a4466` | **step==0**: latch bar ctr (`800065b4=800065b2`, `800065b2++`), rebuild the same CHAIN-AFTER gate |
+| `0x400a4310` | `D1 = A4[0x8e56]` (per-pattern CHAIN override, `<0` → use global `mvs.b (0x8000004e).l`) |
+| `0x400a4316` | `D4 = DAT_400d80dc[D1*4]` — CHAIN interval value |
+| `0x400a4358`–`0x400a439c` | gate: `divsl.l D4,D0:D1` → `(barctr+1) % interval == 0` → switch; PLEN (D4≤0) → `len <= barctr+1` |
+| `0x400a4466` | `mvs.b (0x800065c0).l,D0 ; cmp #-1 ; bne 0x400a44a0` — pending pattern set? |
+| **`0x400a44d0`** | `move.b D1,(0x800065be).l` / `0x400a44dc: move.b (800065bf),(800065bd)` — **THE COMMIT** (pending pat/bank → active). `800065c1/c2` first hold the *outgoing* pat/bank. |
+| `0x400a44e2` | `_DAT_80006638 = _DAT_80006628 = _DAT_80006630` ; `_DAT_8000662c = _DAT_80006634` — loop region ← pending loop region (set by `FUN_400a0570`, normally start=0) |
+| `0x400a4548`,`0x400a459a` | post UI msgs `0x400d8167` (pattern LED), `0x400d8169` (part LED, part idx = `DAT_400eb037[bd*0x9b340 + be*0x8ed8]`) |
+| `~0x400a4700`–`0x400a4a40` | *(gap not dumped)* sets `DAT_800065b6 = 0`, computes `iVar6 = _DAT_80006628 * patternLen`, per-track loop base = stack local `0x3c(SP)` |
+| `0x400a4aa2` | `move.l (0x3c,SP),D0 ; divsl.l D1,D0:D0 ; move.w D0,(A0)` — **per-track step** (`DAT_800065f4[t]` MIDI, `DAT_800065e4[t]` audio) = base / trackLen; remainder → `DAT_80006614[t]` |
+| `0x400a4b9e` | `clr.l D6` |
+| **`0x400a4ba0`** | `LAB_400a4ba0` — **common tail, reached from switch AND no-switch**: per-track loop that decrements `DAT_800065c3[t]`, fires `FUN_400a536c(t)` (trig) when it hits 0, refills `DAT_800064d0[t]` |
+
+**`_DAT_80006628`/`_DAT_80006630` are in units of *loop repeats*** (`base = _DAT_80006628 *
+patternLen`), so they cannot express "resume at step N" directly — the per-track math is
+loop-granular; step-within-loop lives only in `DAT_800065b6` + the per-track step counters.
+→ **position preservation = an exit stub** that, after the boundary handler has homed
+everything to step 0, rewrites `DAT_800065b6 = savedStep % newLen` and the 16 per-track
+`DAT_800065e4[]`/`DAT_800065f4[]` (+ companions `DAT_800065c3[]`, `DAT_80006604/14[]`).
+
+**Storage word for DIRECT JUMP = `0x800000a8`** — the last free battery-backed PERSONALIZE
+word (0xd4/d8/dc taken); **zero refs in the stock image** (verified). 0 = stock.
+
+### S1 BUILT (menu only) — `tools/patch_directjump.s` + `tools/build_directjump.py`
+
+`PERSONALIZE → DIRECT JUMP : OFF / ON`, stored in `0x800000a8`, read back — **no behaviour
+change yet**. Same menu surgery as `build_mutemode.py` (3 arrays relocated to
+`0x400d7600/60/c0`, one entry spliced at index 2, `moveq #15→#16` @`0x40068fb2`, 5 refs
+repointed from the symbol table). Carries the Bug-1 fix (`patch_trigscale`, byte-identical).
+→ `out/OCTATRACK_OS1.40C_DIRECTJUMP.{syx,bin}` (`140C_KYOTI`), 385 B changed vs stock,
+round-trip checksum ok. **Not flashed.** Purpose: confirm the menu + the new storage word on
+the MKI before the audio hooks go in.
+
+### MIDI Program Change on a pattern change (RE'd) — `FUN_4009e884(bank, pat)`
+
+Stock: the step engine calls `FUN_4009e884` from the **step == 2** branch (`0x400a4210`),
+i.e. **2 steps before** the pattern boundary, only when the CHAIN-AFTER gate says a switch
+is coming. `FUN_4009e884`:
+- gated on `0x8000002b` bit 1 = `MIDI_PROGRAM_CHANGE_SEND`; channel from `0x8000002c`
+  (`MIDI_PROGRAM_CHANGE_SEND_CH`, -1 = AUTO → derived from the sounding tracks' channels).
+- absolute pattern number = `pat + bank*16`, `& 0x7f`.
+- emits **Bank Select CC** (`0xB0|ch`, from `0x400d80d8`, 3 B) then **Program Change**
+  (`0xC0|ch`, from `0x400d80d6`, 2 B) via `FUN_40010bc8`.
+- **de-duplicates per channel** (`46c7a9b6[ch]` PC cache, `46c76100[…]` bank cache) — a
+  repeated PC for the same channel is suppressed.
+
+**DIRECT JUMP handling (S2):** forcing the switch skips the step==2 branch, so Hook A sends
+the PC itself. It sends **once per distinct pending pattern**, on the first tick it sees the
+cue, and forces the actual switch on the **next** tick → the PC leads the audio switch by
+one step (~30–125 ms). Rapidly flipping A→B→C before the switch: each new pending pattern
+gets its PC (`FUN_4009e884` dedup means an unchanged one is a no-op), and only the pattern
+that is still pending when the commit fires actually engages.
+
+### S2 + S3 BUILT — `tools/patch_directjump.s` (3 hooks) + `tools/build_directjump.py`
+
+The `DIRECT JUMP` toggle now gates three detours into `FUN_400a1eea`. Free scratch
+`0x80006a40..42` (`G_ARMED` / `G_STEP` / `G_PCPAT`). All inert when the toggle is 0, when
+the arranger (`0x460d1aec`) is running, or when a pattern chain (`0x80006546`) is running.
+
+| hook | site | displaced | what it does |
+|---|---|---|---|
+| **A** `dj_a` | `0x400a4006` | `tst.b (0x8000667e).l` (6 B → jsr) | `movem` all regs. If DJ on + real pending manual switch: send the Program Change once per distinct pending pattern (`jsr FUN_4009e884`), keep `G_STEP` = current `DAT_800065b6` fresh. Tick 1 → set `G_ARMED`. Tick 2 (armed) → `clr.b DAT_800065b6` so the step==0 body runs this tick. Restore regs, run the displaced `tst.b`, `rts` (Z flag intact for the caller's `beq.w`). No pending / DJ off → `clr G_ARMED`. |
+| **B** `dj_b` | `0x400a42fa` | `move.l #0x8e56,d0` (6 B → jsr) | If `G_ARMED`: overwrite the jsr return address with `0x400a43a0` (the "switch confirmed" label) and set `D6 = 1` — bypasses the CHAIN-AFTER gate (incl. the per-pattern `+0x8e56` override) for this one tick. Else: run the displaced `move.l #0x8e56,d0`. |
+| **C** `dj_c` | `0x400a4840` | `clr.b d0 ; move.b d0,(0x800065b6).l` (8 B → jsr+nop) | Not armed → `DAT_800065b6 = 0` (stock). Armed → `newLen = LEN_TBL[ PAT_SCALE[newBank*0x9b340 + newPat*0x8ed8] ]`; set both `D7` and `DAT_800065b6` to `G_STEP % newLen`. Because the switch body derives every per-track position from `D7` (`D5=D7-1`, `(0x3c,SP)=D7-1`, `divsl trackLen`), overriding `D7` resumes all 16 tracks at the playhead (each mod its own length) — no need to touch the per-track arrays. `clr G_ARMED`. |
+
+**PC timing:** Hook A sends the PC on tick 1 and forces the switch on tick 2 → 1 step of
+lead (~30–125 ms). Tunable (add a 2nd arm phase for a 2-step lead like stock).
+
+**Verified — `tools/emu_directjump.py` : ALL GOOD.** Each stub run in isolation on a
+hand-built state (`FUN_400a1eea` won't run under Unicorn): OFF path, arranger/chain guards,
+2-tick arm→commit, PC send + dedup + resend-on-flip, register save/restore, gate-bypass
+return rewrite + `D6`, playhead resume incl. shorter/longer destination pattern.
+(unicorn-m68k doesn't set CCR on `tst.b (abs).l` — the caller's `beq.w` Z flag is correct by
+construction: `dj_a`'s last op before `rts` is the verbatim stock `tst.b`.)
+
+Build: `python3 tools/build_directjump.py` → `out/OCTATRACK_OS1.40C_DIRECTJUMP.{syx,bin}`
+(`140C_KYOTI`), 684 B vs stock, round-trip ok, Bug-1 fix byte-identical. **NOT FLASHED.**
+
+### HW-only unknowns for the S2/S3 flash
+
+1. **Register liveness across Hook B's skip.** Armed path jumps `0x400a42fa → 0x400a43a0`,
+   skipping `0x400a4300–0x400a439c` (pure CHAIN-gate computation — no memory writes, only
+   `jsr FUN_40033968` which is a plain read). A2 (ping-pong ptr) and A3 are set *before*
+   `0x400a42fa`; D0–D4 are reloaded at `0x400a43a0+`. Believed safe; confirm no glitch/hang.
+2. **`FUN_4009e884` from Hook A's context** — it's already called from this same handler at
+   `0x400a4210`, so the context is fine; confirm the PC actually goes out and lands on the
+   right channel with `MIDI_PROGRAM_CHANGE_SEND` on.
+3. **Per-track PLAYS-FREE / per-track-length patterns** — Hook C's `newLen` ignores the
+   `DAT_400eb035` per-track-length flag; worst case the master step is briefly out of range
+   and the next tick's wrap (`0x400a3ff8`) clamps it. Confirm no audible artefact.
+4. **`G_ARMED` power-up garbage** — Hook A runs before B/C every playing tick and disarms
+   when there's no valid pending, so B/C never see stale garbage. Confirm.
+5. **Feel** — is 1 step of PC lead / next-tick switch the right "in time" behaviour, or does
+   it want the 2-step lead?
+
+### Session 15 tooling (uncommitted)
+
+`tools/ghidra/attic/GhidraDirectJump{,2,3,4,5}.java`, `GhidraDJ{6..14}.java`;
+`tools/patch_directjump.s`, `tools/build_directjump.py`, `tools/emu_directjump.py`. Scratch
+dumps `dj{1..13}.txt` + `a1eea.txt` in the session scratchpad. Committed dumps
+`out/ghidra/GhidraDirectJump{1..4}_session15.txt`, `out/ghidra/GhidraDJ12_session15.txt`.

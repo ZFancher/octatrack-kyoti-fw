@@ -99,8 +99,40 @@ Build outputs (all `140C_KYOTI`, all carry Bug-1 fix):
 - Not started: any refinement past DT; DSP56300 extraction (would be a separate project —
   see `COVERAGE.md`).
 
-**Next likely tasks:** more mute-behaviour ideas from the user; or unrelated RE. Point the
-new chat here first, then the relevant `NOTES.md` Session section.
+**Session 14 (2026-09-01, `wip/mute-mode`, RE only):** scoped a **4th MUTE MODE** — instant
+dry cut + FX tails + *resume at playhead* (stock-OT unmute). `FUN_40004db8` fully disassembled
+(`tools/emu_otfx.py`, ALL GOOD): its only mute lever is zeroing the post-FX MAIN word; no
+pre-FX voice control there. Candidate = keep MAIN word open (V6 D5-trick) + force the
+per-voice pre-FX amp array `0x46c7ff42[t]` to 0 (filled every frame by `FUN_4000d16c` at
+`0x4000d36e`), voice struct untouched. Two HW-only unknowns (is `0x46c7ff42` pre-FX? does the
+DSP keep advancing a 0-amp voice?). **DT rests on the same 2nd unknown — flash DT first to
+settle it, then build this.** Rename on landing: `OT / OT+FX (new) / OT+FX TRIG / DT`.
+Full writeup: `NOTES.md` "Session 14".
+
+**Session 15 (2026-09-02, `wip/mute-mode`, RE only):** feasibility of an Elektron-style
+**DIRECT JUMP** pattern-change mode (switch immediately, keep the step position, load the
+new Part at once). **Verdict: FEASIBLE, medium effort**, entirely in the mapped sequencer
+engine. Found the cue choke point `FUN_400a0570` (pending pattern → `DAT_800065bf/c0`), the
+master step counter `_DAT_800065b4` (zeroed in every one of `FUN_400a1eea`'s 3 pattern-reload
+blocks), and pattern length `_DAT_800065b6`. Design = 1 detour on `FUN_400a0570` (arm an
+immediate switch) + a LAZY-PART-style save/restore-with-modulo stub around the reload block,
+plus a NORMAL/DIRECT JUMP PERSONALIZE toggle (MUTE MODE template). Full writeup + function
+map + open items: `NOTES.md` "Session 15".
+
+**Session 15 continued:** mapped the real per-step pattern switch in `FUN_400a1eea` at the
+instruction level (commit at `0x400a44d0`; master step `DAT_800065b6`; CHAIN-AFTER gate; MIDI
+Program Change = `FUN_4009e884`, sent 2 steps early). **DIRECT JUMP BUILT (S1+S2+S3, NOT
+FLASHED):** `tools/patch_directjump.s` (menu `DIRECT JUMP : OFF/ON` in free word `0x800000a8`
++ 3 hooks — arm/PC-send `0x400a4006`, gate-bypass `0x400a42fa`, playhead-resume `0x400a4840`)
++ `tools/build_directjump.py` → `out/OCTATRACK_OS1.40C_DIRECTJUMP.{syx,bin}`, 684 B vs stock.
+`tools/emu_directjump.py` ALL GOOD (stubs in isolation). Behaviour: a manually cued pattern
+switches on the next step tick, keeps the playhead position, loads the new Part at once, PC
+~1 step ahead; arranger/chain untouched. Full writeup + HW-only unknowns in `NOTES.md`
+"Session 15 continued" → "S2 + S3 BUILT".
+
+**Next likely tasks:** HW-flash DIRECT JUMP (5 unknowns listed in NOTES); flash DT (Session
+14's key unknown), then the 4th mute mode; more ideas; or unrelated RE. Point the new chat
+here first, then the relevant `NOTES.md` Session section.
 
 **Backlog idea (scoped, not started):** auto-remove a trigless lock once a LIVE-REC
 `[NO]`+knob erase clears its last p-lock. Feasible, ~3-5 sessions, needs the (unmapped)
