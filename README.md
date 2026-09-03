@@ -104,9 +104,9 @@ Elektron ships a ZIP with **two transports of the same OS** — a `.bin` and a
 > **`main`** branch is the conservative line: Bug 1 + MUTE MODE `OT` / `OT+FX`
 > only, at the exact `patch_softmute.s` (V6b) that was flashed and confirmed.
 > This branch adds, on top of that: the soft cut extended to **SOLO** (softmute
-> V7), a **DT** sequencer-mute mode, and an in-progress **side-chain compressor**
-> — all emulator-verified, most never flashed. Per-feature status is in the
-> table under *MUTE MODE* and *SIDE-CHAIN COMPRESSOR* below.
+> V7), a **DT** sequencer-mute mode, a **DIRECT JUMP** pattern-change mode, and
+> an in-progress **side-chain compressor** — all emulator-verified, none flashed.
+> Per-feature status is in the tables below.
 
 ### Bug 1 — Plays-Free MIDI manual-trig stall  ·  **fixed, hardware-confirmed (MKI)**
 
@@ -133,19 +133,29 @@ Sources: `tools/patch_mutemode.s`, `tools/patch_softmute.s` (V7 on this branch,
 `tools/emu_mute.py`, `tools/emu_solo.py`, `tools/emu_dt.py`; write-ups
 [`NOTES.md`](NOTES.md) "Session 9–12".
 
-#### Hardware-test status — read this before you flash
+On this branch `patch_softmute.s` is **V7**: the same soft-cut mechanism that was
+confirmed on hardware for mute (Session 10), plus the SOLO extension, which is
+emulator-only. Full status for every feature is in the table near the end.
 
-| element | on-hardware status (Octatrack MKI) |
-|---|---|
-| Bug 1 manual-trig fix | **confirmed** — flashed 2026-08-28, stall gone, no regression |
-| MUTE MODE menu + `OT+FX` soft **mute** mechanism | **confirmed** — the Session-10 build (softmute V6b, shipped on `main`) was flashed and works |
-| ↳ the **SOLO** extension (V7, this branch's `build_mutemode.py`) | **emulator only**, never flashed |
-| **DT** mode (`build_mutemode_dt.py`) | **emulator only**, never flashed |
+### DIRECT JUMP — an Elektron-style immediate pattern change  ·  *emulator only, not flashed*
 
-`OT` mode is byte-for-byte stock. The soft paths are validated in a ColdFire
-emulator (Unicorn, real image bytes), which proves control-flow and the DSP
-frame-word edits but does not model the DSP or the audio engine. Flash at your
-own risk; keep the official `.syx` on hand ([`FLASHING.md`](FLASHING.md)).
+A `DIRECT JUMP : OFF / ON` PERSONALIZE toggle (`OFF` by default, stored in a free
+battery-backed word). When `ON`, manually cueing a new pattern:
+
+- switches on the **next step tick** instead of quantising to the end of the
+  current pattern,
+- keeps the **playhead step position** (the new pattern resumes where the old
+  one was, modulo its length) rather than restarting at step 1,
+- loads the new **Part immediately**,
+- sends the MIDI Program Change ~1 step early.
+
+The arranger and pattern chains are untouched. `tools/patch_directjump.s` — one
+menu entry (free word `0x800000a8`) + three hooks into the per-step sequencer
+engine (`FUN_400a1eea`). `python3 tools/build_directjump.py` → `140C_KYOTI`,
+684 B off stock. Write-up: [`NOTES.md`](NOTES.md) "Session 15"; emulator
+`tools/emu_directjump.py` (the hooks are exercised as stubs — `FUN_400a1eea`
+itself has instructions Unicorn can't run, so this is **not** a full-handler
+test). Five hardware-only unknowns are listed in `NOTES.md`; **never flashed**.
 
 ### SIDE-CHAIN COMPRESSOR — external key input for the stock DynamiX compressor  ·  *in progress, not flashed*
 
@@ -166,6 +176,32 @@ Built in stages, none flashed yet:
 
 Write-up: [`NOTES.md`](NOTES.md) "Session 17"; DSP source `tools/patch_sc_dsp.asm`;
 emulators `tools/emu_sidechain.py`, `tools/emu_sc_dsp.py`.
+
+### Hardware-test status — everything on this branch, read before you flash
+
+| element | build | on-hardware status (Octatrack MKI) |
+|---|---|---|
+| Bug 1 manual-trig fix | all | **confirmed** — flashed 2026-08-28, stall gone, no regression |
+| MUTE MODE menu + `OT+FX` soft **mute** mechanism | `build_mutemode.py` | **confirmed** — the Session-10 build (softmute V6b, shipped on `main`) was flashed and works |
+| ↳ the **SOLO** extension (softmute V7) | `build_mutemode.py` (this branch) | **emulator only**, never flashed |
+| **DT** sequencer-mute mode | `build_mutemode_dt.py` | **emulator only**, never flashed |
+| **DIRECT JUMP** pattern-change mode | `build_directjump.py` | **emulator only** (stub-level — see the section above), never flashed |
+| side-chain `KEY` menu + formatter | `build_sidechain.py` / `build_sidechain3.py` | **emulator only**, never flashed |
+| side-chain DSP hooks | `build_sidechain2.py` | hooks **emulator-verified** (dsp56kEmu); audio path untested, never flashed |
+
+`OT` mode is byte-for-byte stock, and every mod is `OFF` by default. The soft
+paths and DIRECT JUMP are validated in a ColdFire emulator (Unicorn, real image
+bytes) — control-flow + frame-word edits, not the audio engine; the side-chain
+DSP runs in dsp56kEmu. Nothing here proves how anything *sounds* on the unit.
+Flash at your own risk; keep the official `.syx` on hand
+([`FLASHING.md`](FLASHING.md)).
+
+### Backlog — scoped, not built
+
+- **Auto-remove an emptied trigless lock.** When a LIVE-REC `[NO]`+knob erase
+  clears a step's last p-lock, drop the now-purposeless trigless lock too.
+  Feasible, ~3–5 sessions; needs the (still unmapped) per-step trig / p-lock
+  data model first. Brief: [`NOTES.md`](NOTES.md) "Session 13 — SCOPING ONLY".
 
 ### Not included: the octamax (Maxolydian) mods
 
