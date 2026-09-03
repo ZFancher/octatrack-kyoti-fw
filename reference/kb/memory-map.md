@@ -99,6 +99,32 @@ Confidence: **C**onfirmed (HW or real decompile) · **L**ikely (emu/inference) �
 | `FUN_4006d57c` | C | Shared **dialog constructor** — used to add PERSONALIZE / menu entries (MUTE MODE, DIRECT JUMP). | NOTES L90 |
 | `0x400a9670` | C | 8-entry track-id table used by the LED painter | NOTES L704 |
 
+## Effect & machine parameter-descriptor table (`0x400d2fe4`–`0x400d5e04`)
+
+> source: `refs/octa-bt-pt/patch_tool/addresses.json` + `tools/generate_streamlit_patch.py` @ `e970dd0` · fetched 2026-09-02 · confidence: **C** for FILTER/DELAY/NONE (disassembly), **L** for the other 12 (structural analogy)
+
+Each descriptor: base `E`, then a `0x96`-byte default-parameter block at `E_0x96`
+(`E_0x96 = E + 0x96`). The effect **id byte** sits at `E + 0x3b`. Stock FX1 = FILTER,
+FX2 = DELAY; FX-default assignment via `lea` operands `0x40005680` (FX1) /
+`0x4000568a` (FX2); NONE descriptor `E = 0x400d45e0`.
+
+| Effect | id | `E` | Effect | id | `E` |
+|---|---|---|---|---|---|
+| FILTER | `0x04` | `0x400d4772` | PLATE REV | `0x14` | `0x400d5594` |
+| SPATIALIZER | `0x05` | `0x400d4904` | SPRING REV | `0x15` | `0x400d5726` |
+| DELAY | `0x08` | `0x400d4a96` | DARK REV | `0x16` | `0x400d58b8` |
+| EQUALIZER | `0x0c` | `0x400d4c28` | COMPRESSOR | `0x18` | `0x400d5a4a` |
+| DJ EQ | `0x0d` | `0x400d4dba` | LOFI | `0x1c` | `0x400d5d6e` |
+| PHASER | `0x10` | `0x400d4f4c` | COMB FILTER | `0x13` | `0x400d5402` |
+| FLANGER | `0x11` | `0x400d50de` | CHORUS | `0x12` | `0x400d5270` |
+
+FX1-disallowed (hardware menu restriction, not addressing): DELAY + the 3 reverbs
+(FX2-exclusive; cf. `dsp56300.md` FX1 3072 words / FX2 16384).
+
+**Machine** descriptors, same 12-byte-slot + `0x96` block shape:
+`FLEX = 0x400d2fe4`, `STATIC = 0x400d3176` (TSTR = slot byte index 10; `1`=AUTO
+stock, `0`=OFF). PICKUP's TSTR has min 1 (0 stalls the sequencer — OOB table idx).
+
 ## Free scratch words (for new menu/feature state)
 
 | Addr | Status | Used by |
@@ -114,7 +140,10 @@ _(NOTES L811: "free words inside the block". Verify a candidate is untouched bef
 
 ## To import next (from `refs/`)
 
-- **octa-bt-pt** → default-value table offsets in the MAIN OS image (this table).
-- **OctaLib** / **ems-octakit** → resolve the `_DAT_46c82456 + pat*0x18b2 + trk*0xc`
-  trig/p-lock record layout against their on-CF struct definitions → `file-format.md`.
-- **octabam** → DSP program layout vs `FUN_40001d4c` upload → `dsp56300.md`.
+- **OctaLib** → resolve the `_DAT_46c82456 + pat*0x18b2 + trk*0xc` trig/p-lock
+  record layout against the on-CF struct definitions → `file-format.md`.
+- **octabam** `docs/` — its named ColdFire functions (sequencer / parts / voicing)
+  are directly comparable to ours; sweep for `FUN_4000xxxx` names we haven't got.
+
+_Done: octa-bt-pt (descriptor table above), octabam + octa-bt-pt DSP boot map
+(`dsp56300.md`). ems-octakit is closed-source — nothing to import (see EXTERNAL_RESEARCH.md)._

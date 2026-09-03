@@ -74,8 +74,18 @@ PART block addresses (1..8 — **OctaLib notes "two sets of parts, why?"**, like
 ### Machine types
 
 Stored as consecutive bytes with the part definition. `00` = STATIC (default);
-FLEX has its own code. Full type→code table: **TODO** (OctaLib left it open;
-firmware `FUN_40097168` dispatches 0-4 = FLEX/STATIC/THRU/NEIGHBOR/PICKUP).
+FLEX has its own code. Machine-type→code table still open at the byte level, but
+firmware `FUN_40097168` dispatches `0-4 = FLEX/STATIC/THRU/NEIGHBOR/PICKUP`, and
+the FLEX/STATIC parameter descriptors are located: `0x400d2fe4` / `0x400d3176`
+(see `memory-map.md` "Effect & machine descriptor table").
+
+### Effect types → id  (from octa-bt-pt)
+
+`FILTER 0x04 · SPATIALIZER 0x05 · DELAY 0x08 · EQ 0x0c · DJ EQ 0x0d · PHASER 0x10
+· FLANGER 0x11 · CHORUS 0x12 · COMB 0x13 · PLATE REV 0x14 · SPRING REV 0x15 ·
+DARK REV 0x16 · COMPRESSOR 0x18 · LOFI 0x1c` — full descriptor addresses in
+`memory-map.md`. Stock FX1=FILTER, FX2=DELAY. This is likely the same encoding
+the Part block uses for its per-track FX1/FX2 assignment.
 
 ### Trig types beyond regular/rec
 
@@ -104,8 +114,13 @@ payload. Confirm against ems-octakit before building on it.
 
 ## To import next
 
-- **ems-octakit** (`refs/ems-octakit/`) — Parts↔Kits: has concrete Part/Bank
-  serialization + 1.40C offsets; best second source to nail the Part block.
-- **octa-bt-pt** (`refs/octa-bt-pt/`) — default-value tables (more OS-image than
-  CF-format, but overlaps on Part defaults).
+- **ems-octakit** — ⚠️ **closed-source**. The repo is only a README + issue
+  templates; the patcher runs in-browser and isn't published. Value is limited to
+  the README's behavioural description (Parts→256 Kits/Project, migration to first
+  64 Kit slots, date-based version string e.g. `26512`, MKI keys FUNC+MIDI /
+  FUNC+BANK). No code or offsets to import. If the Part block needs a second
+  source, ask on their GitHub Discussions or diff a before/after image.
 - OctaLib credits **WiliWoW** (Elektronauts) for format help — worth a thread search.
+- Best remaining lever for the p-lock model: build a tiny reader against a real
+  exported `bank01.work` (ask user to export) using OctaLib's offsets, then walk
+  outward from `TRAC+9` / `TRAC+41` to find the p-lock region.
