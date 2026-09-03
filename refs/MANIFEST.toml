@@ -42,7 +42,7 @@ url    = "https://github.com/emuyia/ems-octakit.git"
 branch = "main"
 pin    = "HEAD"
 side   = "file-format"
-use    = "browser patcher for OS 1.40C that swaps 4 Parts/Bank for 256 Kits/Project — deep Part/Bank serialization + 1.40C image offsets."
+use    = "CLOSED-SOURCE (repo = README + issue templates only). Browser patcher, 4 Parts/Bank -> 256 Kits/Project. Only the behavioural README is usable; watch for a future open-source release or docs."
 
 [repo.octa-bt-pt]
 url    = "https://github.com/bryantysinger/octa-bt-pt.git"
