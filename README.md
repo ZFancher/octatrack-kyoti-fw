@@ -14,7 +14,7 @@ This repository is a **fork of [`mxldyn/octamax`](https://github.com/mxldyn/octa
 by Maxolydian. It keeps that project's method — study the OS, prove the
 understanding by making tiny guarded patches, redistribute **no** Elektron
 binary — and continues it along one line of work: a hardware-confirmed MIDI bug
-fix, and a **MUTE MODE** that changes how an audio-track mute or solo behaves.
+fix, and a **MUTE MODE** that changes how an audio-track mute behaves.
 
 Full lineage and acknowledgements: [`CREDITS.md`](CREDITS.md).
 
@@ -107,7 +107,7 @@ a 6-byte detour into a code cave (`tools/patch_trigscale.s`). Flashed to a real
 Octatrack MKI (2026-08-28) — the stall is gone, no regression. Write-up:
 [`NOTES.md`](NOTES.md) "Session 5–7"; emulator `tools/emu_trigbug.py`.
 
-### MUTE MODE — a PERSONALIZE toggle for audio-track mute / solo behaviour
+### MUTE MODE — a PERSONALIZE toggle for audio-track mute behaviour
 
 Off by default (`MUTE MODE = OT`). Stored in a battery-backed PERSONALIZE word,
 so a freshly flashed unit is stock until you opt in.
@@ -115,36 +115,35 @@ so a freshly flashed unit is stock until you opt in.
 | mode | effect |
 |---|---|
 | **OT** | stock behaviour, byte-for-byte. |
-| **OT+FX** | *soft mute*: the dry signal cuts fast and clean (like a per-track STOP), the track's FX inserts ring their delay/reverb tails out, new trigs on a silenced track make no sound. SOLO silencing folds into the same path. |
-| **DT** | *Digitakt-style sequencer mute*: a voice already sounding keeps playing under its own amp envelope (fades/sustains/loops per the AMP page), its FX ring, and only **new** trigs are suppressed. |
+| **OT+FX** | *soft mute*: on mute the dry signal cuts fast and clean (like a per-track STOP), the track's FX inserts ring their delay/reverb tails out, and a muted track's trigs make no sound. SOLO is unchanged (stock hard cut). |
 
-Sources: `tools/patch_mutemode.s`, `tools/patch_softmute.s`; emulators
-`tools/emu_mutemode.py`, `tools/emu_solo.py`, `tools/emu_dt.py`; write-ups
-[`NOTES.md`](NOTES.md) "Session 9–13".
+Sources: `tools/patch_mutemode.s`, `tools/patch_softmute.s` (V6b); emulators
+`tools/emu_mutemode.py`, `tools/emu_mute.py`; write-ups [`NOTES.md`](NOTES.md)
+"Session 9–10".
 
 #### Hardware-test status — read this before you flash
-
-Every build below bundles **all** of these into one image; the MUTE MODE ones
-have only ever been proven to the extent shown:
 
 | element | on-hardware status (Octatrack MKI) |
 |---|---|
 | Bug 1 manual-trig fix | **confirmed** — flashed 2026-08-28, stall gone, no regression |
-| OT+FX soft **mute** behaviour | behaviour **confirmed** at an earlier implementation (softmute V6, Session 10); the current code (V7) is a rewrite and has **not been re-flashed** |
-| OT+FX applied to **solo** silencing | **not tested on hardware** — emulator only (`emu_solo.py`) |
-| DT sequencer-mute | **not tested on hardware** — emulator only (`emu_dt.py`); `build_mutemode_dt.py` only |
+| MUTE MODE menu + `OT+FX` soft mute | **confirmed** — the Session-10 build was flashed and works; `patch_softmute.s` here (V6b) is a faithful reconstruction of it, emulator-verified |
 
-`OT` mode is byte-for-byte stock, so a unit with MUTE MODE left at the default is
-unaffected regardless. The MUTE MODE paths are validated in a ColdFire emulator
-(Unicorn, real image bytes) but the emulator does not model the DSP or the audio
-engine — it proves the control-flow and the frame-word edits, not the sound.
-Flash at your own risk; keep the official `.syx` on hand ([`FLASHING.md`](FLASHING.md)).
+`OT` mode is byte-for-byte stock. The soft path is also validated in a ColdFire
+emulator (Unicorn, real image bytes), which proves control-flow and the DSP
+frame-word edits but does not model the DSP or the audio engine. Flash at your
+own risk; keep the official `.syx` on hand ([`FLASHING.md`](FLASHING.md)).
 
-### Carried in from octamax (Maxolydian)
+> **Not shipped here:** extending the soft cut to **SOLO** (softmute V7) and a
+> **DT** Digitakt-style sequencer mute — both are emulator-verified only, never
+> flashed, and live on the [`wip/mute-mode`](../../tree/wip/mute-mode) branch.
 
-Boot branding, no BANK/PTN countdown, lazy Part transitions, arp key-scales, LED
-dirty indicators — all optional, all off by default. See [`CREDITS.md`](CREDITS.md),
-[`sysex/README.md`](sysex/README.md), [`HANDOFF.md`](HANDOFF.md).
+### Not included: the octamax (Maxolydian) mods
+
+These KYOTI builds carry **no** Maxolydian mods — no boot branding, BANK/PTN
+countdown removal, lazy Part transitions, arp key-scales, or LED dirty
+indicators. For those, use `tools/build.py` / `sysex/apply_patch.py`. See
+[`CREDITS.md`](CREDITS.md), [`sysex/README.md`](sysex/README.md),
+[`HANDOFF.md`](HANDOFF.md).
 
 ---
 
@@ -153,7 +152,7 @@ dirty indicators — all optional, all off by default. See [`CREDITS.md`](CREDIT
 ```
 START_HERE.md        onboarding + current frontier (read first)
 README.md            this — project intent and lineage
-BUILD_KYOTI.md       roll-your-own build guide (Bug 1 fix, MUTE MODE, DT)
+BUILD_KYOTI.md       roll-your-own build guide (Bug 1 fix, MUTE MODE)
 CREDITS.md           lineage and acknowledgements
 ARCHITECTURE.md      consolidated architecture (hardware, OS, memory map, container)
 COVERAGE.md          what firmware subsystems are mapped vs untouched
@@ -184,7 +183,7 @@ See **[`BUILD_KYOTI.md`](BUILD_KYOTI.md)** for the full walkthrough. In short:
 
 ```sh
 ./fetch-os.sh && ./analyze.sh && ./setup.sh   # one-time: bring your own OS 1.40C + tools
-python3 tools/build_mutemode_dt.py            # -> out/OCTATRACK_*MUTEMODE_DT.{syx,bin}
+python3 tools/build_mutemode.py               # -> out/OCTATRACK_*MUTEMODE.{syx,bin}
 ```
 
 Every build is a guarded binary patch: it asserts the stock bytes at each splice,

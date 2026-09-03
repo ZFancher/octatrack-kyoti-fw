@@ -14,8 +14,8 @@ build is byte-for-byte reproducible from the stock file.
 | build command | version string | contents |
 |---|---|---|
 | `python3 tools/build_trigscale_only.py` | `1.40C` (unchanged) | **Bug 1 fix only** — the Plays-Free MIDI manual-trig stall — on otherwise-stock 1.40C |
-| `python3 tools/build_mutemode.py` | `140C_KYOTI` | Bug 1 fix + **MUTE MODE** PERSONALIZE toggle: `OT` (stock) / `OT+FX` (soft mute — dry cuts clean, FX tails ring; SOLO too) |
-| `python3 tools/build_mutemode_dt.py` | `140C_KYOTI` | the above **plus** `DT` — Digitakt-style pure sequencer mute (sounding voice rides its own amp envelope, only new trigs suppressed) |
+| `python3 tools/build_mutemode.py` | `140C_KYOTI` | Bug 1 fix + **MUTE MODE** PERSONALIZE toggle: `OT` (stock) / `OT+FX` (soft mute — on mute the dry cuts clean, the track's FX tails ring; SOLO unchanged) |
+| `python3 tools/build_softmute.py` | `140C_KYOTI` | Bug 1 fix + the same soft mute **always on**, no menu entry |
 
 All mods are **OFF by default** (`MUTE MODE = OT`, stored in a battery-backed
 PERSONALIZE word). A freshly flashed unit is indistinguishable from stock until
@@ -27,20 +27,20 @@ use `tools/build.py` / `sysex/apply_patch.py` instead — see [`sysex/README.md`
 
 ### Hardware-test status
 
-Each MUTE MODE build bundles every element below into one image. What has
-actually run on an Octatrack MKI:
-
 | element | status |
 |---|---|
-| Bug 1 manual-trig fix | **hardware-confirmed** (flashed 2026-08-28; also the whole of `build_trigscale_only.py`) |
-| OT+FX soft **mute** | behaviour confirmed at softmute **V6** (Session 10); shipping code is the **V7** rewrite, **not re-flashed** |
-| OT+FX for **solo** silencing | **emulator only** — not tested on hardware |
-| DT sequencer-mute | **emulator only** — not tested on hardware (`build_mutemode_dt.py` only) |
+| Bug 1 manual-trig fix | **hardware-confirmed** (flashed 2026-08-28; the whole of `build_trigscale_only.py`) |
+| MUTE MODE menu + `OT+FX` soft **mute** | **hardware-confirmed** — the Session-10 build was flashed and works; `patch_softmute.s` (V6b) here reconstructs it faithfully and is emulator-verified |
 
 The emulator (Unicorn, real image bytes) proves control-flow and the DSP
 frame-word edits — it does not model the DSP or the audio path, so it does not
 prove how anything *sounds*. `OT` mode is byte-for-byte stock. Flash at your own
 risk.
+
+> **Not in these builds:** extending the soft cut to **SOLO** and a **DT**
+> Digitakt-style sequencer mute. Both are emulator-verified only, never flashed —
+> they live on the `wip/mute-mode` branch (`git checkout wip/mute-mode`, then
+> `build_mutemode_dt.py`).
 
 Each build emits, in `out/`:
 
@@ -76,8 +76,8 @@ re-run `./analyze.sh`.
 ## Build
 
 ```sh
-python3 tools/build_mutemode_dt.py            # -> out/OCTATRACK_*MUTEMODE_DT.{syx,bin}
-# or build_mutemode.py (no DT), or build_trigscale_only.py (fix only)
+python3 tools/build_mutemode.py               # -> out/OCTATRACK_*MUTEMODE.{syx,bin}
+# or build_softmute.py (always-on, no menu), or build_trigscale_only.py (fix only)
 ```
 
 Every build is a **guarded binary patch**: it asserts the stock bytes at each
@@ -88,7 +88,7 @@ aborts before writing if anything is off — a wrong stock file, an already-patc
 image, or a checksum mismatch.
 
 Pass a custom version string as the first argument if you want
-(`python3 tools/build_mutemode_dt.py MY_BUILD`), but the Kyoti builds default to
+(`python3 tools/build_mutemode.py MY_BUILD`), but the Kyoti builds default to
 `140C_KYOTI` and that is what appears on the boot splash and SYSTEM STATUS.
 
 ## The reproducible patch (no assembler needed)
@@ -96,7 +96,7 @@ Pass a custom version string as the first argument if you want
 `sysex/` carries the older MAXOLYDIAN patch set captured hunk-by-hunk as JSON
 (load address + expected original bytes + replacement bytes) and applies it with
 `sysex/apply_patch.py` — no cross-assembler required. See
-[`sysex/README.md`](sysex/README.md). The MUTE MODE / DT work is currently
+[`sysex/README.md`](sysex/README.md). The MUTE MODE work is currently
 build-from-source only.
 
 ## Flashing

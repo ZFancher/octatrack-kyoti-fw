@@ -31,6 +31,8 @@ of `mxldyn/octamax`. Remotes: `origin` = your fork, `upstream` = mxldyn (fetch o
 |---|---|
 | `START_HERE.md` | this — onboarding + current frontier |
 | `NOTES.md` | the full chronological RE log; every finding, every session, every dead end |
+| `reference/kb/*.md` | **distilled knowledge base** — address map + file format + DSP + container + techniques, ours merged with external RE. Read the relevant one before a new patch |
+| `reference/EXTERNAL_RESEARCH.md` | index of the 6 external OT-RE repos + the sync/distill workflow (`tools/refs/`) |
 | `README.md` | project intent, repo layout, and the **build/flash recipe** (§"Building a `.syx` or `.bin`") |
 | `COVERAGE.md` | what firmware subsystems are mapped vs untouched; the DSP-is-a-separate-blob caveat |
 | `ARCHITECTURE.md` | memory map, container format, boot/upgrade chain |
@@ -65,39 +67,47 @@ of `mxldyn/octamax`. Remotes: `origin` = your fork, `upstream` = mxldyn (fetch o
 | Ghidra headless | JDK 21 + Ghidra 12.1.2 paths in the memory file; project `ghidra_project octamax`, `-process section_3_MAIN_OS.bin -noanalysis`; one-shot probe scripts in `tools/ghidra/attic/*.java` (see `tools/ghidra/README.md`), dumps land in `out/ghidra/` |
 | CPU emulation | `tools/emu_*.py` (Unicorn, runs the real image bytes) — one per feature |
 | build a flashable | `tools/build_*.py` → `.syx` (MIDI) + `.bin` (CF card); see README §"Building" |
+| external RE research | `python3 tools/refs/sync.py` (clone/refresh the 6 repos into `refs/`, gitignored) · `python3 tools/refs/whatsnew.py` (what changed upstream → re-distil into `reference/kb/`) |
 
 ## 5. Shipped / in-flight work (2026-09-01)
 
+Two branches: **`main`** ships only what has been on hardware; **`wip/mute-mode`**
+carries the untested continuation (solo, DT). `octamax-main` tracks upstream.
+
 | Thread | State |
 |---|---|
-| **Bug 1** — Plays-Free MIDI manual-trig stall | **FIXED + HW-confirmed on MKI.** `tools/patch_trigscale.s`, always-on. Carried into every build below. |
+| **Bug 1** — Plays-Free MIDI manual-trig stall | **FIXED + HW-confirmed on MKI.** `tools/patch_trigscale.s`, always-on. In every build. |
 | **Bug 2** — MIDI LFO SETUP knobs send CC on the twin audio channel | Emulation says **likely already fixed in 1.40C**; awaiting HW confirmation. `tools/emu_lfocc.py`. |
-| **MUTE MODE** PERSONALIZE toggle | Menu entry added (`tools/patch_mutemode.s`), values `OT / OT+FX / DT`. |
-| ↳ **OT+FX** (soft mute: dry cuts fast+clean, FX inserts ring; extended to SOLO) | `patch_softmute.s` V7. **Session 10 build flashed on MKI, works.** V7 (solo) built, not yet flashed. |
-| ↳ **DT** (Digitakt-style pure sequencer mute: sounding voice rides its own amp env, only new trigs suppressed) | Built + emu-verified (`tools/emu_dt.py`), **not flashed**. Build: `python3 tools/build_mutemode_dt.py` → `out/OCTATRACK_*MUTEMODE_DT.*`. |
-| Older shipped mods (branding, no BANK/PTN countdown, lazy Part transitions, arp key-scales, LED dirty indicators) | See `NOTES.md` + `HANDOFF.md`; live in `tools/build.py` / `sysex/`. |
+| **MUTE MODE** PERSONALIZE toggle (`main`) | `tools/patch_mutemode.s`, values `OT / OT+FX`. Menu surgery HW-confirmed (Session 10). |
+| ↳ **OT+FX** soft mute — dry cuts fast+clean, FX inserts ring (`main`) | `patch_softmute.s` **V6b** (V6 mechanism + the Session-10 gate/frame fixes). **Flashed on MKI, works.** `python3 tools/build_mutemode.py`. |
+| ↳ **OT+FX for SOLO** (non-soloed tracks keep FX tails) | `patch_softmute.s` **V7**, **`wip/mute-mode` only** — emulator-verified (`emu_solo.py`), never flashed. |
+| ↳ **DT** (Digitakt-style pure sequencer mute) | **`wip/mute-mode` only** — emulator-verified (`emu_dt.py`, `build_mutemode_dt.py`), never flashed. |
+| Maxolydian mods (branding, no BANK/PTN countdown, lazy Part transitions, arp key-scales, LED dirty indicators) | Not in the KYOTI builds. `tools/build.py` / `sysex/`; see `CREDITS.md`. |
 
-Build outputs (all `140C_KYOTI`, all carry Bug-1 fix):
-- `out/OCTATRACK_*MUTEMODE.*` — OT / OT+FX (2-mode). **User has flashed this line.**
-- `out/OCTATRACK_*MUTEMODE_DT.*` — OT / OT+FX / DT (3-mode). Separate files; not flashed.
-- `build_mutemode.py` and `build_mutemode_dt.py` produce byte-identical OT/OT+FX code
-  (DT additions are `.ifdef DT_MODE`).
+Build outputs on `main` (all `140C_KYOTI`, all carry the Bug-1 fix):
+- `build_trigscale_only.py` → `out/OCTATRACK_*PLAYSFREEFIX.*` — Bug-1 fix only, version stays `1.40C`.
+- `build_mutemode.py` → `out/OCTATRACK_*MUTEMODE.*` — Bug-1 fix + MUTE MODE (`OT` / `OT+FX`). **The flashed line.**
+- `build_softmute.py` → `out/OCTATRACK_*SOFTMUTE_PFFIX.*` — Bug-1 fix + V6b soft mute ALWAYS ON (no menu).
 
 ---
 
 ## 6. Current frontier — UPDATE THIS EACH SESSION
 
-**As of 2026-09-01 (Session 12):**
+**As of 2026-09-01 (post-Session-13, repo published):**
 
+- Repo published as `github.com/ZFancher/octatrack-kyoti-fw`. **`main` was trimmed to
+  ship only hardware-tested tooling**: Bug-1 fix + MUTE MODE `OT`/`OT+FX` (V6b). The V7
+  solo rewrite and DT mode moved to **`wip/mute-mode`** (pushed, emulator-verified only).
 - The user is **away from the MKI for ~2 weeks** — build + emulate only, no flashing.
-- **DT mute mode** is built and emulator-clean but unproven on hardware. The open risk:
-  whether the DSP keeps advancing a plain FLEX one-shot's amp envelope while the frame
-  words flow untouched (should — `FUN_40004db8` is downstream of the voice updater).
-  Fallback if not: also clear the `46c7ff64` output-mute bit for DT tracks.
-- Hardware test checklists waiting: `NOTES.md` "Session 12 → NEXT" (DT), plus the still-open
-  "Session 11 → NEXT" (OT+FX solo) and "Session 10 → NEXT" (MUTE MODE menu + persistence).
-- Not started: any refinement past DT; DSP56300 extraction (would be a separate project —
-  see `COVERAGE.md`).
+- To resume the untested work: `git checkout wip/mute-mode`. Open risks there:
+  - **DT**: whether the DSP keeps advancing a plain FLEX one-shot's amp envelope while the
+    frame words flow untouched (should — `FUN_40004db8` is downstream of the voice updater).
+    Fallback: also clear the `46c7ff64` output-mute bit for DT tracks.
+  - **solo**: the V7 "silenced set" path — `NOTES.md` "Session 11 → NEXT".
+- Hardware test checklists waiting (on `wip/mute-mode`): `NOTES.md` "Session 12 → NEXT" (DT),
+  "Session 11 → NEXT" (OT+FX solo). "Session 10 → NEXT" (menu + persistence) applies to `main`.
+- Not started: any refinement past DT; DSP56300 extraction (a separate project — see
+  `COVERAGE.md` and `sambanks/octabam` in `CREDITS.md`).
 
 **Session 14 (2026-09-01, `wip/mute-mode`, RE only):** scoped a **4th MUTE MODE** — instant
 dry cut + FX tails + *resume at playhead* (stock-OT unmute). `FUN_40004db8` fully disassembled
