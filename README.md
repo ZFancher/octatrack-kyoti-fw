@@ -13,8 +13,9 @@ small, optional, reversible firmware changes built from it.**
 This repository is a **fork of [`mxldyn/octamax`](https://github.com/mxldyn/octamax)**
 by Maxolydian. It keeps that project's method — study the OS, prove the
 understanding by making tiny guarded patches, redistribute **no** Elektron
-binary — and continues it along one line of work: a hardware-confirmed MIDI bug
-fix, and a **MUTE MODE** that changes how an audio-track mute behaves.
+binary — and continues it: a hardware-confirmed MIDI bug fix, a **MUTE MODE**
+that changes how an audio-track mute behaves, and (on the `wip/mute-mode`
+branch) an in-progress **side-chain compressor**.
 
 Full lineage and acknowledgements: [`CREDITS.md`](CREDITS.md).
 
@@ -98,6 +99,15 @@ Elektron ships a ZIP with **two transports of the same OS** — a `.bin` and a
 
 ## What this fork adds
 
+> **You are on `wip/mute-mode` — the working branch.** It carries everything
+> below, including work that has **not** been on hardware. The published
+> **`main`** branch is the conservative line: Bug 1 + MUTE MODE `OT` / `OT+FX`
+> only, at the exact `patch_softmute.s` (V6b) that was flashed and confirmed.
+> This branch adds, on top of that: the soft cut extended to **SOLO** (softmute
+> V7), a **DT** sequencer-mute mode, and an in-progress **side-chain compressor**
+> — all emulator-verified, most never flashed. Per-feature status is in the
+> table under *MUTE MODE* and *SIDE-CHAIN COMPRESSOR* below.
+
 ### Bug 1 — Plays-Free MIDI manual-trig stall  ·  **fixed, hardware-confirmed (MKI)**
 
 A Plays-Free MIDI track with trig quantize *Direct* and pattern scale *Per Track*
@@ -112,30 +122,50 @@ Octatrack MKI (2026-08-28) — the stall is gone, no regression. Write-up:
 Off by default (`MUTE MODE = OT`). Stored in a battery-backed PERSONALIZE word,
 so a freshly flashed unit is stock until you opt in.
 
-| mode | effect |
-|---|---|
-| **OT** | stock behaviour, byte-for-byte. |
-| **OT+FX** | *soft mute*: on mute the dry signal cuts fast and clean (like a per-track STOP), the track's FX inserts ring their delay/reverb tails out, and a muted track's trigs make no sound. SOLO is unchanged (stock hard cut). |
+| mode | effect | build |
+|---|---|---|
+| **OT** | stock behaviour, byte-for-byte. | any |
+| **OT+FX** | *soft mute*: on mute the dry signal cuts fast and clean (like a per-track STOP), the track's FX inserts ring their delay/reverb tails out, and a muted track's trigs make no sound. On **`wip/mute-mode` this also extends to SOLO** — a track silenced because another track is soloed gets the same soft cut instead of the stock hard cut (softmute V7). | `build_mutemode.py` |
+| **DT** | pure *sequencer* mute, Digitakt-style: the voice that is already sounding keeps playing under its own AMP envelope, its FX ring, and only *new* trigs are suppressed. | `build_mutemode_dt.py` |
 
-Sources: `tools/patch_mutemode.s`, `tools/patch_softmute.s` (V6b); emulators
-`tools/emu_mutemode.py`, `tools/emu_mute.py`; write-ups [`NOTES.md`](NOTES.md)
-"Session 9–10".
+Sources: `tools/patch_mutemode.s`, `tools/patch_softmute.s` (V7 on this branch,
+`--defsym DT_MODE=1` for the DT build); emulators `tools/emu_mutemode.py`,
+`tools/emu_mute.py`, `tools/emu_solo.py`, `tools/emu_dt.py`; write-ups
+[`NOTES.md`](NOTES.md) "Session 9–12".
 
 #### Hardware-test status — read this before you flash
 
 | element | on-hardware status (Octatrack MKI) |
 |---|---|
 | Bug 1 manual-trig fix | **confirmed** — flashed 2026-08-28, stall gone, no regression |
-| MUTE MODE menu + `OT+FX` soft mute | **confirmed** — the Session-10 build was flashed and works; `patch_softmute.s` here (V6b) is a faithful reconstruction of it, emulator-verified |
+| MUTE MODE menu + `OT+FX` soft **mute** mechanism | **confirmed** — the Session-10 build (softmute V6b, shipped on `main`) was flashed and works |
+| ↳ the **SOLO** extension (V7, this branch's `build_mutemode.py`) | **emulator only**, never flashed |
+| **DT** mode (`build_mutemode_dt.py`) | **emulator only**, never flashed |
 
-`OT` mode is byte-for-byte stock. The soft path is also validated in a ColdFire
+`OT` mode is byte-for-byte stock. The soft paths are validated in a ColdFire
 emulator (Unicorn, real image bytes), which proves control-flow and the DSP
 frame-word edits but does not model the DSP or the audio engine. Flash at your
 own risk; keep the official `.syx` on hand ([`FLASHING.md`](FLASHING.md)).
 
-> **Not shipped here:** extending the soft cut to **SOLO** (softmute V7) and a
-> **DT** Digitakt-style sequencer mute — both are emulator-verified only, never
-> flashed, and live on the [`wip/mute-mode`](../../tree/wip/mute-mode) branch.
+### SIDE-CHAIN COMPRESSOR — external key input for the stock DynamiX compressor  ·  *in progress, not flashed*
+
+Adds a `KEY` parameter to the COMPRESSOR effect's page 2: pick one of the eight
+audio tracks to *drive* the compression on the track the compressor sits on
+(classic kick-ducks-the-pad), and it keeps keying even when the key track is
+muted. Scoped to the **same DSP core** — a compressor on tracks 1–4 chooses a
+key among 1–4, one on 5–8 among 5–8; the chooser will not offer a track it is
+not wired to.
+
+Built in stages, none flashed yet:
+
+| build | contents | state |
+|---|---|---|
+| `build_sidechain.py` | the `KEY` menu parameter only; the DSP is untouched, so it does nothing audible | menu + dynamic `T1..T8` formatter **emulator-verified** |
+| `build_sidechain2.py` | + the DSP hooks: every track publishes its pre-FX block to a shared ring, and the compressor's detector reads the chosen track's ring. **SPATIALIZER is donated** for the code space and removed from the FX menu. | hooks **emulator-verified** under dsp56kEmu; the gain-reduction audio path is a **hardware** test |
+| `build_sidechain3.py` | menu scaffolding for the whole control surface — `KEY` `KFLT` (LP/OFF/HP) `KGAIN` `MON` — no DSP | formatters **emulator-verified** |
+
+Write-up: [`NOTES.md`](NOTES.md) "Session 17"; DSP source `tools/patch_sc_dsp.asm`;
+emulators `tools/emu_sidechain.py`, `tools/emu_sc_dsp.py`.
 
 ### Not included: the octamax (Maxolydian) mods
 
@@ -152,7 +182,7 @@ indicators. For those, use `tools/build.py` / `sysex/apply_patch.py`. See
 ```
 START_HERE.md        onboarding + current frontier (read first)
 README.md            this — project intent and lineage
-BUILD_KYOTI.md       roll-your-own build guide (Bug 1 fix, MUTE MODE)
+BUILD_KYOTI.md       roll-your-own build guide (Bug 1 fix, MUTE MODE, side-chain)
 CREDITS.md           lineage and acknowledgements
 ARCHITECTURE.md      consolidated architecture (hardware, OS, memory map, container)
 COVERAGE.md          what firmware subsystems are mapped vs untouched
@@ -162,8 +192,12 @@ DESIGN_BANKPAGE.md   design notes for the shelved live bank-paging feature
 HANDOFF.md           the shipped LED / encoder "dirty indicator" patches
 octamax_handoff_*.md frozen briefs from earlier sessions
 
+reference/kb/        distilled knowledge base (address map, formats, DSP) — ours + external RE
+reference/           EXTERNAL_RESEARCH.md (the 6 mined repos + workflow), UPSTREAM_INBOX.md
+refs/                MANIFEST.{toml,lock} tracked; the clone cache under it is git-ignored
 sysex/               the older MAXOLYDIAN patch as JSON hunks + a no-assembler applier
-tools/               build scripts, ColdFire patch sources, Unicorn emulators, packers
+tools/               build scripts, ColdFire patch sources, Unicorn + DSP56300 emulators, packers
+tools/refs/          sync.py / whatsnew.py — clone + track the external-RE repos
 tools/ghidra/        Ghidra headless helpers; attic/ = one-shot probe scripts (provenance)
 fetch-os.sh          download + extract the official OS
 analyze.sh           entropy + binwalk + strings + container unpack -> out/
