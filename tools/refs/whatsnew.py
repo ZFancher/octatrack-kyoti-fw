@@ -42,6 +42,9 @@ def main(argv: list[str]) -> int:
     lock = locked()
     repos = load()
     any_new = False
+    stamp = REFS_DIR / ".last-sync"
+    if stamp.exists():
+        print(f"(last sync: {stamp.read_text().strip()})\n")
     for name, meta in repos.items():
         if wanted and name not in wanted:
             continue
