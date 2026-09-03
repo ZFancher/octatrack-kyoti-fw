@@ -30,6 +30,14 @@ read like ancestors of ours. **octabam's ColdFire function names are directly
 comparable to ours** — when RE'ing a new ColdFire area, grep `refs/octabam/docs/`
 for the `FUN_4000xxxx` first, it may already be named and explained.
 
+First sweep (2026-09-02): of ~140 `FUN_40xxxxxx` in octabam's docs, 27 are ones
+we hadn't recorded — mostly the **SETTINGS-tree menu / screen-drawing** cluster
+(`FUN_40064908` draw, `FUN_40064c18` open, `FUN_4005578c` key dispatch,
+`FUN_40012bd8` text primitive) plus part/track teardown. Folded the menu cluster
+into `memory-map.md` "UI / menu"; the rest listed there under "To import next".
+octabam also gives the full `FUN_4006d57c` confirm-popup signature we use for
+PERSONALIZE entries.
+
 ## octamax (upstream) — the pipeline we inherited
 
 `sysex/apply_patch.py`, `tools/build.py`, the code-cave detour method, the

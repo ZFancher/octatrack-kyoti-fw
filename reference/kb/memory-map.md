@@ -96,8 +96,22 @@ Confidence: **C**onfirmed (HW or real decompile) · **L**ikely (emu/inference) �
 
 | Addr | Conf | What | Source |
 |---|---|---|---|
-| `FUN_4006d57c` | C | Shared **dialog constructor** — used to add PERSONALIZE / menu entries (MUTE MODE, DIRECT JUMP). | NOTES L90 |
+| `FUN_4006d57c(title,nLines,linesArray,3,handler)` | C | Shared **confirm-popup / dialog constructor** — YES → `handler(0)`, NO → `handler(1)`; guard `_DAT_460e5cd0 == 0`. Used to add PERSONALIZE / menu entries (MUTE MODE, DIRECT JUMP). | NOTES L90 + `refs/octabam/docs/MAINMENU.md` @ e1dcfa9 |
 | `0x400a9670` | C | 8-entry track-id table used by the LED painter | NOTES L704 |
+| `FUN_40064908` | L | **SETTINGS-tree menu draw fn** — renders rows, calls each row's `+0x0c` value-getter. Row stride ×24 computed at `0x4006496a`. | `refs/octabam/docs/MAINMENU.md` @ e1dcfa9 |
+| `FUN_40064c18` | L | SETTINGS-tree **menu opener** (heap-allocates the window); thunk `0x40064d78`. Cleanup `FUN_400650a0 → FUN_40064bc0`. Nav skip-if-unselectable at `0x40064f0a` / `0x40064fe8`. | same |
+| `FUN_4005578c(keycode,edge)` | L | key dispatch via the u32 table at `0x400a7280` | same |
+| `FUN_40005638` | L | FX-default initialiser — **contains** the FILTER/DELAY descriptor `lea` operands `0x40005680` (FX1) / `0x4000568a` (FX2) that octa-bt-pt patches. Not the live FX assignment, just the boot default. | `refs/octabam/docs/{MAINMENU,DSP}.md` + octa-bt-pt |
+| `FUN_400053d8(0x44,0,0,val,0,0)` | L | generic setter, triggered by a write to `0x80000049` | `refs/octabam/docs/` @ e1dcfa9 |
+| `FUN_40012bd8` | L | "draw string at (x,y)" text primitive; `FUN_40012254` = XOR-rect (selection highlight) | same |
+
+> **SETTINGS tree ≠ PERSONALIZE menu.** octabam mapped the newer struct-based
+> SETTINGS tree: **24-byte rows** (`+0x00` label ptr · `+0x04` geom · `+0x08`
+> action fn ptr / selectable marker · `+0x0c` value-getter ptr · `+0x10` child
+> list · `+0x14` page id) and a 28-byte list descriptor (`+0x00` count, `+0x04`
+> scroll, `+0x18` row array). Our MUTE MODE / DIRECT JUMP work patches the older
+> **PERSONALIZE** screen = 3 flat parallel `u32[16]` arrays at `0x400b2a34`
+> (label) / `0x400b2a74` (getter) / `0x400b2ac0` (setter). Don't conflate them.
 
 ## Effect & machine parameter-descriptor table (`0x400d2fe4`–`0x400d5e04`)
 
@@ -140,10 +154,14 @@ _(NOTES L811: "free words inside the block". Verify a candidate is untouched bef
 
 ## To import next (from `refs/`)
 
-- **OctaLib** → resolve the `_DAT_46c82456 + pat*0x18b2 + trk*0xc` trig/p-lock
-  record layout against the on-CF struct definitions → `file-format.md`.
-- **octabam** `docs/` — its named ColdFire functions (sequencer / parts / voicing)
-  are directly comparable to ours; sweep for `FUN_4000xxxx` names we haven't got.
+- **octabam `docs/`** — sweep done 2026-09-02 for the menu/UI cluster (above).
+  ~20 more octabam-only `FUN_40xxxxxx` remain uncatalogued (screen-record /
+  audio-editor / part-teardown: `FUN_40043728`, `FUN_40052474`, `FUN_40083bf8`,
+  `FUN_4004d948`, `FUN_400905d4`, …) — pull them when a feature touches that area.
+- **OctaLib / firmware** — the disk p-lock array (`file-format.md`, `TRAC+0x62`,
+  64×32 B) still needs its byte-offset → parameter map, and cross-checking through
+  the real deserialiser (`insp_banks.py` / `FUN_4008ded0`) into RAM.
 
-_Done: octa-bt-pt (descriptor table above), octabam + octa-bt-pt DSP boot map
-(`dsp56300.md`). ems-octakit is closed-source — nothing to import (see EXTERNAL_RESEARCH.md)._
+_Done: octa-bt-pt descriptor table; octabam+octa-bt-pt DSP boot map (`dsp56300.md`);
+OctaLib bank layout + our own p-lock-region RE (`file-format.md`); octabam menu
+cluster (above). ems-octakit is closed-source — nothing to import._

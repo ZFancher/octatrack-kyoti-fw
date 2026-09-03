@@ -84,16 +84,54 @@ the FLEX/STATIC parameter descriptors are located: `0x400d2fe4` / `0x400d3176`
 `FILTER 0x04 · SPATIALIZER 0x05 · DELAY 0x08 · EQ 0x0c · DJ EQ 0x0d · PHASER 0x10
 · FLANGER 0x11 · CHORUS 0x12 · COMB 0x13 · PLATE REV 0x14 · SPRING REV 0x15 ·
 DARK REV 0x16 · COMPRESSOR 0x18 · LOFI 0x1c` — full descriptor addresses in
-`memory-map.md`. Stock FX1=FILTER, FX2=DELAY. This is likely the same encoding
-the Part block uses for its per-track FX1/FX2 assignment.
+`memory-map.md`. Stock FX1=FILTER, FX2=DELAY.
 
-### Trig types beyond regular/rec
+**Confirmed in the PART block** (DEMO `bank01.work`): each `PART` tag (`0x8EED6` +
+`n*0x18BB`) is followed by `+8 = part index (0-3)`, then **8 bytes FX1 id / track**
+then **8 bytes FX2 id / track**. e.g. PART slot 8: FX1 `04 18 0c 12 10 04 0c 1c`,
+FX2 `08 08 14 08 08 12 12 08` — every FX2 is DELAY/PLATE/CHORUS, consistent with
+the FX1-disallowed rule (`memory-map.md`). 8 PART slots = 4 live + 4 saved
+(`.work` vs `.strd` copies inside the one file); only 4 name entries exist
+(`ADDR_PART_NAME`), DEMO parts are `ONE`/`TWO`/`THREE`/`FOUR`.
 
-OctaLib: "other trig types are stored a little bit later in the file" — not mapped.
-**This is the gap for the NOTES Session 13 backlog** (auto-remove an emptied
-trigless lock). Next step: line up `_DAT_46c82456 + pat*0x18b2 + trk*0xc` (firmware
-in-RAM, stride `0x18b2`/track) against the on-disk `LENGTH_TRAC = 0x922` block and
-find where p-locks / conditional-trig / micro-timing land.
+### Full TRAC block layout — p-lock region mapped
+
+> source: our RE against a real hardware export — Elektron factory **OT DEMO**
+> `bank01.work` (`~/Desktop/OT Backup/KYOTI/OT DEMO/`, exported 2026-01, 636 113 B,
+> reproducible: it's the factory demo). Method: `tools/inspect_bank.py`
+> (Session 16). confidence: **L** — structure is consistent across all 16
+> patterns / 8 tracks and shows sensible per-step ramps, but not yet cross-checked
+> against the firmware deserializer or a controlled before/after export.
+
+The audio-track block (`LENGTH_TRAC = 0x922`, from the `TRAC` tag) is **fixed
+size** and lays out as:
+
+| Offset | Size | Field |
+|---|---|---|
+| `+0x00` | 8 | `"TRAC\0\0\0\0"` tag |
+| `+0x08` | 1 | track number (0–7) |
+| `+0x09` | 8 | **regular trig** bitmap — 64 steps, 1 bit/step, reverse bit order |
+| `+0x11` … `+0x48` | ~56 | further per-step bitmaps: trigless / one-shot / swing / slide / **rec-trig @+0x29** (OctaLib), all 8 B each; empty in the DEMO |
+| `+0x49` | 16 | delimiter `AA×8 00×8` |
+| `+0x59` | 9 | **param header**: `[LEN] 02 00 FF 00 00 00 00 00` — `LEN` ∈ `{0x10,0x20,0x40}` = this **track's** step count **16 / 32 / 64** (varies per track *within* a pattern → it's the per-track length / "TRACK" scale mode, not the pattern master length) |
+| `+0x62` | `0x800` | **p-lock array — 64 steps × 32 bytes.** `0xFF` = that parameter not locked on that step. `record[step][p]` = locked value of p-lockable parameter `p` |
+| `+0x862` | `0xC0` | per-step aux array — 64 × 3 B (trig conditions / micro-timing / retrig?); `0x00` = default; empty in the DEMO |
+
+`0x62 + 0x800 + 0xC0 = 0x922` exactly.
+
+**p-lock array evidence** (P11 t2, a filter-sweep pattern lock): step records at
+exactly 32-byte spacing, byte `0x12` ramping `40 → 29 → 14 → 05 → 00` across
+steps 0,2,4,6,8 and byte `0x00` climbing `4F → 5E → 68` on steps 10,12,14.
+Locked-param byte offsets seen so far: `0x00, 0x09, 0x12–0x14, 0x1F` — sparse,
+~32 slots ≈ one byte per p-lockable track parameter (SRC / pitch-start-len-rate /
+AMP / FILTER / FX1 / FX2 / LFO). Exact offset→param map is future work.
+
+**For the NOTES Session 13 backlog** (auto-remove an emptied trigless lock): a
+"trigless lock" = a step with entries in the `+0x62` array but its bit clear in
+the `+0x09` trig bitmap (and in the trigless-trig bitmap around `+0x11`). Erasing
+its last lock = every byte of `record[step]` back to `0xFF`; then if that step is
+also not in any trig bitmap, clear its trigless-trig bit too. Confirm the exact
+trigless-trig bitmap offset (one of `+0x11..+0x28`) before building.
 
 ---
 
@@ -108,7 +146,10 @@ find where p-locks / conditional-trig / micro-timing land.
 
 ⚠️ The disk per-track stride (`0x922`) and the RAM `trk*0xc` are different views —
 `0xc` is almost certainly just a per-track *header/pointer* array, not the trig
-payload. Confirm against ems-octakit before building on it.
+payload. The disk block's own p-lock array is `64 × 32 B` (above); the RAM
+`pat*0x18b2` stride ÷ 8 tracks ≈ `0x375`/track, so the deserialiser clearly
+repacks — don't assume disk offsets survive into RAM. Verify with `insp_banks.py`
+(runs the real `FUN_4008ded0`) before hooking anything that reads locks in RAM.
 
 ---
 
