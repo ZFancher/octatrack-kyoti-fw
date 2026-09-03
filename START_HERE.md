@@ -38,8 +38,7 @@ of `mxldyn/octamax`. Remotes: `origin` = your fork, `upstream` = mxldyn (fetch o
 | `ARCHITECTURE.md` | memory map, container format, boot/upgrade chain |
 | `FLASHING.md` | step-by-step flashing (MIDI + CF card) and the per-feature hardware test procedures |
 | `DESIGN_BANKPAGE.md` | design notes for the (shelved) live bank-paging feature |
-| `HANDOFF.md` | the shipped LED / encoder "dirty indicator" patches — a *separate* line of work |
-| `octamax_handoff_{5,6,7}.md` | frozen distilled briefs from earlier sessions (7 = the MIDI trig bug, pre-Session-9) |
+| `HANDOFF.md` | the shipped LED / encoder "dirty indicator" patches — a *separate* line of work (self-marked historical; `NOTES.md` is the current reference) |
 
 ## 3. Hard constraints (do not relearn these the hard way)
 

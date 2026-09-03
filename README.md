@@ -160,7 +160,6 @@ NOTES.md             the full chronological reverse-engineering log
 FLASHING.md          safe-flashing guide + bootloader recovery net (read before flashing)
 DESIGN_BANKPAGE.md   design notes for the shelved live bank-paging feature
 HANDOFF.md           the shipped LED / encoder "dirty indicator" patches
-octamax_handoff_*.md frozen briefs from earlier sessions
 
 sysex/               the older MAXOLYDIAN patch as JSON hunks + a no-assembler applier
 tools/               build scripts, ColdFire patch sources, Unicorn emulators, packers
