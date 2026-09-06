@@ -272,18 +272,26 @@ also written to the checksummed **'ANDY' block in battery SRAM at `0x100fff00`**
 | `0x4001f322` / `0x4001f3be` / `0x4001fb24` | the three **restore** sites: `memcpy(0x80000070, 0x100fff00, 0x64)` (boot / validate / defaults). `0x64` covers runtime `0x80000070..0x800000d3` only. |
 | stock setter pattern | writes *both* copies, e.g. `0x40068898`: `0x80000090` **and** `0x100fff20`. shadow = `0x100fff00 + (runtime − 0x80000070)`. |
 
-Stock PERSONALIZE runtime words sit ~`0x80000090+`; known: `MUTE FOCUSES TRK`
-`0x80000090`, `QUANTIZE LIVE REC` `0x800000ac`, FX page-class gate `0x800000a0`.
-Restore ends at `0x800000d3`; the DSP frame selector is `0x800000e0`.
+**Stock PERSONALIZE runtime words** — the full set, from disassembling the 16
+getters/setters (Session 20; each getter reads its word + one neighbour):
+`0x8000008c 90 94 98 9c a0 a4 ac b0 b4 b8 bc c0 c4 c8 cc d0`. `MUTE FOCUSES TRK`
+`0x90`, `QUANTIZE LIVE REC` `0xac`, `LED BRIGHTNESS` `0xd0` (behind the MKII
+`0x46c8d18c` gate), FX page-class gate `0xa0`. `0x70..0x8b` is restored too but is
+something else (not a PERSONALIZE row). Restore ends `0x800000d3`; DSP frame
+selector `0x800000e0` (35 refs — never widen the restore past `0xdf`).
 
 ### Free scratch words (for new menu/feature state)
 
+Whole-image scan for each (Session 20): `0x800000a8`, `0x800000d8` — **0 ColdFire
+refs**; `0x800000d4` — 0 (its two matches are inside the appended DSP payloads,
+not code); `0x800000b4` — **5 real refs in the menu code, taken**.
+
 | Addr | shadow | Status |
 |---|---|---|
-| `0x800000a8` | `0x100fff38` | **taken** — DIRECT JUMP menu state (Session 15). ⚠️ *inside* the stock `0x64` restore span → check it doesn't alias a real stock word before relying on it. |
-| `0x800000d4` | `0x100fff64` | free (outside stock `0x64` restore) |
-| `0x800000d8` | `0x100fff68` | free |
-| `0x800000dc` | `0x100fff6c` | **taken** — MUTE MODE / SOFT-MUTE GATE. Session 19: build extends the restore to `0x70` and the setter writes the shadow, so it now persists. |
+| `0x800000a8` | `0x100fff38` | free of any stock use, **but inside the stock `0x64` restore** → its value is overwritten from the shadow every boot. DIRECT JUMP (`wip`, Session 15) uses it as menu state and does **not** write the shadow, so its `ON` setting silently resets to `OFF` on a power cycle (same bug Session 19 fixed for `0xdc`). No aliasing / corruption — just non-persistence. Fix: move it to `0x800000d8` (below) and give it the Session-19 treatment. |
+| `0x800000d4` | `0x100fff64` | free; outside the stock `0x64` restore |
+| `0x800000d8` | `0x100fff68` | free; outside the stock `0x64` restore — **the slot to give DIRECT JUMP** (rides MUTE MODE's `0x70` extension) |
+| `0x800000dc` | `0x100fff6c` | **taken** — MUTE MODE / SOFT-MUTE GATE. Session 19: build extends the restore to `0x70` + the setter writes the shadow, so it persists. |
 
 A new toggle that must persist: (1) put its word in `0x800000d4..df`, (2) have
 `build_*.py` extend all three restore `pea 0x64` → `pea 0x70`, (3) have the setter

@@ -3669,10 +3669,8 @@ copy would still miss it. Existing menu/detour/gate checks unchanged, still gree
 
 ### For the `wip/mute-mode` pickup
 Same fix is needed there for **DT** (3rd mode, same word `0x800000dc`) — trivial, `build_mutemode_dt.py`
-gets the identical 3-site `pea` patch. **DIRECT JUMP uses `0x800000a8`**, which is *already*
-inside the stock `0x64` restore span (`0x70`..`0xd3`) → check whether it currently
-collides with a real stock PERSONALIZE word before relying on it, or move it into the
-`0xd4..df` window alongside MUTE MODE.
+gets the identical 3-site `pea` patch. **DIRECT JUMP uses `0x800000a8`** — see the
+Session 20 "DIRECT JUMP `0x800000a8`" note below for the check + the fix (move to `0x800000d8`).
 
 ### Also seen in the re-sync (actioned in Session 20)
 octamax +114 (OCTAMAX 2.x); octabam +243 ("RTOS" fork). Re-distilled into `reference/kb/`
@@ -3741,6 +3739,41 @@ off-unit); post-upgrade warm-up tag → power-cycle. **`FLASHING.md`:** added th
   vendor octabam's `emu_rtos.py` and watch what a `[NO]`+knob event touches near
   `[0x46c82456] + pat*0x18b2`. Porting `emu_rtos` is its own multi-session task
   (brings octabam's kernel + card models) — not started.
+
+### DIRECT JUMP `0x800000a8` — collision check DONE (no brick risk anywhere)
+
+Whole-image scan of `section_3_MAIN_OS.bin` for `0x800000a8`: **zero ColdFire
+references** — no stock code reads or writes it. Also scanned the full stock
+PERSONALIZE word set (disassembled all 16 getters/setters):
+`0x8c 90 94 98 9c a0 a4 ac b0 b4 b8 bc c0 c4 c8 cc d0` — `0xa8` is not among them.
+So `0x800000a8` does **not alias** any stock setting.
+
+What "inside the restore span" actually means: the stock boot does
+`memcpy(0x80000070, 0x100fff00, 0x64)` = `0x80000070..0x800000d3`, and `0xa8` is
+in that range. DIRECT JUMP's setter writes only the runtime word `0x800000a8`,
+never the shadow `0x100fff38`, so **every boot overwrites `0x800000a8` from the
+shadow** → on a clean flash (ANDY defaults path zero-fills) that's 0 = `OFF`.
+Net effect: DIRECT JUMP's `ON` state does not persist across a power cycle
+(resets to `OFF`) — the same non-persistence bug Session 19 fixed for `0xdc`.
+**No corruption, no aliasing, no brick.**
+
+**Brick risk: none.** (1) DIRECT JUMP patches the PERSONALIZE menu arrays + 3
+sequencer hooks in `FUN_400a1eea` — it does not touch the bootloader. The
+Startup-Menu / MIDI-recovery bootloader is a separate flash sector that no OT OS
+update writes. (2) `0x800000a8` is volatile work RAM — nothing written there
+persists or can corrupt anything. (3) The ANDY block is self-healing: bad
+checksum at boot → `FUN_4001f340` → `FUN_4001f298` zero-fills it → PERSONALIZE
+resets to factory, recoverable in-menu or via EMPTY RESET. (4) DIRECT JUMP does
+not touch the checksum fn, does not extend the restore length, does not write the
+shadow region.
+
+**Fix when `wip/mute-mode` is picked up:** move `DJ_MODE` from `0x800000a8` to
+**`0x800000d8`** (also 0 refs; shadow `0x100fff68`), and give it the Session-19
+treatment — setter writes `move.l %d0,0x100fff68`, and since MUTE MODE's build
+already extends the 3 restore `pea 0x64 → 0x70`, `0xd8` rides along for free when
+the two features share a build. One-line changes to `patch_directjump.s` +
+`build_directjump.py`. Until then DIRECT JUMP just doesn't remember its toggle —
+harmless, and it has never been flashed.
 
 ### Pre-flash gate recommendation (#5)
 Our per-feature `tools/emu_*.py` already cover the "does this splice compute the
