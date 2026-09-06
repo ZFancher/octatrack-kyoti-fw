@@ -4652,3 +4652,93 @@ Sources: `refs/octabam/docs/{DSP,BUS,XBUS,PARAM_PAGES,CHIP,MODULES,FLASHING}.md`
 `tools/dsp_modmap.py` @ e1dcfa9, `refs/octa-bt-pt/patch_tool/registry.json` +
 `addresses.json` @ e970dd0, `reference/kb/{dsp56300,memory-map}.md` (on `main`), our
 `COVERAGE.md` / `ARCHITECTURE.md`.
+
+## Session 21 (2026-09-06, `wip/mute-mode`, RE / scoping only) — DIRECT JUMP: front-panel toggle, no menu
+
+**User re-scope: DIRECT JUMP activation must NOT live in PERSONALIZE. It should be a
+front-panel key combo that toggles `OFF`/`ON`, each press flashing a small transient
+overlay "DIRECT JUMP ON" / "DIRECT JUMP OFF" that auto-dismisses after ~0.7 s.**
+
+No flashing available — this session is the design + the RE inventory. Nothing built yet.
+
+### Why this is also a safety win
+
+The current `patch_directjump.s` does the **PERSONALIZE menu-array surgery** (relocate the
+3 parallel 16-entry arrays, `moveq #15 → #16`, repoint 5 refs). That surgery is the single
+thing that has bricked the MKI before (Session 10 pre-fixes). A key-combo toggle **deletes
+all of it** — no array move, no count bump, one code pointer repointed. Strictly lower risk
+than the menu version.
+
+### Storage — move `DJ_MODE` to `0x800000d8` + persist it properly
+
+- `0x800000a8` → `0x800000d8` (Session 20 `main` scan: 0 ColdFire refs image-wide; its two
+  byte-matches are inside the appended DSP payloads). `0x800000a8` is *inside* the stock
+  `0x64` ANDY restore span so its value is clobbered from the (zero) shadow every boot —
+  `0x800000d8` is outside it.
+- Apply the Session-19 persistence pattern: setter writes shadow `0x100fff68`
+  (= `0x100fff00 + 0x800000d8 - 0x80000070`); the build extends the 3 restore
+  `pea 0x64 → pea 0x70` at `0x4001f322 / 0x4001f3be / 0x4001fb24`. If DIRECT JUMP and
+  MUTE MODE ever share a build the `0x70` extension is done once and `0xd8` rides along.
+- **Re-checksum:** the PERSONALIZE dispatcher's `jmp 0x4001f23c` at `0x40069074` is what
+  re-checksums the ANDY block after a stock setter. A key-combo toggle does NOT go through
+  that path, so our toggle stub must `jsr 0x4001f23c` (`FUN_4001f23c`, the checksummer)
+  itself after writing the shadow. One call, no args (it reads `0x100fff04`).
+- Default 0 = `OFF` = byte-identical stock, same as today.
+
+### Key infrastructure (RE inventory — `section_3_MAIN_OS.bin`, this session)
+
+- **Physical-key jump table `0x400d2d54`** — keycode-indexed, entries invoked directly as
+  `action(edge)` (`edge` 1 = press, 0 = release). Walked 0..39:
+  `[0..7]` distinct (track keys), `[8..15]` = default `0x4000184c`, `[16..34]` mixed
+  (`[27]=0x4000a274` REC, `[28]=0x4000a200` PLAY, `[29]=0x4000a1e0` STOP; `[17..26,30..32]`
+  = a cluster of 4-byte `0x400019xx` micro-stubs = "simple" keys), `[35..39]` = default
+  `0x400019f4`. (octabam RTOS §9.3 named REC/PLAY/STOP here.)
+- **Page-key path** — `FUN_4005578c(keycode, edge)`, page keys `0x22..0x26`
+  (BANK/PTN/PAGE/FX1/FX2 "kind"), remapped through the u32 table `0x400a7280 = {0,2,1,3,4}`.
+  (octabam MAINMENU.md.)
+- **Keymap records** — 26-byte `{u8 code, 0, press, release, h3, aux, 0, u16 flags}` in two
+  tables `0x400bfbf6..` and `0x400c01f4..0x400c0840`. (octabam MAINMENU.md.)
+- **Hook precedent 1** — the shelved bankpage patch hooked `FUN_4004ffc4` (`[PAGE]`
+  handler) at its entry, replicating the displaced `lea -0x10,SP ; movem` prologue, gating
+  on `edge == 1` and swallowing the key with `rts` (NOTES "S3/S3b").
+- **Hook precedent 2** — octabam's FX2 shortcut: repoint one jump-table / keymap pointer to
+  a ~15-instruction stub invoked as `action(0)`, only `d0` live, check a global, act, done.
+- **"No popup open" guard** — `_DAT_460e5cd0 == 0`.
+- **Current audio track** = byte `0x80000000` (mirror `0x100b14cc`); MIDI mode = `0x80000012`.
+
+### Transient-overlay primitives (RE inventory)
+
+| primitive | shape | fit |
+|---|---|---|
+| `FUN_4006d57c(title,nLines,lines,3,handler)` | **blocking** YES/NO dialog | ✗ wrong — modal, needs a keypress to dismiss |
+| `FUN_40059f8c(text, ticks, enable, on_timeout)` | auto-dismiss window; **but hardcodes `0x460d1e54 = 4` countdown boxes** and stores its handle in `0x460d1e5c` = the SELECT-BANK/PTN window global (other code keys off it, incl. our own bankpage detect) | ~ usable with a short `ticks`, but the 4 boxes are the SELECT-window look and hijacking `0x460d1e5c` is a side-effect risk |
+| `FUN_400808bc`-style overlay via `FUN_4005829c` (window ctor: `x,y,w,h,?,close_cb`) + `FUN_40012f30` (measure text) + `FUN_40057008`/`FUN_40013904` (draw) + a scheduled close | **build our own** — full control of look + lifetime; ~40–60 B of stub | ✓ recommended; matches the user's "small window, disappears fairly quickly" |
+| the stock COPY/PASTE/CLEAR/UNDO toast (strings `0x400b4e81/8d/99/a4`) | the real fire-and-forget op-notification | ✓ if found — display fn not yet located (strings are referenced by computed offset; `0x40058ce0` is only the option-list *draw*, not the toast trigger) |
+
+### Open RE tasks before this can be built (needs a Ghidra session)
+
+1. **Pick the combo + confirm it's globally unbound.** Candidates, mnemonic to "pattern
+   jump": `[FUNC]` + `[BANK]`, `[FUNC]` + `[PAGE]`, or a double-press of `[PAGE]`. Verify
+   against the keymap tables (`0x400bfbf6`, `0x400c01f4`) + the jump table that the chosen
+   gesture has no stock action in the base sequencer view (and ideally nowhere).
+2. **The `[FUNC]`-held global** (if a FUNC combo) — find the byte the firmware sets while
+   `[FUNC]` is down. (octabam may already have it; not in our notes yet.)
+3. **Locate the stock op-toast display fn** (task 4's row 4) — or commit to the custom
+   overlay (row 3) and pin `FUN_4005829c`'s exact signature + the close path + how stock
+   auto-closes a timed overlay (probably a countdown in the UI tick `0x40056c40` /
+   `FUN_40056ab8` family).
+4. **Choose the hook site** — the jump-table entry for the key, or the keymap record's
+   press pointer. Jump-table repoint is the cleaner one-pointer edit.
+
+### Plan for the build (once the above is closed)
+
+- `patch_directjump.s`: **delete** the menu label/getter/setter + keep only the 3 sequencer
+  hooks (unchanged) + add `dj_toggle` (the key stub) reading/writing `0x800000d8` + shadow
+  `0x100fff68` + `jsr FUN_4001f23c` + the overlay call.
+- `build_directjump.py`: **delete** the array relocation / count / ref repointing; add one
+  jump-table (or keymap) pointer repoint + the 3-site `pea 0x64→0x70`.
+- `emu_directjump.py`: add cases for `dj_toggle` — writes both `0x800000d8` and
+  `0x100fff68`, wraps 0↔1, only fires on the gated combo + `edge==1`, swallows the key.
+- HW test: press the combo → overlay reads `DIRECT JUMP ON`, disappears ~0.7 s; press
+  again → `OFF`; power-cycle → the setting persists; the combo's stock function (if any in
+  another view) still works there; DIRECT JUMP behaviour matches Session 15's S2/S3.

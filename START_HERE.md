@@ -109,7 +109,7 @@ Everything below is here, emulator-verified, **nothing flashed**.
 | **DT** mute mode | built, `emu_dt.py` clean · `build_mutemode_dt.py` | `NOTES.md` "Session 12" |
 | **OT+FX → SOLO** (softmute V7) | built, `emu_solo.py` clean · `build_mutemode.py` on this branch | `NOTES.md` "Session 11" |
 | **4th MUTE MODE** — instant cut + FX tails + resume-at-playhead | RE'd, not built; gated on the same HW unknown as DT | `NOTES.md` "Session 14" |
-| **DIRECT JUMP** pattern-change mode | built — `patch_directjump.s` / `build_directjump.py` → `OCTATRACK_*DIRECTJUMP.*`, `emu_directjump.py` clean | `NOTES.md` "Session 15" (+ continued) |
+| **DIRECT JUMP** pattern-change mode | 3 sequencer hooks built + `emu_directjump.py` clean. **Activation being re-scoped** (Session 21): drop the PERSONALIZE menu → a front-panel key combo + a transient "DIRECT JUMP ON/OFF" overlay; `DJ_MODE` moves `0x800000a8`→`0x800000d8` + gets the Session-19 ANDY-shadow persistence. Needs a Ghidra session (combo choice, FUNC-held global, overlay primitive) before rebuild. | `NOTES.md` "Session 15" + "Session 21" |
 | **DSP side-chain compressor** | see below | `NOTES.md` "Session 17" (+ continued 1–8) |
 
 The shared HW unknown for **DT** and the **4th mode**: does the DSP keep advancing a
