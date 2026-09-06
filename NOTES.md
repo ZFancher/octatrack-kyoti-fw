@@ -3554,3 +3554,51 @@ needs Phase 0's data model, so not free; could ship first to de-risk. User did n
 Not discussed. If this ships it would likely want to be opt-in (a 4th behaviour alongside
 MUTE MODE, or its own entry) — but that's menu-array surgery again (the one thing that has
 bricked the MKI before). Decide later.
+
+## Session 18 (2026-09-06) — ems-octakit open-sourced; distilled into the KB (no firmware work)
+
+**KB ingest only. No RE of our own, no build. `main` branch.**
+
+emuyia/ems-octakit ("Octakit" — 4 Parts/Bank -> 256 Kits/Project) was closed-source
+(README + issue templates). Commit `ca3b527` ("add octakit source and build tools",
+newer than the `1817ffb` we had pinned) published the whole toolchain. Contributor
+added to `CREDITS.md`; `refs/MANIFEST.lock` bumped to `ca3b527` (ems-octakit only —
+octamax/octabam left where the last distillation pinned them).
+
+### What we took (all in `reference/kb/octakit-abi.md`, new file)
+- `runtime/abi.inc` — ~500 `.equ` symbols. `GK_STOCK_*` = named stock-firmware
+  addresses; `GK_*` = struct-offset / enum constants. Curated ~70 of them by
+  subsystem; full list stays in the gitignored `refs/` cache.
+- `runtime/firmware.json` — 598 SHA-guarded patch sites (`{offset,length,sha256,
+  writes}`) + 411 `m68k-relocate`/`stock-copy` ops. The OS SHA-256 it guards is
+  `164f3122…` — an independent 598-point confirmation of our image.
+- Toolchain: `m68k-elf-gcc 16.1.0 -mcfv4e -Os`; Rust patcher; `sparse-public-write-v3`
+  + `authenticated-stock-local-reconstruction-v1` (no stock bytes embedded).
+- **Licence: no `LICENSE` file** — same posture as octamax. Facts + small excerpts
+  only; not its `.S` / `abi.inc` in bulk.
+
+### Confirms our RE
+`GK_STOCK_BANK_POINTER 0x46c82456` = `_DAT_46c82456`; `GK_STOCK_BANK_DESERIALIZE
+0x4008ded0` = `FUN_4008ded0`; `GK_STOCK_ENGINE_PART_LOAD 0x40009094` =
+`FUN_40009094`; `GK_STOCK_PATTERN_STRIDE 0x8ed8`; `GK_PART_PAYLOAD_SIZE 0x18b2`;
+`GK_STOCK_BANK_SIZE 0x9b4d1` = the factory DEMO `bank01.work` size exactly.
+
+### New, and relevant to the Session 13 backlog
+- `.work`<->`.strd` store/restore choke points: `0x4008eda4` (banks store),
+  `0x4008f0b0` (banks restore), `0x4008ee74` / `0x4008f180` (project).
+- Per-parameter-page payload offsets into the part payload: PLAYBACK `0x1da`,
+  AMP `0x2f8`, FX1 `0x2fe`, FX2 `0x304`, twelve-byte `0x602`, slice-lock `0x2ca`.
+  -> the starting point for turning `file-format.md`'s p-lock `record[step][p]`
+  byte offsets into a parameter map.
+- `GK_STOCK_SEQUENCER_PART_STEP_OFFSET 0x1832` / `_CONDITION_OFFSET 0x1822` —
+  per-step + per-step-trig-condition data inside the part payload.
+- `GK_STOCK_PATTERN_HAS_CONTENT 0x4009a464` (is-pattern-non-empty predicate),
+  `GK_STOCK_PATTERN_CLEAR_CURRENT 0x4003a244`.
+- `GK_STOCK_APLIB_DEPACK 0x400e0aca` (from `loader.S`) -> `container-format.md`.
+- Watch: `GK_STOCK_PATTERN_PART_OFFSET 0x8e57` vs OctaLib `+0x8EE7` — different
+  framing, reconcile before any write.
+
+### Docs touched
+`reference/kb/octakit-abi.md` (new); `kb/{file-format,memory-map,container-format,
+techniques}.md`; `reference/EXTERNAL_RESEARCH.md`; `reference/UPSTREAM_INBOX.md`;
+`refs/MANIFEST.{toml,lock}`; `CREDITS.md`; `START_HERE.md` §5-6.

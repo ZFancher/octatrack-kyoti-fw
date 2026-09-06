@@ -88,7 +88,7 @@ DIRECT JUMP pattern-change mode, and an in-progress DSP side-chain compressor.
 | ↳ **OT+FX for SOLO** (non-soloed tracks keep FX tails) | `patch_softmute.s` **V7**, **`wip/mute-mode` only** — emulator-verified (`emu_solo.py`), never flashed. |
 | ↳ **DT** (Digitakt-style pure sequencer mute) | **`wip/mute-mode` only** — emulator-verified (`emu_dt.py`, `build_mutemode_dt.py`), never flashed. |
 | Maxolydian mods (branding, no BANK/PTN countdown, lazy Part transitions, arp key-scales, LED dirty indicators) | Not in the KYOTI builds. `tools/build.py` / `sysex/`; see `CREDITS.md`. |
-| **External-RE knowledge base** (`main`, Session 16) | `reference/kb/*.md` — address-keyed distillate of 6 prior-art repos (octabam DSP map, OctaLib file formats, octa-bt-pt descriptor table `0x400d2fe4`–`0x400d5e04`, the bank-file p-lock region). `python3 tools/refs/sync.py` populates the `refs/` cache; `reference/EXTERNAL_RESEARCH.md` is the index. |
+| **External-RE knowledge base** (`main`, Session 16; +Session 18) | `reference/kb/*.md` — address-keyed distillate of 6 prior-art repos (octabam DSP map, OctaLib file formats, octa-bt-pt descriptor table `0x400d2fe4`–`0x400d5e04`, the bank-file p-lock region, **ems-octakit's `abi.inc` ~500-address map → `kb/octakit-abi.md`**). `python3 tools/refs/sync.py` populates the `refs/` cache; `reference/EXTERNAL_RESEARCH.md` is the index. |
 
 Build outputs on `main` (all `140C_KYOTI`, all carry the Bug-1 fix):
 - `build_trigscale_only.py` → `out/OCTATRACK_*PLAYSFREEFIX.*` — Bug-1 fix only, version stays `1.40C`.
@@ -99,12 +99,17 @@ Build outputs on `main` (all `140C_KYOTI`, all carry the Bug-1 fix):
 
 ## 6. Current frontier — UPDATE THIS EACH SESSION
 
-**As of 2026-09-03.**
+**As of 2026-09-06.**
 
 **On `main`:** the hardware-tested line (Bug 1 fix + MUTE MODE `OT`/`OT+FX` V6b) plus,
 since Session 16, the **external-RE knowledge base** — OctaLib file-format layouts,
 octabam's DSP56300 module map, octa-bt-pt's FX/machine descriptor table, and the
 bank-file **p-lock region** RE'd vs the factory OT DEMO (`tools/inspect_bank.py`).
+Session 18 (2026-09-06): **ems-octakit open-sourced** — its `runtime/abi.inc`
+(~500 named stock addresses) + `firmware.json` (598 guarded patch sites) distilled
+into `reference/kb/octakit-abi.md`; confirms `FUN_4008ded0`/`_DAT_46c82456`/
+`FUN_40009094` and adds the `.work`↔`.strd` + per-parameter-page payload offsets
+the p-lock backlog needs.
 
 **All active work is on `wip/mute-mode`** (`git checkout wip/mute-mode`) — emulator-verified,
 nothing flashed. That branch's own `START_HERE.md` §6 has the blow-by-blow; in brief:
@@ -123,8 +128,9 @@ nothing flashed. That branch's own `START_HERE.md` §6 has the blow-by-blow; in 
 waits on one hardware session: flash DT first (settles the shared-envelope unknown DT and
 the 4th mode both rest on) → then SIDECHAIN2 → then the rest.
 
-**Backlog on `main`:** turn the mapped p-lock region into a byte→parameter map, then build
-the Session-13 "auto-remove an emptied trigless lock" feature. `NOTES.md` "Session 13".
+**Backlog on `main`:** turn the mapped p-lock region into a byte→parameter map (start
+from the per-page payload offsets in `kb/octakit-abi.md`), then build the Session-13
+"auto-remove an emptied trigless lock" feature. `NOTES.md` "Session 13" + "Session 18".
 
 **Picking up:** mute modes / DIRECT JUMP / compressor → `wip/mute-mode`. Knowledge base,
 p-locks, or a fresh bug → `main`. Then the named `NOTES.md` Session section.

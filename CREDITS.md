@@ -39,9 +39,14 @@ no binary" approach — worth reading alongside this repo:
   effect "remixes" into flashable images. This is the **DSP side** that
   [`COVERAGE.md`](COVERAGE.md) flags as out of scope here — the natural companion
   to the ColdFire-side work in this repo.
-- **[emuyia/ems-octakit](https://github.com/emuyia/ems-octakit)** (EMS-Octakit) —
-  a browser-based patcher for OS 1.40C that replaces the 4 Parts per Bank with
-  **256 Kits per Project**.
+- **[emuyia/ems-octakit](https://github.com/emuyia/ems-octakit)** (Octakit, by
+  emuyia / junes) — a patcher for OS 1.40C that replaces the 4 Parts per Bank with
+  **256 Kits per Project**. Open-sourced in 2026-09: its `runtime/abi.inc`
+  (~500 named stock-firmware addresses for the Part / Kit / Bank / scene /
+  LFO-designer / sequencer subsystems) and `runtime/firmware.json` (598
+  SHA-guarded patch sites) are distilled into
+  [`reference/kb/octakit-abi.md`](reference/kb/octakit-abi.md). Ships no `LICENSE`
+  and no official code/assets — same "bring your own OS" stance as this repo.
 - **[bryantysinger/octa-bt-pt](https://github.com/bryantysinger/octa-bt-pt)**
   (Bryan_T) — a parameter-default patch tool for OS 1.40C (Python / Streamlit):
   customise the firmware's default values and generate a flashable image from
@@ -49,6 +54,13 @@ no binary" approach — worth reading alongside this repo:
 
 ## Community reverse-engineering & documentation
 
+- **emuyia / junes** — the Octakit (`ems-octakit`) source release attributes a
+  large slice of the OS 1.40C Part/Kit/Bank/scene/sequencer address map, folded
+  into `reference/kb/octakit-abi.md`.
+- **Bryan_T** (`octa-bt-pt`), **sambanks** (`octabam`), **snugsound** (`OctaLib`),
+  **mischa85** (`elektron-firmware-tool`) — the prior-art repos whose findings are
+  distilled, with per-fact attribution, into `reference/kb/*.md` (see
+  `reference/EXTERNAL_RESEARCH.md`).
 - **Elektronauts threads** that seeded specific findings here:
   - Octatrack CPU chip model — https://www.elektronauts.com/t/octatrack-cpu-chip-model/93304
   - Modifying Elektron firmware — https://www.elektronauts.com/t/modifying-elektron-firmware/36228

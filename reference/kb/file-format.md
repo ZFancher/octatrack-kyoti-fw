@@ -124,7 +124,10 @@ exactly 32-byte spacing, byte `0x12` ramping `40 → 29 → 14 → 05 → 00` ac
 steps 0,2,4,6,8 and byte `0x00` climbing `4F → 5E → 68` on steps 10,12,14.
 Locked-param byte offsets seen so far: `0x00, 0x09, 0x12–0x14, 0x1F` — sparse,
 ~32 slots ≈ one byte per p-lockable track parameter (SRC / pitch-start-len-rate /
-AMP / FILTER / FX1 / FX2 / LFO). Exact offset→param map is future work.
+AMP / FILTER / FX1 / FX2 / LFO). Exact offset→param map is future work — start
+from the per-page payload offsets in [`octakit-abi.md`](octakit-abi.md)
+("Per-track parameter-page payload offsets": PLAYBACK `0x1da`, AMP `0x2f8`, FX1
+`0x2fe`, FX2 `0x304`).
 
 **For the NOTES Session 13 backlog** (auto-remove an emptied trigless lock): a
 "trigless lock" = a step with entries in the `+0x62` array but its bit clear in
@@ -155,12 +158,15 @@ repacks — don't assume disk offsets survive into RAM. Verify with `insp_banks.
 
 ## To import next
 
-- **ems-octakit** — ⚠️ **closed-source**. The repo is only a README + issue
-  templates; the patcher runs in-browser and isn't published. Value is limited to
-  the README's behavioural description (Parts→256 Kits/Project, migration to first
-  64 Kit slots, date-based version string e.g. `26512`, MKI keys FUNC+MIDI /
-  FUNC+BANK). No code or offsets to import. If the Part block needs a second
-  source, ask on their GitHub Discussions or diff a before/after image.
+- **ems-octakit** — **open-sourced 2026-09** (`ca3b527`). Distilled into
+  [`octakit-abi.md`](octakit-abi.md): its `runtime/abi.inc` confirms
+  `FUN_4008ded0` = bank deserialiser, `_DAT_46c82456` = bank pointer,
+  `GK_STOCK_BANK_SIZE 0x9b4d1` = the DEMO `bank01.work` size, `GK_PART_PAYLOAD_SIZE
+  0x18b2`, and adds the `.work`↔`.strd` store/restore choke points
+  (`0x4008eda4` / `0x4008f0b0` / `0x4008ee74` / `0x4008f180`), the per-parameter-page
+  payload offsets, and `GK_STOCK_SEQUENCER_PART_{STEP,CONDITION}_OFFSET`
+  (`0x1832` / `0x1822`). Watch: `GK_STOCK_PATTERN_PART_OFFSET 0x8e57` vs OctaLib
+  `+0x8EE7` — different framing, reconcile before a write.
 - OctaLib credits **WiliWoW** (Elektronauts) for format help — worth a thread search.
 - Best remaining lever for the p-lock model: build a tiny reader against a real
   exported `bank01.work` (ask user to export) using OctaLib's offsets, then walk

@@ -164,4 +164,9 @@ _(NOTES L811: "free words inside the block". Verify a candidate is untouched bef
 
 _Done: octa-bt-pt descriptor table; octabam+octa-bt-pt DSP boot map (`dsp56300.md`);
 OctaLib bank layout + our own p-lock-region RE (`file-format.md`); octabam menu
-cluster (above). ems-octakit is closed-source — nothing to import._
+cluster (above); ems-octakit's `abi.inc` / `firmware.json` address map
+(`octakit-abi.md`, open-sourced 2026-09)._
+
+_ems-octakit's ~500 `GK_STOCK_*` symbols are curated in
+[`octakit-abi.md`](octakit-abi.md) rather than merged inline here — cross-check it
+first when RE'ing a Part / Kit / Bank / scene / LFO-designer / sequencer-tick area._

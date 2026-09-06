@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Weekly upstream check for the external-RE knowledge base.
+  Runs tools/refs/refresh.sh (fetch + report only — see reference/KB_REFRESH.md).
+
+  NOT installed by default. macOS TCC blocks a launchd job from reading
+  ~/Documents unless /bin/sh has Full Disk Access. Full instructions +
+  the FDA caveat are in reference/KB_REFRESH.md ("Optional: a real weekly
+  launchd job"). If you don't want the FDA grant, just run
+  `sh tools/refs/refresh.sh` by hand.
+
+  Install (after granting FDA to /bin/sh):
+    cp tools/refs/com.kyoti.kb-refresh.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.kyoti.kb-refresh.plist
+
+  If the repo ever moves, update WorkingDirectory + the ProgramArguments path
+  here and reinstall.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.kyoti.kb-refresh</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/sh</string>
+        <string>/Users/kyoti_m4/Documents/octatrack-kyoti-fw/tools/refs/refresh.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/kyoti_m4/Documents/octatrack-kyoti-fw</string>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Weekday</key>
+        <integer>1</integer>
+        <key>Hour</key>
+        <integer>10</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/kyoti_m4/Documents/octatrack-kyoti-fw/refs/.refresh.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/kyoti_m4/Documents/octatrack-kyoti-fw/refs/.refresh.log</string>
+</dict>
+</plist>

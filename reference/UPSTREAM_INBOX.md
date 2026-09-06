@@ -28,3 +28,8 @@ _(none — initial sync 2026-09-02, MANIFEST.lock is the baseline)_
               [ kb/memory-map.md, kb/dsp56300.md, kb/container-format.md ]
 - 2026-09-02  ems-octakit@1817ffb  closed-source, nothing to import; behavioural note only
               [ kb/file-format.md ]
+- 2026-09-06  ems-octakit@ca3b527  OPEN-SOURCED — runtime/abi.inc (~500 named stock
+              addrs) + firmware.json (598 guarded patch sites + 411 relocate ops) +
+              62 .S + Rust patcher; no LICENSE
+              [ kb/octakit-abi.md (new), kb/file-format.md, kb/memory-map.md,
+                kb/container-format.md, kb/techniques.md ]

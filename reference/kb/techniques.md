@@ -57,10 +57,31 @@ Used for MUTE MODE (`tools/patch_mutemode.s`) and DIRECT JUMP
    (`0x800000d4/d8/dc` still free; `0x800000a8` taken by DIRECT JUMP).
 5. Dialog construction via `FUN_4006d57c`.
 
-## octa-bt-pt / ems-octakit — Python image writers
+## octa-bt-pt — Python image writer
 
-Both generate a flashable image from the user's own OS copy in Python. Cross-check
-their checksum/section handling against our `build_*.py` as an independent
+Generates a flashable image from the user's own OS copy in Python. Cross-check its
+checksum/section handling against our `build_*.py` as an independent
 implementation (see `container-format.md`).
+
+## ems-octakit — guarded patch recipe as data (open-sourced 2026-09)
+
+> source: `refs/ems-octakit/{build.py,runtime/firmware.json,patcher/}` @ `ca3b527`
+
+Same "bring your own OS, ship no binary" stance as us, but the patch set is a
+**declarative recipe** (`runtime/firmware.json`), not code:
+
+- **598 patch sites**, each `{offset, length, sha256, writes:[{offset,data}]}` —
+  the `sha256` guards the stock bytes exactly like our per-splice assert, but
+  machine-checkable and enumerable. Our asserts are inline in `patch_*.s`.
+- **411 relocation ops** (`m68k-relocate` / `stock-copy`) rebuild the appended
+  runtime from the user's stock image — every output byte is classified by origin
+  (`sparse-public-write-v3`), so the repo provably contains no official code.
+- Toolchain pinned in the recipe: `m68k-elf-gcc 16.1.0 -mcfv4e -Os`, Rust 1.97.1.
+- Worth stealing if our patch count keeps growing: a single JSON manifest of
+  `{addr, stock-sha, replacement}` that `build_*.py` consumes, instead of the
+  guard logic living in each `.s`. Cross-refs the octabam "named registry of
+  reserved regions" idea (above).
+
+Full address map from its `abi.inc` → [`kb/octakit-abi.md`](octakit-abi.md).
 
 _(Extend as patterns recur.)_
