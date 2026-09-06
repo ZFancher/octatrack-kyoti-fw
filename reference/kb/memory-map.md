@@ -163,6 +163,28 @@ flag word: `0x46c7a6c0`.
 > **PERSONALIZE** screen = 3 flat parallel `u32[16]` arrays at `0x400b2a34`
 > (label) / `0x400b2a74` (getter) / `0x400b2ac0` (setter). Don't conflate them.
 
+## Key input / dispatch
+
+> sources: `refs/octabam/docs/{MAINMENU,RTOS_FORK}.md` @ `2f241e1` + our own scan (Session 21, `wip`). confidence: **C** for the tables/addresses, **L** for which physical key maps to which slot.
+
+| Addr | Conf | What |
+|---|---|---|
+| `0x400d2d54` | C | **Physical-key jump table** — keycode-indexed, entries invoked directly as `action(edge)` (`edge` 1 = press, 0 = release). `[0..7]` = track keys, `[8..15]` = default `0x4000184c`, `[16..34]` = function keys (`[27]` REC `0x4000a274`, `[28]` PLAY `0x4000a200`, `[29]` STOP `0x4000a1e0`; `[17..26,30..32]` = a cluster of tiny `0x400019xx` "simple key" stubs), `[35..39]` = default `0x400019f4`. Repoint one entry → a stub (octabam's FX2-shortcut technique; one-pointer edit, no array move). |
+| `FUN_4005578c(keycode,edge)` | L | **page-key dispatch** — codes `0x22..0x26` (BANK/PTN/PAGE/FX1/FX2 "kind"), remapped via u32 table `0x400a7280 = {0,2,1,3,4}`. A single press runs `FUN_400554e0(kind)` = the whole page switch (writes `0x460d1684`, mirror `0x46c7d8d8`). |
+| `0x400bfbf6` / `0x400c01f4..0x400c0840` | L | **keymap records** — 26 B `{u8 code, 0, press, release, h3, aux, 0, u16 flags}`. Second table carries `0x1c..0x1f` (`0x1c` = MKII MAIN MENU key → `FUN_40064c18`). |
+| `FUN_4004ffc4` | C | `[PAGE]` press handler — the shelved bankpage patch hooked its entry (`lea -0x10,SP ; movem` prologue), gating `edge==1`, swallowing the key with `rts`. |
+| `0x80000000` | C | current audio track (byte; UI mirror `0x100b14cc`). `0x80000012 != 0` = MIDI mode (page resolution adds +8). |
+| `_DAT_460e5cd0` | C | `== 0` ⇒ no popup/overlay open (standard gate before showing one). |
+
+### Transient overlay primitives
+
+| Fn | Shape |
+|---|---|
+| `FUN_4006d57c(title,nLines,lines,3,handler)` | **blocking** YES/NO dialog (needs a keypress) |
+| `FUN_40059f8c(text, ticks, enable, on_timeout)` | auto-dismiss window — **but hardcodes `0x460d1e54 = 4` countdown boxes** and stores its handle in `0x460d1e5c` (the SELECT-BANK/PTN window global other code keys off). Tick `FUN_40056ab8` → expiry `FUN_40056a70`. |
+| `FUN_4005829c(x,y,w,h,?,close_cb)` | bare window ctor (returns handle); `FUN_40012f30` measures text, `FUN_40057008`/`FUN_40013904` draw. Build a custom timed overlay from these when the 4-box look / global side-effect of `FUN_40059f8c` is unwanted. |
+| `FUN_400808bc` | example non-modal overlay ("RELOADING BANK") — handle in `0x460f790c`, explicit close. |
+
 ## Effect & machine parameter-descriptor table (`0x400d2e52`–`0x400d5f00`)
 
 > sources: `refs/octa-bt-pt/patch_tool/addresses.json` + `tools/generate_streamlit_patch.py` @ `e970dd0` (2026-09-02) · **`refs/octabam/docs/PARAM_PAGES.md` @ `2f241e1`** (2026-09-06) — a full struct decode of the same table. confidence: **C** for FILTER/DELAY/NONE + the layout (two independent decodes agree), **L** for the other effects' id↔`E` pairing.
