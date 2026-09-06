@@ -85,6 +85,7 @@ DIRECT JUMP pattern-change mode, and an in-progress DSP side-chain compressor.
 | **Bug 2** — MIDI LFO SETUP knobs send CC on the twin audio channel | Emulation says **likely already fixed in 1.40C**; awaiting HW confirmation. `tools/emu_lfocc.py`. |
 | **MUTE MODE** PERSONALIZE toggle (`main`) | `tools/patch_mutemode.s`, values `OT / OT+FX`. Menu surgery HW-confirmed (Session 10). |
 | ↳ **OT+FX** soft mute — dry cuts fast+clean, FX inserts ring (`main`) | `patch_softmute.s` **V6b** (V6 mechanism + the Session-10 gate/frame fixes). **Flashed on MKI, works.** `python3 tools/build_mutemode.py`. |
+| ↳ MUTE MODE **now persists across power cycle** (`main`, Session 19) | `0x800000xx` is volatile; setter now also writes the `'ANDY'` battery-SRAM shadow `0x100fff6c` and the build extends the block restore `0x64`→`0x70` at 3 sites. Emu-verified, **not yet flashed.** From octamax `c78ff70`. |
 | ↳ **OT+FX for SOLO** (non-soloed tracks keep FX tails) | `patch_softmute.s` **V7**, **`wip/mute-mode` only** — emulator-verified (`emu_solo.py`), never flashed. |
 | ↳ **DT** (Digitakt-style pure sequencer mute) | **`wip/mute-mode` only** — emulator-verified (`emu_dt.py`, `build_mutemode_dt.py`), never flashed. |
 | Maxolydian mods (branding, no BANK/PTN countdown, lazy Part transitions, arp key-scales, LED dirty indicators) | Not in the KYOTI builds. `tools/build.py` / `sysex/`; see `CREDITS.md`. |
@@ -99,7 +100,7 @@ Build outputs on `main` (all `140C_KYOTI`, all carry the Bug-1 fix):
 
 ## 6. Current frontier — UPDATE THIS EACH SESSION
 
-**As of 2026-09-06.**
+**As of 2026-09-06 (Session 19).**
 
 **On `main`:** the hardware-tested line (Bug 1 fix + MUTE MODE `OT`/`OT+FX` V6b) plus,
 since Session 16, the **external-RE knowledge base** — OctaLib file-format layouts,
@@ -110,6 +111,16 @@ Session 18 (2026-09-06): **ems-octakit open-sourced** — its `runtime/abi.inc`
 into `reference/kb/octakit-abi.md`; confirms `FUN_4008ded0`/`_DAT_46c82456`/
 `FUN_40009094` and adds the `.work`↔`.strd` + per-parameter-page payload offsets
 the p-lock backlog needs.
+
+Session 19 (2026-09-06): **MUTE MODE persistence bug fixed** (no-flash, emu-verified,
+not yet on the MKI). `0x800000xx` is volatile DSP shared RAM, so the shipped toggle
+reverted to `OT` on every power cycle; the setter now also writes the checksummed
+`'ANDY'` battery-SRAM shadow at `0x100fff6c` and `build_mutemode.py` extends the block
+restore `pea 0x64`→`0x70` at 3 sites. Mechanism from octamax `c78ff70`. `NOTES.md`
+"Session 19". A re-sync also pulled **114 new octamax + 243 new octabam commits** —
+re-distilling those into `reference/kb/` and the Session-13 p-lock groundwork
+(octabam now has the pattern format + a full-firmware emulator) are the next
+no-flash tasks; `refs/MANIFEST.lock` left at the last-distilled pins.
 
 **All active work is on `wip/mute-mode`** (`git checkout wip/mute-mode`) — emulator-verified,
 nothing flashed. That branch's own `START_HERE.md` §6 has the blow-by-blow; in brief:

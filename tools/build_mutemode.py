@@ -35,8 +35,16 @@ emulator-verified only and live on the `wip/mute-mode` branch.
   (every ref to the menu's cursor/scroll/count globals lives in the 0x40068e00..0x40069074
   block), so the splice position is free.
 
-  MUTE MODE lives in the free battery-backed PERSONALIZE word 0x800000dc (== patch_softmute's
-  GATE).  Default 0 -> a freshly flashed unit is stock.  An OS upgrade resets PERSONALIZE.
+  MUTE MODE lives in the free PERSONALIZE word 0x800000dc (== patch_softmute's GATE).
+  Default 0 -> a freshly flashed unit is stock.  An OS upgrade resets PERSONALIZE.
+
+  PERSISTENCE.  0x800000xx is volatile DSP shared RAM (boot re-images it from ROM); the
+  durable store is the checksummed 'ANDY' battery-SRAM block at 0x100fff00, restored to
+  0x80000070 with memcpy length 0x64 -- one byte short of 0x800000dc.  This build extends
+  that length 0x64 -> 0x70 at all three restore sites (0x4001f322 boot / 0x4001f3be
+  validate / 0x4001fb24 defaults); set_mutemode writes the shadow at 0x100fff6c and the
+  PERSONALIZE key handler re-checksums (jmp 0x4001f23c @ 0x40069074).  From octamax
+  c78ff70 (HW-confirmed there).
 
 Usage:   python3 tools/build_mutemode.py [VERSTR]         (default VERSTR = "140C_KYOTI")
 Outputs: out/mainos_mutemode.bin, out/elek_mutemode.bin,
@@ -158,6 +166,20 @@ def main():
         sys.exit(f"count 0x{COUNT_AT:08x} is not moveq #15: {bytes(img[o(COUNT_AT):o(COUNT_AT)+2]).hex()}")
     img[o(COUNT_AT):o(COUNT_AT) + 2] = b"\x72\x10"
     print(f"  count   0x{COUNT_AT:08x}  moveq #15 -> #16")
+
+    # --- PERSONALIZE persistence: 0x800000xx is volatile DSP shared RAM.  The durable
+    #     store is the checksummed 'ANDY' battery-SRAM block at 0x100fff00, restored to
+    #     0x80000070 via memcpy(dst, 0x100fff00, 0x64) at three sites -- and 0x64 ends at
+    #     0x800000d3, one short of MUTE MODE (0x800000dc).  Extend each to 0x70 so
+    #     0x800000d4..df ride the restore; set_mutemode writes shadow 0x100fff6c and the
+    #     key handler re-checksums (jmp 0x4001f23c @ 0x40069074).  octamax c78ff70.
+    #     Each site: `pea 0x64 (48780064)` `pea 0x100fff00` `pea 0x80000070` `jsr/lea memcpy`.
+    for site in (0x4001f322, 0x4001f3be, 0x4001fb24):
+        so = o(site)
+        if bytes(img[so:so + 4]) != b"\x48\x78\x00\x64":
+            sys.exit(f"restore-length pea 0x{site:08x}: {bytes(img[so:so+4]).hex()} != 48780064")
+        img[so + 3] = 0x70
+        print(f"  restore 0x{site:08x}  pea 0x64 -> pea 0x70")
 
     # --- no cave span may overlap another, nor run past the free zone ---
     spans.sort()

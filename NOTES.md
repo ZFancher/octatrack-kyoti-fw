@@ -3602,3 +3602,83 @@ octamax/octabam left where the last distillation pinned them).
 `reference/kb/octakit-abi.md` (new); `kb/{file-format,memory-map,container-format,
 techniques}.md`; `reference/EXTERNAL_RESEARCH.md`; `reference/UPSTREAM_INBOX.md`;
 `refs/MANIFEST.{toml,lock}`; `CREDITS.md`; `START_HERE.md` §5-6.
+
+## Session 19 (2026-09-06) — MUTE MODE now PERSISTS across power cycle (no-flash; build + emu)
+
+**`main` branch. Build + emulator only — the user is still away from the MKI. Flash-ready.**
+
+### The bug (latent in the shipped MUTEMODE build)
+`whatsnew.py` after a re-sync surfaced octamax `c78ff70`
+("PERSONALIZE toggles persist — write the battery-SRAM shadow"). It root-causes what our
+[NOTES L3263] only *inferred*: **`0x800000xx` is volatile DSP shared RAM**, re-imaged from
+ROM on every boot (`FUN_4000f938`, sole caller `0x40000512`: `0x401086f4` → `0x80000000`,
+0x3e88 B, then zero-fill to `0x80004000`). So our `move.l %d0,MUTE_MODE` setter was
+writing a word that is wiped at the next power-on — **the flashed MUTE MODE setting
+silently reverted to `OT` on every boot.** (Not noticed because the user sets it once per
+session.)
+
+### The mechanism (octamax's, verified against our image)
+The durable PERSONALIZE store is a checksummed 0x100-byte block in **battery SRAM at
+`0x100fff00`** — magic `'ANDY'` @ `+4`, version 36 @ `+0xe`, checksum over 252 B from `+4`
+(`FUN_4001f23c`; validate `FUN_4001f340`, defaults/zero-fill `FUN_4001f298`). Boot
+restores runtime ← shadow with **`memcpy(0x80000070, 0x100fff00, 0x64)`** at three sites
+(all confirmed in our `section_3_MAIN_OS.bin` as `48780064 4879 100fff00 4879 80000070
+<jsr/lea memcpy>`):
+
+| site | role |
+|---|---|
+| `0x4001f322` | boot restore |
+| `0x4001f3be` | validate-path restore |
+| `0x4001fb24` | defaults-path restore |
+
+`0x64` ends at `0x800000d3` — **one byte short of MUTE MODE at `0x800000dc`**. Stock
+setters write both copies; the PERSONALIZE key handler re-checksums after every setter
+(`jmp 0x4001f23c` at `0x40069074` — confirmed `4ef9 4001f23c 4e75` in our image).
+
+### The fix (`tools/patch_mutemode.s` + `tools/build_mutemode.py`)
+1. `build_mutemode.py`: each `pea 0x64` → `pea 0x70` at the three restore sites (asserts
+   the stock `48780064` first). Now `0x800000d4..df` ride the restore; end `0x800000df`
+   stops one short of the DSP frame selector `0x800000e0` (octamax's boundary).
+2. `patch_mutemode.s` `set_mutemode`: after `move.l %d0,MUTE_MODE`, also
+   `move.l %d0,SH_MUTE_MODE` where `SH_MUTE_MODE = 0x100fff6c` (= `0x100fff00 + 0x800000dc
+   - 0x80000070`). Checksum recompute is free via the existing key-handler `jmp`.
+   Patch grew 122 → 128 B in the `0x400d7600` cave (no overlap; well within `0x400d7c3c`).
+3. Getter and `patch_softmute`'s GATE read are unchanged — they read the runtime word,
+   which is now correctly restored at boot.
+
+Fresh unit / post-OS-upgrade: the defaults path zero-fills the whole block →
+`0x100fff6c = 0` → `MUTE MODE = OT` = stock. `get_mutemode` also clamps to `[0,1]`, so
+even a stale shadow byte can only read as a valid mode.
+
+### Verified — `tools/emu_mutemode.py` : ALL GOOD
+Added: static asserts the 3 restore sites are `pea 0x70` (and stock was `pea 0x64`) and
+that `set_mutemode` carries `move.l d0,0x100fff6c`; emu asserts the setter writes **both**
+runtime and shadow for every clamp/wrap case; and a boot-restore simulation
+(`memcpy(0x80000070, 0x100fff00, 0x70)`) shows `0x800000dc` now lands — and that a `0x64`
+copy would still miss it. Existing menu/detour/gate checks unchanged, still green.
+
+### Build
+`python3 tools/build_mutemode.py` → `out/OCTATRACK_OS1.40C_MUTEMODE.{syx,bin}` `140C_KYOTI`.
+597 bytes changed vs stock (was ~591). **NOT flashed** (no MKI access).
+
+### HW test to run when the MKI is back (adds to the Session-10 checklist)
+- PERSONALIZE → MUTE MODE → `OT+FX`; **power-cycle**; PERSONALIZE → MUTE MODE still reads
+  `OT+FX` and soft-mute behaviour is active without re-entering the menu.
+- Set back to `OT`, power-cycle, still `OT`.
+- Re-flash stock 1.40C, confirm PERSONALIZE is back to defaults.
+
+### For the `wip/mute-mode` pickup
+Same fix is needed there for **DT** (3rd mode, same word `0x800000dc`) — trivial, `build_mutemode_dt.py`
+gets the identical 3-site `pea` patch. **DIRECT JUMP uses `0x800000a8`**, which is *already*
+inside the stock `0x64` restore span (`0x70`..`0xd3`) → check whether it currently
+collides with a real stock PERSONALIZE word before relying on it, or move it into the
+`0xd4..df` window alongside MUTE MODE.
+
+### Also seen in the re-sync (not actioned — user scoped this session to the fix only)
+octamax +114 (OCTAMAX 2.x: slice playhead, dual-256 slots, `emu_check.py` pre-flash gate);
+octabam +243 ("RTOS" fork: `emu_rtos.py` full-firmware emulator, the pattern format
+measured incl. the **9-byte TRAC header** and per-mask meaning, `ot_project.py`
+pattern-trig/pattern-diff, `PARAM_PAGES.md` full descriptor-table decode, `FAILURE_MODES.md`
++ MIDI recovery flasher). Re-distillation into `reference/kb/` + the Session-13 p-lock
+groundwork are the next no-flash tasks. `refs/` cache is synced to latest;
+`refs/MANIFEST.lock` deliberately left at the last-distilled pins.
