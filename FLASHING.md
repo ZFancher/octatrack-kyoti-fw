@@ -276,9 +276,13 @@ bigger change.  SOFT MUTE is always on (no PERSONALIZE toggle yet).
     **NO BANK/PTN TIMER** and **LAZY TRANSITIONS**, both unchecked.
     Check them with **[YES]** (or the arrow keys). The 16 stock entries above must still show
     their own values correctly.
-16. The settings live in battery-backed RAM, so they survive a power cycle. Turn the unit off
-    and on to confirm they stay checked. A Startup Menu **EMPTY RESET** clears them back to
-    factory, like every other PERSONALIZE setting.
+16. The settings live in battery-backed RAM (the checksummed `'ANDY'` block at `0x100fff00`;
+    the volatile `0x800000xx` runtime word is restored from it at boot — see
+    `reference/kb/memory-map.md`), so they survive a power cycle *only if the setter writes
+    that shadow*. Turn the unit off and on to confirm they stay checked. A Startup Menu
+    **EMPTY RESET** clears them back to factory, like every other PERSONALIZE setting.
+    (MUTE MODE gained its shadow write in Session 19; verify it survives a power cycle when
+    that build reaches hardware.)
 
 ### Testing the BANK/PTN toggle
 18. Press **[PTN]**: the SELECT PATTERN window opens. Wait more than four seconds — **it must stay
@@ -331,6 +335,14 @@ official file.
   `checksums : ok`; for the `.bin`, `python3 tools/bin_decode.py <file>.bin` must print
   `✓ COINCIDE`. If either fails, the local file is corrupt — rebuild it (§ Quick file
   reference → "Rebuild from source").
+
+### (a-bis) The flash completed and boots, but audio is garbled — **power-cycle first**
+
+An OS upgrade rewrites program memory but does **not** clear the DSP state RAM. An engine
+whose warm-up tag is still valid runs on the previous firmware's buffer contents, so audio
+can be garbled/wrong right after `UPDATING FLASH` — worst on the delay/reverb, which
+recirculate it. **Turn the unit fully off and on before judging anything.** A reboot clears
+the tag; warm-up runs; buffers zero. (Source: `refs/octabam/docs/FAILURE_MODES.md`.)
 
 ### (b) The flash completed, but the OS won't boot / traps / hangs
 

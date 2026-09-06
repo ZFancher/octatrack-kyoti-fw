@@ -117,10 +117,17 @@ not yet on the MKI). `0x800000xx` is volatile DSP shared RAM, so the shipped tog
 reverted to `OT` on every power cycle; the setter now also writes the checksummed
 `'ANDY'` battery-SRAM shadow at `0x100fff6c` and `build_mutemode.py` extends the block
 restore `pea 0x64`→`0x70` at 3 sites. Mechanism from octamax `c78ff70`. `NOTES.md`
-"Session 19". A re-sync also pulled **114 new octamax + 243 new octabam commits** —
-re-distilling those into `reference/kb/` and the Session-13 p-lock groundwork
-(octabam now has the pattern format + a full-firmware emulator) are the next
-no-flash tasks; `refs/MANIFEST.lock` left at the last-distilled pins.
+"Session 19".
+
+Session 20 (2026-09-06): **KB re-distillation** — folded 114 new octamax + 243 new
+octabam commits into `reference/kb/` (`MANIFEST.lock` bumped). New: `memory-map.md`
+"Kernel / RTOS" + "Per-step sequencer data" + "PERSONALIZE persistence"; descriptor
+table corrected (+ MULTIBCOMP `0x19`); recorder-page 3-tier storage. `file-format.md`
+rewrote the TRAC layout with octabam's HW-confirmed **step-mask map** (recorder trigs =
+masks `0x20/0x28/0x30`), a **p-lock byte→parameter hypothesis**, and a `pattern-diff`
+Phase-0 plan for the Session-13 backlog. `techniques.md` gained `emu_rtos`/`emu_check`/
+`ot_project`, the menu-state-table-grow recipe, the cave-ceiling lesson. `NOTES.md`
+"Session 20". **`main` pushed to `origin`** (Sessions 18–20).
 
 **All active work is on `wip/mute-mode`** (`git checkout wip/mute-mode`) — emulator-verified,
 nothing flashed. That branch's own `START_HERE.md` §6 has the blow-by-blow; in brief:
@@ -139,9 +146,13 @@ nothing flashed. That branch's own `START_HERE.md` §6 has the blow-by-blow; in 
 waits on one hardware session: flash DT first (settles the shared-envelope unknown DT and
 the 4th mode both rest on) → then SIDECHAIN2 → then the rest.
 
-**Backlog on `main`:** turn the mapped p-lock region into a byte→parameter map (start
-from the per-page payload offsets in `kb/octakit-abi.md`), then build the Session-13
-"auto-remove an emptied trigless lock" feature. `NOTES.md` "Session 13" + "Session 18".
+**Backlog on `main`:** the Session-13 "auto-remove an emptied trigless lock" feature.
+Groundwork done (Session 20): the TRAC block is mapped to the step-mask level (C), the
+p-lock byte→parameter map is a hypothesis (L) — both in `kb/file-format.md`, which also
+carries the exact **Phase-0 `pattern-diff` test-pattern plan** (a ~30-min MKI job that
+pins the trigless-lock mask bit + the byte→param offsets at once) and the **Phase-1**
+handler-hunt plan (vendor octabam's `emu_rtos.py`, or Ghidra from the mask consumers).
+`NOTES.md` "Session 13" + "Session 20".
 
 **Picking up:** mute modes / DIRECT JUMP / compressor → `wip/mute-mode`. Knowledge base,
 p-locks, or a fresh bug → `main`. Then the named `NOTES.md` Session section.

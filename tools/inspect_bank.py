@@ -11,13 +11,15 @@ offsets from snugsound/OctaLib plus the TRAC-block layout worked out in
     python3 tools/inspect_bank.py <bankNN.work> -p 2 -t 7  # dump one track's p-locks
     python3 tools/inspect_bank.py <bankNN.work> --parts    # part FX-id bytes + names
 
-Offsets (bank-file bytes):
+Offsets (bank-file bytes; step-mask map from octabam RTOS_FORK.md §10.6, 2f241e1):
   PTRN 1              0x16     stride 0x8EEC, 16 patterns
-  PTRN header         8 B, then 8x TRAC (0x922) then 8x MTRA (0x8B9)
-  TRAC  +0x08         track number
-        +0x09  8 B    regular-trig bitmap (64 steps, reverse bit order)
-        +0x29  8 B    rec-trig bitmap (OctaLib)
-        +0x49  16 B   delimiter  AA*8 00*8
+  PTRN header         8 B, then 8x TRAC (0x922, 9-B header) then 8x MTRA (0x8B9)
+  TRAC  +0x08         track number (= header pad byte)
+        +0x09  8 B    mask 0x00: regular note/sample trig (64 steps, bit step-1)
+        +0x11/+0x19/+0x21  8 B ea   masks 0x08/0x10/0x18: trig-type layers
+        +0x29/+0x31/+0x39  8 B ea   masks 0x20/0x28/0x30: recorder trigs REC1/2/3 (HW-confirmed)
+        +0x41  8 B    mask 0x38: swing/slide
+        +0x49  16 B   two per-step byte arrays (not masks); micro-timing gate, default 0xAA
         +0x59  9 B    param header: [LEN] 02 00 FF 00*5 ; LEN 0x10/0x20/0x40 = 16/32/64 steps
         +0x62  0x800  p-lock array: 64 steps x 32 bytes, 0xFF = param not locked
         +0x862 0xC0   per-step aux: 64 x 3 B (trig conditions / microtiming?), 0 = default
@@ -75,11 +77,24 @@ def overview(b: bytes) -> None:
 def dump_track(b: bytes, pat: int, trk: int) -> None:
     o = trac_off(pat, trk)
     print(f"P{pat+1} t{trk+1}  TRAC @ {o:#x}")
+    # step-mask names from octabam RTOS_FORK.md §10.6 (2f241e1), recorder masks HW-confirmed
+    masks = [
+        (0x09, "note/sample trig  (mask 0x00)"),
+        (0x11, "trig-type layer   (mask 0x08)"),
+        (0x19, "trig-type layer   (mask 0x10)"),
+        (0x21, "trig-type layer   (mask 0x18)"),
+        (0x29, "recorder trig REC1(mask 0x20)"),
+        (0x31, "recorder trig REC2(mask 0x28)"),
+        (0x39, "recorder trig REC3(mask 0x30)"),
+        (0x41, "swing/slide       (mask 0x38)"),
+    ]
     print(f"  track num   +0x08 : {b[o+8]}")
-    print(f"  reg trigs   +0x09 : {b[o+9:o+17].hex(' ')}  ({popcount(b[o+9:o+17])} set)")
-    print(f"  rec trigs   +0x29 : {b[o+0x29:o+0x31].hex(' ')}  ({popcount(b[o+0x29:o+0x31])} set)")
-    print(f"  pre-plock   +0x11..+0x28 : {b[o+0x11:o+0x29].hex(' ')}")
-    print(f"  delimiter   +0x49 : {b[o+0x49:o+0x59].hex(' ')}")
+    for off, name in masks:
+        bits = b[o + off:o + off + 8]
+        n = popcount(bits)
+        flag = f"  ({n} set)" if n else ""
+        print(f"  +{off:#04x} {name} : {bits.hex(' ')}{flag}")
+    print(f"  +0x49 per-step byte arrays (not masks) : {b[o+0x49:o+0x59].hex(' ')}")
     print(f"  param hdr   +0x59 : {b[o+0x59:o+0x62].hex(' ')}   (step count {b[o+0x59]:#04x})")
     print(f"  p-locks     +0x62 : 64 x 32 B, 0xFF = unlocked")
     any_lock = False

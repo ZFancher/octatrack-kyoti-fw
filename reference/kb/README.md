@@ -13,7 +13,8 @@ findings are merged into one address-keyed picture.
 | [`container-format.md`](container-format.md) | ELUP/ELEK container, aPLib, checksum, `.bin` vs `.syx` transport, the update chain |
 | [`file-format.md`](file-format.md) | on-CF Set/Project/Bank/Part/Pattern/Arrangement layout; the per-step trig / p-lock model |
 | [`dsp56300.md`](dsp56300.md) | the DSP program: location, upload path, and octabam's findings. Out of scope to *patch* here |
-| [`techniques.md`](techniques.md) | code-cave/detour patterns, PERSONALIZE-menu recipe, build-pipeline ideas worth stealing |
+| [`techniques.md`](techniques.md) | code-cave/detour patterns, PERSONALIZE-menu recipe, pre-flash emulation, build-pipeline ideas worth stealing |
+| [`octakit-abi.md`](octakit-abi.md) | ems-octakit's `abi.inc` — ~500 named stock addresses for the Part/Kit/Bank/scene/LFO/sequencer subsystems + guarded patch-site facts |
 
 ## Rules for entries
 

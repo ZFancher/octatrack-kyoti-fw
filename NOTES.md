@@ -3674,11 +3674,81 @@ inside the stock `0x64` restore span (`0x70`..`0xd3`) → check whether it curre
 collides with a real stock PERSONALIZE word before relying on it, or move it into the
 `0xd4..df` window alongside MUTE MODE.
 
-### Also seen in the re-sync (not actioned — user scoped this session to the fix only)
-octamax +114 (OCTAMAX 2.x: slice playhead, dual-256 slots, `emu_check.py` pre-flash gate);
-octabam +243 ("RTOS" fork: `emu_rtos.py` full-firmware emulator, the pattern format
-measured incl. the **9-byte TRAC header** and per-mask meaning, `ot_project.py`
-pattern-trig/pattern-diff, `PARAM_PAGES.md` full descriptor-table decode, `FAILURE_MODES.md`
-+ MIDI recovery flasher). Re-distillation into `reference/kb/` + the Session-13 p-lock
-groundwork are the next no-flash tasks. `refs/` cache is synced to latest;
-`refs/MANIFEST.lock` deliberately left at the last-distilled pins.
+### Also seen in the re-sync (actioned in Session 20)
+octamax +114 (OCTAMAX 2.x); octabam +243 ("RTOS" fork). Re-distilled into `reference/kb/`
+in Session 20 below.
+
+## Session 20 (2026-09-06) — KB re-distillation + Session-13 p-lock groundwork (no-flash, `main`)
+
+**No firmware change. Re-synced the 6 refs (`MANIFEST.lock` bumped: octamax
+`7d9debc`, octabam `2f241e1`; others unchanged) and folded the new octamax +
+octabam research into `reference/kb/`.**
+
+### What went into the KB
+
+**`memory-map.md`:**
+- Descriptor table — corrected bounds `0x400d2e52..0x400d5f00` (31 × `0x192`),
+  full entry layout (`E+0x96` defaults / `+0xa2` mins / `+0xd2` counts / `+0x4e`
+  names / `+0x11a` fmt / `+0x176` class), **added MULTIBCOMP id `0x19` @
+  `0x400d5bdc`** (missing from the octa-bt-pt reading), master-track entry −1 @
+  `0x400d2e52`, page-class handlers `0x40032814`/`0x400328e4` gating on `0x800000a0`.
+- **Track-recorder page** — 3-tier storage (bank blob `[0x46c82456]+0x8f382+
+  part*6322+track*12` · SRAM mirror `0x100a54d0` · published `0x80000cf4+track*12+
+  [0x800000e0]*96`), part idx `0x100b14cf`. (Bryan T via octabam.)
+- **New "Kernel / RTOS"** — scheduler `0x40000550` (trap 0 + PIT0 vec 171), TCB
+  layout (`a7` at `+0x48`), current-TCB `0x800068fc`, top-prio `0x800068d8` into
+  `0x800068dc[8]`, vector install `0x40000d50`, VBR `0x40000000`, frame handler
+  `0x4000aad0` (INTC0 src 1 lvl 5), seq tick `0x400a1e0c` (src 32, INTFRC-delivered
+  while masked), 11 tasks + priorities.
+- **New "Per-step sequencer data"** — the 8 TRAC step masks, consumers
+  `0x4009d1e8` / `0x4009d382..0x4009da12`, flag word `0x46c7a6c0`.
+- **New "PERSONALIZE persistence"** — the `'ANDY'` block (from Session 19),
+  `FUN_4000f938` boot re-image, restore sites, free-word table with shadow addrs
+  and the `0x800000a8` DIRECT-JUMP caveat.
+- Cross-confirmed: `0x800065bd/be` = the sequencer's own playing bank/pattern
+  (octabam RTOS §8.3 ↔ our Session 15 DIRECT JUMP).
+
+**`file-format.md`:** rewrote the TRAC layout table with octabam's HW-confirmed
+mask map — masks `0x00..0x38` at tag-offsets `+0x09..+0x41`; **recorder trigs
+REC1/REC2/REC3 = masks `0x20/0x28/0x30` = offsets `+0x29/+0x31/+0x39`** (our old
+"delimiter @+0x49" was mis-read — it's two more per-step byte arrays). Added the
+**p-lock byte→parameter map hypothesis** (32-B record ≈ `[PLAYBACK|AMP|LFO|FX1|
+FX2]` × 6 + 2-B tail; cross-checked vs the DEMO filter-sweep: `0x12` = FX1 p0 =
+FILTER cutoff, `0x00` = PLAYBACK PITCH, `0x09` = AMP VOL — confidence **L**), a
+**Phase-0 `pattern-diff` test-pattern plan**, and the **Phase-1** handler-hunt
+plan. Confirmed disk↔RAM strides survive as `disk − header` (`0x8ed8` / `0x91a`).
+
+**`techniques.md`:** `emu_rtos.py` (the dynamic-analysis tool NOTES L413 asked
+for), `emu_check.py` (Unicorn diff-vs-stock pre-flash gate), `ot_project.py`
+(`pattern-trig`/`pattern-diff`), the menu-state-table-grow recipe (`0x400cbdac`,
+16→17, for adding a whole screen), the cave-ceiling lesson (`0x400d8000`; the OS
+`.bss` tail ~`0x40108800` is *not* free), the ANDY persistence recipe, OCTAMAX
+2.x dual-256 relocation techniques (noted, not adopted).
+
+**`dsp56300.md`:** `dsp_host` single-core caveat (cross-core bugs never repro
+off-unit); post-upgrade warm-up tag → power-cycle. **`FLASHING.md`:** added the
+"garbled audio after upgrade → power-cycle first" note + corrected the
+"battery-backed RAM" line to point at the ANDY mechanism.
+
+### Session-13 p-lock groundwork — state after this session
+
+- **Data model**: the TRAC block is now C-confident down to the mask level. The
+  p-lock array's internal parameter map is **L** (hypothesis in `file-format.md`).
+- **Still needs the MKI** — a `pattern-diff` pass over the 6 test patterns in
+  `file-format.md` "Phase 0" (30-min job; pins the trigless-lock mask bit + the
+  byte→param offsets in one go).
+- **Still needs RE** — the LIVE-REC `[NO]`+knob erase handler. Best path:
+  vendor octabam's `emu_rtos.py` and watch what a `[NO]`+knob event touches near
+  `[0x46c82456] + pat*0x18b2`. Porting `emu_rtos` is its own multi-session task
+  (brings octabam's kernel + card models) — not started.
+
+### Pre-flash gate recommendation (#5)
+Our per-feature `tools/emu_*.py` already cover the "does this splice compute the
+same effects as stock" question that `emu_check.py` formalises — keep them, but
+adopt its **diff-patched-vs-pristine-STOCK** structure if the count keeps growing.
+`emu_rtos.py` is the bigger prize (full task/interrupt interleaving) but is a
+port project; flagged in `techniques.md`, not scheduled.
+
+### Pushed
+`main` → `origin/main` this session (was 1 commit behind since Session 18):
+Session 18 KB commit + Session 19 persistence fix + this Session 20 re-distillation.

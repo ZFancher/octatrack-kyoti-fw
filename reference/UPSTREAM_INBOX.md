@@ -13,7 +13,11 @@ agent that fetches the refs and appends new commits here.
 
 ## Pending
 
-_(none — initial sync 2026-09-02, MANIFEST.lock is the baseline)_
+- 2026-09-06  octamax@7d9debc  OCTAMAX 2.x — slice-playhead view, dual-256 static-pool
+              reclaim (DDR relocation), OCTAMAX_2 combined release. Techniques noted in
+              kb/techniques.md; not adopted.                          [ noted, not adopted ]
+- 2026-09-06  octabam@2f241e1  the DSP-effect-addition work (bus screen, reverb/delay
+              engines, xbus accumulator fixes) — out of scope per COVERAGE.md.  [ out of scope ]
 
 ## Distilled
 
@@ -33,3 +37,25 @@ _(none — initial sync 2026-09-02, MANIFEST.lock is the baseline)_
               62 .S + Rust patcher; no LICENSE
               [ kb/octakit-abi.md (new), kb/file-format.md, kb/memory-map.md,
                 kb/container-format.md, kb/techniques.md ]
+- 2026-09-06  octamax@c78ff70  'ANDY' battery-SRAM persistence — 0x800000xx is volatile,
+              real store 0x100fff00 (checksum FUN_4001f23c, restore memcpy 0x64 @ 3 sites)
+              [ kb/memory-map.md, kb/techniques.md; ported in Session 19 ]
+- 2026-09-06  octamax@ec510e1  emu_check.py Unicorn pre-flash gate (diff patched vs stock)
+              [ kb/techniques.md ]
+- 2026-09-06  octabam@2f241e1  RTOS fork: emu_rtos.py full-firmware emulator + kernel decode
+              (scheduler 0x40000550, 11 tasks, TCB layout, INTC0/1)
+              [ kb/memory-map.md "Kernel / RTOS", kb/techniques.md ]
+- 2026-09-06  octabam@2f241e1  TRAC step-mask map — masks 0x00..0x38 → offsets +0x09..+0x41,
+              recorder trigs REC1/2/3 = masks 0x20/0x28/0x30 (HW-confirmed via pattern-diff),
+              RAM strides 0x8ed8 / 0x91a, step handler 0x4009d1e8
+              [ kb/file-format.md, kb/memory-map.md ]
+- 2026-09-06  octabam@2f241e1  PARAM_PAGES.md — full descriptor-table decode: bounds
+              0x400d2e52..0x400d5f00, entry layout, MULTIBCOMP id 0x19 @ 0x400d5bdc,
+              recorder-page 3-tier storage (Bryan T)
+              [ kb/memory-map.md ]
+- 2026-09-06  octabam@2f241e1  FAILURE_MODES.md — cave ceiling 0x400d8000 (OS .bss tail
+              is not free), power-cycle-after-upgrade warm-up tag
+              [ kb/techniques.md, kb/dsp56300.md, FLASHING.md ]
+- 2026-09-06  octabam@2f241e1  MAINMENU.md §9a — menu-state table 0x400cbdac (16 entries,
+              stride 0x14), relocate-and-repoint to add a whole screen
+              [ kb/techniques.md ]
