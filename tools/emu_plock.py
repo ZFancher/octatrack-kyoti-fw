@@ -73,8 +73,33 @@ def disk_plock(pat, trk):
     return b[off + 0x59:off + 0x59 + 9], b[off + 0x62:off + 0x62 + PLOCK_LEN]
 
 
-def boot_and_load():
-    card, name = er.stage_project(str(DEMO), "OCTABAM", None)
+def make_trigless_demo():
+    """Copy the DEMO dir to scratch and clear P{DISK_PAT+1} t{DISK_TRK+1} step 4's
+    NOTE-trig bit while leaving its p-lock (`#1[4][0x12]=0x14`) intact -- so the
+    firmware loads a step that is a p-lock with no note = a trigless lock.
+    Returns the staged-dir path."""
+    import shutil
+    out = pathlib.Path("/tmp") / "OT_DEMO_TRIGLESS"
+    if out.exists():
+        shutil.rmtree(out)
+    shutil.copytree(DEMO, out)
+    bank = out / "bank01.work"
+    b = bytearray(bank.read_bytes())
+    PAT1, PSTRIDE, PHDR, TRAC = 0x16, 0x8EEC, 8, 0x922
+    off = PAT1 + PSTRIDE * DISK_PAT + PHDR + TRAC * DISK_TRK
+    # disk note mask = off+9, 8 bytes BE: byte (7 - step//8), bit (step%8)
+    step = 4
+    a = off + 9 + (7 - step // 8)
+    before = b[a]
+    b[a] &= ~(1 << (step % 8))
+    bank.write_bytes(bytes(b))
+    print(f"trigless   : cleared note bit for P{DISK_PAT+1} t{DISK_TRK+1} step {step} "
+          f"(disk +{a:#x}: {before:#04x} -> {b[a]:#04x})")
+    return str(out)
+
+
+def boot_and_load(project_dir=None):
+    card, name = er.stage_project(project_dir or str(DEMO), "OCTABAM", None)
     r, rt = er.attach(str(OUR_IMAGE), card, tick=True)
     print(f"boot       : {r.stopped}")
     mounted, posted, saved_bank, final_bank, elapsed = rt.load_project_live(
@@ -204,6 +229,53 @@ def cmd_s27(rt):
     print(f"\n  RECONCILE: LOCK_STORED steps for t{DISK_TRK} = {got}")
     print(f"             #1 locked steps               = {locked1}")
     print(f"             {'MATCH -> 0x400339d8 reads #1 at TRAC+0x59' if got == locked1 else 'MISMATCH -> offset is off'}")
+    return True
+
+
+def cmd_trigless(rt):
+    """Session 31: with P11 t2 step 4's note bit hand-cleared (make_trigless_demo),
+    is it now a trigless lock?  Dump every p-lock/mask view for step 4 (trigless)
+    vs step 0 (note + lock) and see what distinguishes them."""
+    blob = blob_base(rt)
+    pat_blk = blob + DISK_PAT * PATTERN_STRIDE
+    tb = trac_base(rt, DISK_PAT, DISK_TRK)
+    trk = DISK_TRK
+    print(f"\nblob {blob:#x}  pat_blk {pat_blk:#x}  TRAC(t{trk}) {tb:#x}")
+
+    def steps_of(v):
+        return [i for i in range(64) if v[7 - i // 8] & (1 << (i % 8))]
+    print("\nTRAC RAM masks:")
+    for base in range(0x00, 0x40, 8):
+        v = bytes(rt.uc.mem_read(tb + base, 8))
+        print(f"  +{base:#04x}: {v.hex(' ')}   steps={steps_of(v)}")
+    print(f"  +0x0a (param bmp lo/hi): "
+          f"{struct.unpack('>II', rt.uc.mem_read(tb + 0x0a, 8))}")
+
+    for step in (0, 4):
+        tag = "note+lock" if step == 0 else "TRIGLESS?"
+        one = bytes(rt.uc.mem_read(tb + PLOCK_IN_TRAC + step * 32, 32))
+        nz1 = [(hex(i), hex(one[i])) for i in range(32) if one[i] != 0xFF]
+        p48 = pat_blk + 0x48d8 + trk * 0x8b0
+        v48 = bytes(rt.uc.mem_read(p48, 16))
+        p49 = pat_blk + 0x4900 + trk * 0x8b0 + step * 0x20
+        v49 = bytes(rt.uc.mem_read(p49, 16))
+        nz49 = [(hex(i), hex(v49[i])) for i in range(16) if v49[i] != 0xFF]
+        print(f"\n  --- step {step} [{tag}] ---")
+        print(f"    #1  @ {tb + PLOCK_IN_TRAC + step*32:#x}: nz={nz1}")
+        print(f"    +0x48d8 hdr @ {p48:#x}: {v48.hex(' ')}")
+        print(f"    +0x4900 rec @ {p49:#x}: nz={nz49}")
+
+    rt.run(until=lambda r: r.pc == er.MAIN_SPIN)
+    rt.uc.mem_write(0x100b14d0, bytes([DISK_PAT]))
+    try:
+        rt.call_as_main(0x400339d8, args=(), budget=2_000_000)
+    except Exception as e:
+        print(f"  rebuild: {e}")
+    stored = bytes(rt.uc.mem_read(0x46c7d48c, 64))
+    print(f"\n  0x46c7d48c (stored-lock bmp) nonzero: "
+          f"{[(s, hex(stored[s])) for s in range(64) if stored[s]]}")
+    print(f"  -> step 0 = {stored[0]:#04x}   step 4 = {stored[4]:#04x}  "
+          f"(bit {trk} = {'SET (shows as lock)' if stored[4] & (1 << trk) else 'clear'})")
     return True
 
 
@@ -475,16 +547,21 @@ def main():
     ap.add_argument("--applyknob", nargs=2, type=int, metavar=("PARAM", "VALUE"),
                     help="after --rec + --trig hold: call the 'apply to held steps' sub "
                          "0x4004eb54(PARAM, -1, VALUE) and watch the whole pattern block")
+    ap.add_argument("--trigless", action="store_true",
+                    help="Session 31: load a DEMO copy with P11 t2 step 4's note bit cleared "
+                         "(p-lock kept) and dump every mask/view for step 4 vs step 0")
     a = ap.parse_args()
-    if not (a.confirm or a.watch or a.s27):
-        ap.error("pick --confirm, --watch or --s27")
+    if not (a.confirm or a.watch or a.s27 or a.trigless):
+        ap.error("pick --confirm, --watch, --s27 or --trigless")
     if not DEMO_BANK1.exists():
         sys.exit(f"missing {DEMO_BANK1} (the factory OT DEMO export)")
 
-    rt = boot_and_load()
+    rt = boot_and_load(make_trigless_demo() if a.trigless else None)
     ok = True
     if a.confirm:
         ok = cmd_confirm(rt)
+    if a.trigless:
+        ok = cmd_trigless(rt)
     if a.s27:
         ok = cmd_s27(rt)
     if a.watch:

@@ -335,11 +335,28 @@ complaint). The step handler (`0x4009d740`+, per-param loop `0x4009d7dc`)
 consults a 64-bit param bitmap at **`TRAC + 0x0a`** + the `#1` values at
 `TRAC + 0x59`.
 
-*Open (Session 31)*: the **trig-type flag** (Session 13's predicate) is still not
-located — `0x40041bc4` doesn't set it; disasm the "place trigless lock" path
-(`0x400587d4` = grid-rec *hold* branch, or `[FUNC]+[TRIG]`). Then a test pattern
-with a real trigless lock, then the detour on `0x40041bc4`'s exit. ⚠️ p-lock data
-has ≥5 parallel live views; the serialise graph is unmapped.
+**A pure p-lock trigless lock is DERIVED, not flagged** (Session 31,
+`emu_plock.py --trigless` — hand-clear a locked step's `TRAC+0x00` note bit on
+disk, reload): the step is then a trigless lock with **no other bit set**
+anywhere (`TRAC+0x08/0x10/0x18/0x0a`, `+0x48d8`, `+0x4900` all empty at load),
+and `0x46c7d48c[step]` (→ the dim-lock LED) lights **byte-identically** to the
+note+lock case. So **trigless lock ≡ `#1[step] != 0xFF && TRAC+0x00 bit clear`**.
+
+Revised model: **`#1` (`TRAC+0x59`) = the store** (deserialiser fills it on
+load); `TRAC+0x0a` / `+0x48d8` / `+0x4900` are runtime working views, **empty
+until an edit populates them lazily**. `0x40041bc4` (LIVE erase) clears the
+working views but **not `#1`** → the emptied lock survives in `#1`, the LED stays
+lit, re-serialises on save = Session 13's complaint.
+
+**Detour (Option B)**: hook `0x40041bc4` exit — erase that took the `(track,
+step)` working param-bitmap to 0 AND step is a pure trigless lock (`TRAC+0x00`
+and `+0x08/0x10/0x18` bits clear) → clear `#1[track][step]` (32 bytes → `0xFF`) +
+let `0x400339d8` refresh.
+
+*Open (Session 32)*: `0x40041bc4`'s step/track/param decode (via `0x4009b290` /
+`0x4009b2d4`, tables `0x46c7d4cc/d4cd`) + the erase/write discriminator; the
+`+0x4900` → `#1` serialise (unlocated); whether `#1`'s 32 bytes are per-page
+(sample/LFO/FX locks span pages — the predicate must not miss them).
 
 `0x8000004a` is the "what does a knob turn do" bitfield: bit 0 → write the Part-data
 value (encoder `0x4004eb24`); bit 1 → the CC-lock path.

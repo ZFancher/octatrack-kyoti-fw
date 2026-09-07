@@ -5266,18 +5266,18 @@ Working model: the knob edits **#2** (`0x46c7ab30`) for the held step; a
 
 ### No-flash to-do board (Session 25 → onward)
 
-1. **[NEXT] trigless-lock feature — trig-type flag + detour (Session 31).**
-   Gesture (Session 13) = **LIVE REC `[NO]`+knob**; handler =
-   **`0x40041bc4(track, a2@2, a2@3, a2@4)`** (`0x460d172a`-gated LIVE write/erase).
-   It updates ≥3 parallel views (`+0x48d8` param bitmap, `+0x4900` value records,
-   `+0x2880` PART-payload) but **never checks "count→0" or touches a trig mask**.
-   NEXT: find the trig-type flag (disasm `0x400587d4` = grid-rec hold branch / the
-   "place trigless lock" path + the LED painter's read of it); build a real
-   trigless-lock test pattern; then the detour on `0x40041bc4`'s exit. ⚠️ p-lock
-   data has ≥5 parallel live views (`#1` TRAC+0x59, TRAC+0x0a bitmap, +0x48d8
-   bitmap, +0x4900 values, +0x2880 PART-view, +0x2470 16-bit) — the serialise
-   graph is unmapped; the "predicate is the whole ballgame" risk is real. NOTES
-   "Session 30".
+1. **[NEXT] trigless-lock feature — build the detour (Session 32).** Session 31
+   settled the model: **a pure p-lock trigless lock is DERIVED** (`#1[step] !=
+   0xFF && TRAC+0x00 note bit clear`) — no separate flag. `#1` (`TRAC+0x59`) =
+   the store; `TRAC+0x0a`/`+0x48d8`/`+0x4900` = lazy working views. **`0x40041bc4`
+   (LIVE `[NO]`+knob erase) clears the working views but NOT `#1`** → emptied lock
+   survives, LED (`0x46c7d48c` ← `0x400339d8` ← `#1`) stays lit = Session 13's
+   complaint. **Detour (Option B)**: hook `0x40041bc4` exit — erase that zeroed
+   the `(track,step)` working param-bitmap AND step is a pure trigless lock →
+   clear `#1[track][step]` (32 B → 0xFF) + `0x400339d8` refresh. NEXT: pin
+   `0x40041bc4`'s step/track/param decode + erase-vs-write discriminator; find
+   the `+0x4900`→`#1` serialise; confirm `#1`'s 32 bytes cover all lock pages
+   (sample/LFO/FX); then build. NOTES "Session 31".
 2. **DIRECT JUMP v2** — box-free overlay: revive the dead-code `FUN_4005a0e0` + a
    close-on-tick hook instead of the 4-box `FUN_40059f8c`. Small; maybe wait for v1 HW.
 3. **Side-chain step 3 DSP** — "Session 17 continued (8)" open items: disasm payload B's
@@ -5576,16 +5576,53 @@ Session 13 needs is still not located — `0x40041bc4` doesn't write it, so a
 separate "place trigless lock" path sets it. **The "predicate is the whole
 ballgame" risk is real.**
 
-### NEXT (Session 31)
+## Session 31 (2026-09-06, `wip/mute-mode`) — a trigless lock is DERIVED, not flagged
 
-1. Find the **trig-type flag**: disasm the "place a trigless lock" path
-   (`[FUNC]+[TRIG]` on an empty step, or `0x400587d4` = the grid-rec *hold*
-   branch) — it sets whatever bit makes a step a dim lock. Cross-check: the
-   16-step LED painter's read of that bit.
-2. Build a test pattern with a real trigless lock — either drive
-   `0x40041784`/`0x400587d4` in the emu on an empty step, or hand-patch a DEMO
-   bank (set a `#1[step]` value on a step with the `TRAC+0x00` note bit clear)
-   and load it to see how the firmware renders / stores it.
-3. Once the flag + the "lock count == 0" predicate are pinned: the detour hooks
-   `0x40041bc4`'s exit — `if erase && all-lock-views-now-empty-for-(track,step)
-   && trig_type == pure-trigless-lock: clear the trig-type flag`.
+`emu_plock.py --trigless`: copies the DEMO, clears **P11 t2 step 4's note-trig
+bit** on disk (`bank01.work` off `+0x59e88`: `0x55 → 0x45`) while leaving its
+p-lock (`#1[4][0x12] = 0x14`) — then loads it and dumps every view for step 4
+(trigless) vs step 0 (note + lock).
+
+Result — **step 4 is now a trigless lock, and it is created by NOTHING but the
+absence of a note bit**:
+- `TRAC + 0x00` note mask: step 4 gone (`{0,2,6,8,10,12,14}`).
+- `#1[4]` unchanged: `[0x12] = 0x14`.
+- **`0x46c7d48c[4] = 0x43`** (bit 1 set) — byte-identical to the un-patched
+  note+lock case. So `0x400339d8`'s rebuild (→ the dim-lock LED) lights step 4
+  the same either way: **the LED is driven purely by `#1[step]` being non-`0xFF`,
+  and does not care about the note bit.**
+- `TRAC + 0x08 / 0x10 / 0x18 / 0x0a` masks and `+0x48d8` / `+0x4900`: all **empty
+  at load**. So there is **no separate "trig-type flag" for a pure p-lock
+  trigless lock** — it is exactly `#1[step] != 0xFF && TRAC+0x00 bit clear`.
+
+**Revised model** (consistent with everything):
+- `#1` (`TRAC + 0x59`, param-indexed value records) = **the store**, filled by
+  the deserialiser on load. `TRAC + 0x0a` param bitmap and `+0x48d8` / `+0x4900`
+  are **runtime/working views, empty until an edit populates them lazily**.
+- The dim-lock LED = `0x46c7d48c[step]` bit `track`, rebuilt by `0x400339d8`
+  from `#1[step]` non-`0xFF`.
+- `0x40041bc4` (LIVE `[NO]`+knob erase) clears the working views (`+0x48d8`,
+  `+0x4900`, `+0x2880`) but **NOT `#1`** → the emptied lock survives in `#1`,
+  the LED stays lit, and it re-serialises on save. **That is Session 13's
+  complaint, fully explained.**
+
+### The detour (Option B — designable now)
+
+Hook `0x40041bc4`'s exit. When the call was an **erase** that took the working
+param-bitmap for `(track, step)` to **0** (i.e. `+0x48d8`/`+0x48e0` both 0 for
+that track+step) AND the step is a **pure trigless lock**
+(`TRAC+0x00`[step] bit clear, and `TRAC+0x08/0x10/0x18`[step] bits clear — no
+note / recorder / other trig) → **clear `#1[track][step]`** (write `0xFF` to its
+32 bytes) and let `0x400339d8` refresh (LED off, step inert, save writes empty).
+
+Still needed for the build (Session 32):
+1. **`0x40041bc4`'s step/track/param decode** — it calls `0x4009b290` /
+   `0x4009b2d4` and reads tables `0x46c7d4cc/d4cd`; pin which locals hold
+   `track` (`fp@8`), `step`, `param`, and the erase-vs-write discriminator.
+2. **The `+0x4900` → `#1` serialise** (still unlocated) — needed to confirm
+   "clear `#1` + mark dirty" is enough, or whether the working view must be
+   cleared too (it already is, by `0x40041bc4` itself).
+3. The predicate's conservatism: exclude sample-slot locks, LFO/FX locks on
+   other pages, trig conditions — check whether those live in `#1`'s 32 bytes or
+   a separate per-page record (`0x40041784` writes `+0x4902` for *one* page; the
+   OT locks span several pages → `#1` is likely per-(page) not global).
