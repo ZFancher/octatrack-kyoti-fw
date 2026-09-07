@@ -5266,17 +5266,18 @@ Working model: the knob edits **#2** (`0x46c7ab30`) for the held step; a
 
 ### No-flash to-do board (Session 25 → onward)
 
-1. **[NEXT] trigless-lock feature — the build (Session 33).** Model settled
-   (S31): trigless lock ≡ `#1[step] != 0xFF && TRAC+0x00 clear`, no flag; `#1`
-   (`TRAC+0x59`) = store; `0x40041bc4` (LIVE `[NO]`+knob erase) clears working
-   views but NOT `#1`. **S32: the detour's core action is VALIDATED** — hand-write
-   `#1[t][step] = 0xFF` + `0x400339d8` → `0x46c7d48c[step]` bit clears (LED off),
-   zero collateral. Detour: hook `0x40041bc4` exit → do the per-param `#1` clear
-   the firmware skips (`#1[curtrack][playheadstep][param] = 0xFF`) when the step
-   is a pure trigless lock; multi-pass falls out. NEXT: (a) per-track playhead
-   step global (from `0x4009d1e8`); (b) `0x40041bc4`'s erased-param index
-   (`fp@-2`/`a3`); (c) build `patch_triglock.s` + `build_triglock.py` →
-   `140C_KYOTI`. NOTES "Session 32".
+1. **[NEXT] trigless-lock feature — DECISION POINT (Session 34).** Model + the
+   detour's core action are **solid** (S31/S32): trigless lock ≡ `#1[step] !=
+   0xFF && TRAC+0x00 clear`; `clear #1[t][step] + 0x400339d8` → LED off, zero
+   collateral. **But (S33) the hook is blocked**: `0x40041bc4`'s decode
+   (`0x4009b2d4`) returns `(bank, pattern, param-descriptor)` and **no clean step
+   index**; and the **`+0x4900` (LIVE working view) → `#1` (store) merge is
+   unlocated** — nothing in the sequencer reads `+0x4900`, and the LIVE cluster
+   never writes `#1`. 8 sessions in; past the S13 "3–5" estimate. NEXT: either
+   (a) trace SAVE (`0x400645ce`) / pattern-change commit for the `+0x4900`→`#1`
+   merge (~2–3 sessions), or (b) drive the full LIVE gesture in `emu_plock`
+   (transport+REC+`0x460d172a`) and watch `#1` across frames, or (c) bank the
+   subsystem RE and move on. NOTES "Session 33".
 2. **DIRECT JUMP v2** — box-free overlay: revive the dead-code `FUN_4005a0e0` + a
    close-on-tick hook instead of the 4-box `FUN_40059f8c`. Small; maybe wait for v1 HW.
 3. **Side-chain step 3 DSP** — "Session 17 continued (8)" open items: disasm payload B's
@@ -5684,3 +5685,56 @@ likely right. Doesn't block the detour (which targets `#1`, not `+0x4900`).
    falls out naturally.
 4. Build `tools/patch_triglock.s` + `tools/build_triglock.py` → `140C_KYOTI`,
    cave in `0x400d7400`+, EFT round-trip, `emu_plock` regression.
+
+## Session 33 (2026-09-07, `wip/mute-mode`) — the `0x4009b2d4` decode; and the wall
+
+### `0x4009b2d4` — what it returns
+
+Writes **4 output bytes** at `(a3)` (= `&fp@-4` for the LIVE handlers):
+`(a3)@0 = d2` (blob/bank selector, `0x46c7759c`/`758c`/`755c`[track+8]),
+`(a3)@1 = d1` (pattern selector, `0x46c775bc`/`75ac`[track+8]),
+`(a3)@2 = d5` (param-page descriptor, `0x46c7754c`/`753c`/`755c`[track+8]),
+`(a3)@3 = d3` (a `remul`-derived sub-index 0–23).
+Internally `d5 = [0x46c775ce] − a2@4` is the **step** (`0x46c775ce` = an
+edit/playhead step base, written by `0x4009c3e0` + the `0x400a2xxx` display code),
+but the step is folded into a huge linear address (`×0xd728`, `×0x285f00`,
+`×0x1ae50`) and only survives as the mod-result `(a3)@3` — **not** returned as a
+clean `#1` step index.
+
+So `0x40041bc4` gets `(bank, pattern, param-descriptor)` from the decode and
+`(a3)@3` as a 6-bit field; the step it operates on is implicit.
+
+### The wall: `+0x4900` ↔ `#1` has no bridge in the paths seen
+
+- `0x400e6ae0` (= `blob + 0x4900`) is referenced **only** by `0x40041f02` /
+  `0x40041f72` / `0x40042546` / `0x40042642` — all inside the LIVE
+  write/erase cluster. The sequencer (`0x4009xxxx`) never reads it.
+- The LIVE cluster writes `+0x4900`, `+0x48d8`, `+0x2880`, `0x46c7d2e4`, the
+  `0x1001aaXX` mirrors, and dirty flags — **never `#1` (`TRAC+0x59`)**.
+- `#1` is filled by the deserialiser on load; `+0x4900` is left empty
+  (`--trigless` / `--s27`).
+- The step handler `0x4009d1e8` reads `#1` + `TRAC+0x0a`; it does **not** read
+  `+0x4900` or the armed-param bitmap `0x46c7d344/d348`.
+
+**So how a LIVE `[NO]`+knob edit reaches playback / disk is still unaccounted
+for.** Candidates for the missing `+0x4900` → `#1` merge: the SAVE serialiser
+(`0x400645ce` / `0x40025xxx`), a pattern-change / STOP commit, or a per-frame
+apply reading `+0x48d8`/`+0x2880` (not `+0x4900`) that I have not traced.
+
+### Honest status
+
+8 sessions in (26–33). Model + the detour's core action (`clear #1[t][step]` +
+`0x400339d8` → LED off) are **solid**. But the hook needs a clean `(track, step,
+param)` and the `+0x4900` ↔ `#1` relationship, and both are proving deep — the
+decode returns no clean step, and the working-view → store merge is unlocated.
+This is materially past the Session-13 "3–5 session" estimate. **Decision point
+for the user**: keep drilling (find the merge — likely 2–3 more sessions), or
+bank the (substantial) subsystem RE and move to another item.
+
+### NEXT (Session 34, if continuing)
+
+1. Trace the SAVE path (`0x400645ce`) and a pattern-change commit for a read of
+   `+0x4900` / `+0x48d8` / `+0x2880` that writes `#1` or the disk `TRAC` block.
+2. OR drive the full LIVE gesture in `emu_plock` (transport running + REC + poke
+   `0x460d172a`) and watch `#1` across several frames — see empirically when/if
+   a live edit reaches `#1`.
