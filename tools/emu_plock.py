@@ -149,18 +149,21 @@ def _hookall(rt, spans):
 
 KEY_REC = 0x4000a274
 TRIG_HANDLER = 0x40060ce0                 # keymap codes 0x00..0x0f
-ENCODER_HANDLER = 0x4004eb24              # struct @ 0x400c08e0 -> (a1, delta)
+ENCODER_HANDLER = 0x4004eb24              # the full encoder handler (redraws -> hangs under call_as_main)
+FUN_40033e3c = 0x40033e3c                 # (track@16, 0x2e@20, value@24) -- what 0x4004eb24 calls at +knob
+SCENE_VALUES = 0x46c7aa24                 # scene p-lock storage (step handler's d2==-1 case)
 MODE_04A = 0x8000004a                     # "what does a knob turn do" bitfield
 
 
-def cmd_watch(rt, ms, do_rec, trig, knob, param, play):
+def cmd_watch(rt, ms, do_rec, trig, knob, param, play, call3e3c):
     tb = trac_base(rt, DISK_PAT, DISK_TRK)
     blob_lo = tb + PLOCK_IN_TRAC
     # NARROW: just the p-lock structures themselves + the mode byte (a wide hook makes
     # every gesture step unusably slow).
-    spans = [(blob_lo, PLOCK_LEN),                    # THE target: the blob p-lock array
-             (SEQ_VALUES, SEQ_SPAN), (SEQ_SECOND, SEQ_SPAN), (SEQ_BITMAP, 0x40),
-             (CC_VALUES, CC_SPAN), (CC_BITMAP, 0x40), (CC_PARAMFLAG, 4),
+    spans = [(blob_lo, PLOCK_LEN),                    # #1  THE target: the blob p-lock array
+             (SEQ_VALUES, SEQ_SPAN), (SEQ_SECOND, SEQ_SPAN), (SEQ_BITMAP, 0x40),   # #2 live set
+             (SCENE_VALUES, SEQ_SPAN),                # #3 scene storage
+             (CC_VALUES, CC_SPAN), (CC_BITMAP, 0x40), (CC_PARAMFLAG, 4),           # #4 MIDI CC-lock
              (MODE_04A, 1)]
     print(f"\nwatch      : blob TRAC [{tb:#x}]  +  seq working copy (0x46c7ab30/75fa0)  "
           f"+  cc triplet  +  0x8000004a")
@@ -207,6 +210,8 @@ def cmd_watch(rt, ms, do_rec, trig, knob, param, play):
         rt.next_frame = rt.sample + er.FRAME_PERIOD
         rt.exact_clock(); rt.internal_clock(); rt.press_play_live()
         rt.run(ms=ms)
+    if call3e3c is not None:
+        drive(f"3e3c t{call3e3c}", FUN_40033e3c, (call3e3c, 0x2e, 100), budget=400_000)
     if knob:
         drive(f"knob p{param}", ENCODER_HANDLER, (param, knob), budget=400_000)
 
@@ -221,6 +226,7 @@ def cmd_watch(rt, ms, do_rec, trig, knob, param, play):
         for base, ln, nm in ((SEQ_VALUES, SEQ_SPAN, "SEQ_VALUES 0x46c7ab30"),
                              (SEQ_SECOND, SEQ_SPAN, "SEQ_SECOND 0x46c76ac0"),
                              (SEQ_BITMAP, 0x40, "SEQ_BITMAP 0x46c75fa0"),
+                             (SCENE_VALUES, SEQ_SPAN, "SCENE_VALUES 0x46c7aa24"),
                              (CC_VALUES, CC_SPAN, "CC_VALUES 0x46c7bf2c"),
                              (CC_BITMAP, 0x40, "CC_BITMAP 0x46c7d7d8"),
                              (CC_PARAMFLAG, 4, "CC_PARAMFLAG")):
@@ -247,6 +253,7 @@ def main():
     ap.add_argument("--trig", type=int, default=None, help="hold [TRIG n] (0-15) before the knob")
     ap.add_argument("--knob", type=int, default=0, help="encoder delta to apply (e.g. 5 or -5)")
     ap.add_argument("--param", type=int, default=0, help="which encoder (0-5) the --knob turns")
+    ap.add_argument("--call3e3c", type=int, default=None, metavar="TRACK", help="call FUN_40033e3c(track,0x2e,100) directly")
     ap.add_argument("--play", action="store_true", help="start the transport before the knob")
     a = ap.parse_args()
     if not (a.confirm or a.watch):
@@ -259,7 +266,7 @@ def main():
     if a.confirm:
         ok = cmd_confirm(rt)
     if a.watch:
-        cmd_watch(rt, a.ms, a.rec, a.trig, a.knob, a.param, a.play)
+        cmd_watch(rt, a.ms, a.rec, a.trig, a.knob, a.param, a.play, a.call3e3c)
     sys.exit(0 if ok else 1)
 
 

@@ -5208,3 +5208,58 @@ pointer; a knob turn also needs a **staged parameter page** (`0x46c7d244 + idx*2
    watch #1 for `0xFF` stores → names the **eraser**.
 4. RE the writer + eraser; design the "record[step] all-`0xFF` + bare trigless lock →
    clear the trigless-lock mask bit" detour.
+
+## Session 25 (2026-09-06/07, `wip/mute-mode`) — EMAC-patched Unicorn; FUN_40033e3c is the MIDI-CC path, not audio p-locks
+
+### A: re-sync + the EMAC fix (no-flash tooling)
+
+octabam pushed 21 commits (`2f241e1` → `47f6cc5`, RTOS 10.13–10.16). Headline: **stock
+Unicorn 2.1.4's ColdFire fractional `macl` is half of hardware's** (unsigned product
+`>> 32` vs signed `<< 1` then `>> 31`) — every `2^31/N` reciprocal idiom (recorder block
+walk, PCM pool `0x40095c46`, tempo/timing) was wrong, and octabam's `emu_rtos` now refuses
+route A on it. Also: MAC-vs-MSAC is *extension*-word bit 8, not opcode bit 8.
+
+Built the patched Unicorn here: `( cd refs/octabam && PY=$(command -v python3) bash
+scripts/build_unicorn.sh )` → `refs/octabam/.venv/lib/unicorn-emac/libunicorn.2.dylib`
+(gitignored, native arm64, ~2 min). `emu_bringup` auto-detects it via `LIBUNICORN_PATH`;
+`emac_selftest` = **OK**; `emu_rtos` M6a + `emu_plock --confirm` both still pass.
+`tools/emu_rtos.py` + `emu_plock.py` now check for the dir and print the build command.
+
+Distilled into `kb/`: the EMAC fix (`techniques.md`), machine-type byte values
+**0=STATIC / 1=FLEX / 4=PICKUP** (octabam RTOS §10.13 — corrects the old FLEX/STATIC
+guess), the **5-byte per-track slot record** (`part-record +0x2d3 + 5*track + type`),
+`0x80004f1c` = the per-track recorder state record (16×84 B double-buffered),
+`0x80003c20 + 16*type` block-table reciprocals.
+
+### B: p-lock writer hunt — FUN_40033e3c ruled out
+
+`emu_plock.py --watch --rec --trig 4 --call3e3c 1` (calls `FUN_40033e3c(track, 0x2e, 100)`
+directly, after grid-rec + trig-hold): **it writes ONLY `0x46c7bf2c` (#4, CC values) +
+its bitmap/flag, and `FUN_400409f4` immediately flushes+clears them.** Nothing to #1
+(blob), #2 (`0x46c7ab30`), or #3 (scene). So **`FUN_40033e3c` is the MIDI-track CC-lock
+path, not the audio p-lock writer** — settled empirically.
+
+`FUN_40033e3c(track@16, param@20, value@24)`: guard at `0x40033ea4` — `[0x8000003f +
+track]` must equal a held trig (`[0x46c76de0]` = the held list) or it bails. Writes
+`0x46c7bf2c[param + heldStep*128] = value`, sets `0x46c7d7d8` bit, `0x46c7e0de |= 1<<param`.
+The `[NO]` handler calls it with params `0x34–0x36` (`0x4005e164` / `e1a8` / `e1d2`).
+
+Also confirmed (with the windows narrowed to `0x400` — the first run's `0x2200` windows
+caught neighbouring LED/TCB buffers and reported noise): **grid-rec + trig-hold alone
+write nothing** to the p-lock structures.
+
+### Ruled out for the `[TRIG]`-hold + knob → #1 write
+
+- encoder handler `0x4004eb24` bit-0 branch: writes the *Part* value
+  (`[0x46c82456] + part*6322 + …`), not a per-step p-lock.
+- bit-1 branch → `FUN_40033e3c` → #4 (MIDI CC).
+- the full `0x4004eb24` call hangs under `call_as_main` (it redraws; the UI task can't
+  interleave).
+
+### NEXT (Session 26)
+
+Working model: the knob edits **#2** (`0x46c7ab30`) for the held step; a
+**commit-on-trig-release** (or commit-on-step) copies #2 → #1`[step]`. So:
+`emu_plock.py` — grid-rec, hold trig, poke a value into #2 by hand, **release the trig**
+(`TRIG_HANDLER(kc, 0)`), watch #1. The PC that copies #2→#1 is the writer; find its
+`[NO]`-held / erase sibling; then design the auto-remove detour.

@@ -249,13 +249,18 @@ the on-disk map above **is** the RAM map — no repack. The param header
 | 1 | blob `TRAC+0x59` | `record[step][32]`, `0xFF`=unlocked | the pattern's **stored** p-locks (= disk, persisted on save) |
 | 2 | `0x46c7ab30` / `0x46c76ac0` / `0x46c75fa0` | `[track*32 + param]` values (×2) + `[track*4]` bitmap | the sequencer's **live per-track working set** — the step handler `0x4009d1e8` + per-frame apply `0x4000bad4` read these; the engine applies them |
 | 3 | `0x46c7aa24` / `0x46c77c32` / `0x46c7a874` | same `[track*32]` shape | **scene** p-lock storage (step handler uses these for the `d2 == -1` master/scene case) |
-| 4 | `0x46c7bf2c` / `0x46c7d7d8` / `0x46c7e0de` | values `param*128+step` / bitmap / per-param flag | **MIDI-track CC-lock** send queue — `FUN_40033e3c` writes (gated `0x8000004a` bit 1), `FUN_400409f4` sends each set bit as MIDI CC (`FUN_40010bc8` = the serial/MIDI TX ring) then clears the bit |
+| 4 | `0x46c7bf2c` / `0x46c7d7d8` / `0x46c7e0de` | value `[param + heldStep*128]` / bitmap / per-param flag | **MIDI-track CC-lock** send queue — `FUN_40033e3c(track, param, value)` writes it (guard: `[0x8000003f + track]` must equal a held trig; `[0x46c76de0]` = the held list), `FUN_400409f4` sends each set bit as MIDI CC (`FUN_40010bc8` = serial TX ring) then clears it. **`emu_plock.py --call3e3c` (Session 25): `FUN_40033e3c` writes ONLY #4 — so it is NOT the audio p-lock writer.** The `[NO]`+knob path calls it with params `0x34–0x36` (`0x4005e164/e1a8/e1d2`). |
 
 Flow: **load** → `FUN_4009b220` fills #2 with `0xFF` (from boot `0x4001f95c` / project load
 `0x400238a8`), then the deserialiser populates #1; **pattern-enter** → copy loops at
 `0x4009b84c` / `0x4009c02c` splice #1/#3 → #2; **step** → step handler refreshes #2 from
-#1 for the current step; **edit** (hold `[TRIG]` + knob) → writes **#1** at
-`+0x59 + step*0x20 + param` — *this writer is Session 13's target*; **save** → #1 → disk.
+#1 for the current step; **save** → #1 → disk.
+
+**The `[TRIG]`-hold + knob → #1 writer is still not located (Session 25).** Ruled out:
+the encoder handler `0x4004eb24` (bit 0 writes the *Part* value `[0x46c82456]+part*6322+…`,
+bit 1 → `FUN_40033e3c` = the MIDI CC path #4). Neither touches #1/#2/#3 (`emu_plock.py`).
+Likely model: knob edits **#2** for the held step, and a commit-on-trig-release or
+commit-on-step copies #2 → #1[step]. Next: `emu_plock.py` with a trig-*release* + watch #1/#2.
 
 `0x8000004a` is the "what does a knob turn do" bitfield: bit 0 → write the Part-data
 value (encoder `0x4004eb24`); bit 1 → the CC-lock path.
