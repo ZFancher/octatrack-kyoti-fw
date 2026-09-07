@@ -256,44 +256,59 @@ Flow: **load** → `FUN_4009b220` fills #2 with `0xFF` (from boot `0x4001f95c` /
 `0x4009b84c` / `0x4009c02c` splice #1/#3 → #2; **step** → step handler refreshes #2 from
 #1 for the current step; **save** → #1 → disk.
 
-**The `[TRIG]`-hold + knob → #1 writer is still not located (Session 26).**
+**The `[TRIG]`-hold + knob → #1 writer — LOCATED as `0x4004ef54` (Session 27); it
+writes a live-edit buffer `+0x4900`, not #1 directly.**
 
-*p-lock editor gate state* (Session 26, disassembled; all in the `0x460d17xx`
-UI-scratch page):
+*p-lock editor gate state* (Session 27, disassembled at the correct
+`--adjust-vma=0x40000400`; all in the `0x460d17xx` UI-scratch page):
 
 | addr | role |
 |---|---|
-| `0x460d172e` | **armed** flag — `!= 0` ⇒ a p-lock edit is in progress. Reader `0x40033970`. Set at `0x40050c0c`/`0x4005127a`, cleared at `0x4005f7f2`/`0x4005fd96`. |
-| `0x460d174a` | **16-bit held-step bitmap** (bit p ⇒ step `0x460d174c + p`). Set `\|= 1<<trig` at `0x40050bac`. |
-| `0x460d174c` | held-step **base** (long); cleared when `0x460d174a` → 0. |
-| `0x460d1746` | ptr/offset of the currently-held step's record, **stride 0x10/step** (`step<<4 + base`, `0x40050bd0`). |
-| `0x46c7d2e4` | per-step `\|= 1<<param` locked bitmap the knob sub maintains. |
+| `0x460d172e` | **armed** flag (`u32`) — `!= 0` ⇒ a p-lock edit is in progress. Reader `0x40033d70`. Set `= 1` at `0x4005100c` (audio) / `0x4005167a`, cleared at `0x4005fbf2` / `0x40060196`. |
+| `0x460d174a` | **u16 held-step bitmap** (bit p ⇒ step `0x460d174c + p`). Set `\|= 1<<step` at `0x40050fb8`. |
+| `0x460d174c` | **u16** held-step base (`= basestep<<4`, `basestep = [0x460d1e04]`); reset when the bitmap goes 0. |
+| `0x460d1746` | offset of the held step's record, **stride 0x10/step** (`basestep<<4 + step`, `0x40050fd0`). |
+| `0x46c7d2e4` | per-step `\|= 1<<param` **locked bitmap** the knob writer maintains (`byte[step]`). Empty at rest. |
 | `0x100b14d0` | current **pattern** byte (confirmed — `mvzb` → `0x0a` = DISK_PAT). |
 
-*The real handlers* (Session 26 — the emu tool's `TRIG_HANDLER 0x40060ce0` /
-`KEY_REC 0x4000a274` are the **wrong**, jump-table addresses; `0x4000a274` is a
-MIDI-TX helper):
-- **grid-rec trig handler cluster** = `0x4005f260 .. 0x4006071a`. press sets the
-  gates; release clears them. Touches the blob via a **PART-payload / working
-  view** at pattern offsets `0x2470` (16-bit masks, `track*0x458`), `0x2880`
-  (`+[0x460d1746]`), pattern stride `0x476c` — **not** the `pat*0x8ed8` view.
-- **knob → p-lock family** = `0x4004d??? .. 0x4004f4??`. `0x4004eb54` ("apply to
-  every held step") writes `[0x46c82456] + pattern*0x8ed8 + 0x4900 + step*0x20 +
-  param*0x8b0` (bytes `+2`,`+3`), gated on `0x800000cc` (EXT LEN GRID-REC) + slot
-  `== 0xFF`, and `0x46c7d2e4[step] \|= 1<<param`.
+Arm it from the harness: `call_as_main(0x40050f20, (step, 1))` — runs clean, sets
+all of the above for `step`.
 
-*Open contradiction*: `+0x4900 + step*0x20 + param*0x8b0` is pattern-global +
-**param-major**; #1 is per-track (`trk*0x91a + 0x59`, 32 B/step). They don't alias.
-`--confirm` proves #1's *final* state == disk, not that #1 is what the editor
-writes live. Either `0x4004eb54` is a MIDI-track path, or `+0x4900` is a working
-cache repacked into the TRAC arrays on commit/save.
+*The real handlers* (Session 27 — ⚠️ the image loads at vaddr `0x40000400`;
+disassemble with `m68k-elf-objdump -b binary -m m68k:5407 --adjust-vma=0x40000400`,
+never `0x40000000`. Session 26's fresh fn addresses are all 0x400 low):
+- **grid-rec trig chain**: keycodes `0x01..0x10` → `0x40060ce0(keycode@4,event@8)`
+  → (if `0x460d1736==0`) grid-rec trig dispatcher → event **1 (press) →
+  `0x40050f20`**, 2 (hold) → `0x400587d4`, 0 (release) → `0x4005fb44` +
+  `0x4003146c`. `0x40050f20(step, 1)` arms the editor: `0x460d172e = 1` (armed,
+  `0x4005100c`), `0x460d174a |= 1<<step` (u16 held bitmap, `0x40050fb8`),
+  `0x460d174c = basestep<<4` (u16, `basestep = [0x460d1e04]`),
+  `0x460d1746 = basestep<<4 + step`. Gate: `0x460d5db4 ∈ {0,3}`, `0x80000012==0`.
+- **knob → p-lock writer** = **`0x4004ef54(param@d7, matchval@fp, newval@a2)`**
+  ("apply to every held step"). Proved (`emu_plock.py --applyknob`, gates armed
+  via `0x40050f20`, `0x800000cc` forced) to write **exactly**:
+  `blob + pat*0x8ed8 + 0x4900 + step*0x20 + param*0x8b0 + 2` = the value
+  (`0x4004f062`), and `0x46c7d2e4[step] |= 1<<param` (`0x4004f09e`). Nothing to
+  #1 / #2 / the `0x1001aa50` mirror.
+
+**`+0x4900` is a transient live-edit buffer, not the store.** `emu_plock.py --s27`:
+for the saved DEMO, `blob + 10*0x8ed8 + 0x4900 + …` is **all `0xFF`** while #1
+(`TRAC+0x59`) holds every DEMO lock and `0x46c7d2e4` is zero. Model: live edits →
+`+0x4900` (param-major) + `0x46c7d2e4` bitmap; a **serialise repacks `+0x4900` →
+per-track TRAC `+0x62` (#1)** on save / pattern-change; load goes TRAC → #2
+working set (not `+0x4900`). Other `+0x4900` byte writers: `0x4004f2a4` /
+`0x4004f3ac` / `0x4004f4d4` / `0x4004f830` (companion slot), `0x400505f4` /
+`0x40050b98` (grid-rec), `0x4005fdc6` (release).
+
+*Open (Session 28)*: the `0x800000cc` gate on the value write; the serialise
+(`watch_reads` `+0x4900` during SAVE); the `[NO]`+knob eraser (`0x4005fdc6`?
+`0x4004f2a4`?); then the auto-remove detour on `0x46c7d2e4[step]==0 && no-trig`.
 
 `0x8000004a` is the "what does a knob turn do" bitfield: bit 0 → write the Part-data
 value (encoder `0x4004eb24`); bit 1 → the CC-lock path.
 
-`emu_plock.py --watch --rec --trig N {--release | --applyknob P V}` — the driving
-harness (Session 26). Both paths currently blocked on the wrong-handler /
-borrowed-main-hang issues above; Session 27 fixes the handler address first.
+`emu_plock.py --s27` compares `+0x4900` vs #1 and arms via `0x40050f20`;
+`--watch --trig N --applyknob P V` arms then drives the `0x4004ef54` writer.
 
 ---
 

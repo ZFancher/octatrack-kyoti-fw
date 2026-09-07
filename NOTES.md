@@ -5266,14 +5266,16 @@ Working model: the knob edits **#2** (`0x46c7ab30`) for the held step; a
 
 ### No-flash to-do board (Session 25 → onward)
 
-1. **[NEXT] p-lock writer/eraser hunt (Session 27).** Session 26 falsified the naive
-   commit-on-release model *as driven* and found the tooling was calling the wrong
-   handler (jump-table `0x40060ce0` / `0x4000a274`, not the real grid-rec cluster
-   `0x4005f260..0x4006071a`). Gate state now mapped (`0x460d172e` armed /
-   `0x460d174a` held-step bitmap / `0x460d174c` base / `0x460d1746` step-record ptr).
-   NEXT: decode the real trig-key handler from the 26-byte keymap, drive it so the
-   gates arm, watch the whole pattern block through a knob turn. Full plan +
-   the `+0x4900` vs `TRAC+0x59` contradiction in NOTES "Session 26".
+1. **[NEXT] p-lock eraser hunt + serialise (Session 28).** Session 27 LOCATED the
+   knob → p-lock **writer** = `0x4004ef54` — writes `blob + pat*0x8ed8 + 0x4900 +
+   step*0x20 + param*0x8b0 + 2` = value, and `0x46c7d2e4[step] |= 1<<param`.
+   `+0x4900` is a transient live-edit buffer (empty for the saved DEMO; #1
+   `TRAC+0x59` holds the real locks) → a serialise repacks it on save/pattern-change.
+   Arming works: `call_as_main(0x40050f20, (step, 1))`. NEXT: (a) understand the
+   `0x800000cc` gate on the value write; (b) `watch_reads` `+0x4900` during SAVE to
+   find the serialise; (c) find the `[NO]`+knob eraser (`0x4005fdc6`? `0x4004f2a4`?);
+   (d) design the auto-remove detour on `0x46c7d2e4[step]==0 && no-trig`. Full
+   detail in NOTES "Session 27".
 2. **DIRECT JUMP v2** — box-free overlay: revive the dead-code `FUN_4005a0e0` + a
    close-on-tick hook instead of the 4-box `FUN_40059f8c`. Small; maybe wait for v1 HW.
 3. **Side-chain step 3 DSP** — "Session 17 continued (8)" open items: disasm payload B's
@@ -5378,3 +5380,85 @@ state matches disk — it doesn't prove #1 is what the editor writes live.
 4. If `+0x4900` turns out to be a working cache, find the repack (serialise) step
    — likely in the `SAVE` / `CHANGE PATTERN` flow (`0x400a0???` sequencer, or the
    `0x40025???` project serialiser that already shows `pat*0x8ed8` + `trk*0x91a`).
+
+## Session 27 (2026-09-06, `wip/mute-mode`) — the 0x400 objdump error; knob → p-lock writer LOCATED
+
+### ⚠️ Every fresh fn address in "Session 26" was 0x400 low
+
+`emu_bringup` loads the image at **vaddr `0x40000400`** (`BASE = ENTRY = 0x40000400`,
+"load base = 0x40000000 + 0x400 header"). Session 26's objdump used
+`--adjust-vma=0x40000000`, so every function address it derived is 0x400 short of
+the real one, and the bytes it disassembled at a given "vaddr" were the *previous*
+0x400 bytes. **Correct: `m68k-elf-objdump -b binary -m m68k:5407
+--adjust-vma=0x40000400`.** (RAM addresses `0x46xxxxxx` / `0x8000xxxx` and code
+*immediates* like `0x8ed8` / `0x4900` / `0x8b0` were read correctly — they don't
+shift. Only PC-space labels moved.) The KB's existing addresses (from earlier
+sessions) are fine; only Session 26's are off.
+
+Proof: emu memory at `0x40060ce0` = `22 2f 00 04 20 2f 00 08 4a b9 46 0d 17 36 …`
+(`move.l (4,sp),d1; move.l (8,sp),d0; tst.l 0x460d1736`) — the real
+`handler(keycode@4, event@8)`. The `2f 02 48 78 …` Session 26 disassembled there
+lives at file offset `0x60ce0` = **vaddr `0x400610e0`**.
+
+### The real grid-rec trig chain (corrected)
+
+- keymap: trig keys are **keycodes `0x01..0x10`**, 26-byte records at `0x400bf9d8`
+  (`{press:u32, release:u32, hold:u32, 0, 0, u16 h3=0x10, u16, u8 keycode, u8 0}`),
+  all three edges → `0x40060ce0`.
+- `0x40060ce0(keycode@4, event@8)`: if `0x460d1736 != 0` → `0x40060b58` (alt);
+  else → `0x400501d8` (dispatches on `0x460d16f0` 0..5) **and** the grid-rec trig
+  dispatcher `0x40060bXX` which routes on event: **1 (press) → `0x40050f20`**,
+  2 (hold) → `0x400587d4`, 0 (release) → `0x4005fb44` then `0x4003146c`.
+  Bails for PICKUP-machine tracks (`blob+part*6322+track+0x8eda2 == 4` && `!midi`
+  && `0x460d5db4==0`).
+- **`0x40050f20(step@4, 1@8)`** — the arming fn. `call_as_main` runs it CLEAN
+  (d0=0x11). Sets, for the held step:
+  `0x460d172e = 1` (armed, audio path `0x4005100c`) · `0x460d174a |= 1<<step`
+  (u16 held bitmap, `0x40050fb8`) · `0x460d174c = basestep<<4` (u16,
+  `basestep = [0x460d1e04]`) · `0x460d1746 = basestep<<4 + step`.
+  Gate to reach the held-bit set: `0x460d5db4 ∈ {0, 3}` (0 at rest).
+
+### The knob → p-lock writer — LOCATED (`0x4004ef54`)
+
+Session 26's "`0x4004eb54`" corrected = **`0x4004ef54(param@d7, matchval@fp, newval@a2)`**
+("apply value to every held step"). Drove it in `emu_plock.py --watch --trig 4
+--applyknob 3 90` after arming via `0x40050f20`, `0x800000cc` forced to 1. It
+wrote **exactly two things**:
+
+| PC | target | value |
+|---|---|---|
+| `0x4004f062` | `blob + pat*0x8ed8 + 0x4900 + step*0x20 + param*0x8b0 + 2` | 90 (the new value) |
+| `0x4004f09e` | `0x46c7d2e4[step] \|= 1<<param` | bit 3 (step 4 → `+4` = 8) |
+
+`param 3, step 4` → offset `0x4900 + 4*0x20 + 3*0x8b0 + 2 = 0x6392` ✓ (matches the
+captured write `pat-blk + 0x6392`). **Nothing** to #1 (`TRAC+0x59`), #2
+(`0x46c7ab30`), or the `0x1001aa50` mirror.
+
+### `+0x4900` is a transient live-edit buffer, not the store
+
+`emu_plock.py --s27` reads `blob + 10*0x8ed8 + 0x4900 + …` for the saved DEMO
+pattern → **all `0xFF`**, while #1 (`TRAC+0x59`) holds every DEMO lock (step
+0/2/4/6/8 at rec-offset `0x12`, steps 10/12/14 at `0x0`/`0x13`), and `0x46c7d2e4`
+is all zero. So: **live p-lock edits land in the param-major `+0x4900` buffer +
+the `0x46c7d2e4` per-step bitmap; a serialise repacks `+0x4900` → per-track TRAC
+`+0x62` (#1) on save / pattern-change; load goes TRAC → #2 working set (not
+`+0x4900`).**
+
+Other `+0x4900` writers (byte stores `11 4N 49 0x`): value `0x4004f062`; the
+`+0x4900` companion slot `0x4004f2a4` / `0x4004f3ac` / `0x4004f4d4` / `0x4004f830`;
+grid-rec `0x400505f4` / `0x40050b98`; **release `0x4005fdc6`**.
+
+### Open / NEXT (Session 28)
+
+1. **`0x800000cc` gate** — the value write at `0x4004f062` sits behind
+   `0x4004f012: tst.l 0x800000cc; beq …skip`. NOTES calls `0x800000cc` "EXT LEN
+   GRID-REC" (PERSONALIZE), normally 0. Either that label is wrong, or there's a
+   second value-write path for `0x800000cc == 0`. Disasm `0x4004f000..0x4004f0a2`
+   carefully and check `0x800000cc`'s real default/meaning.
+2. **The serialise** `+0x4900` → TRAC `+0x62`: `watch_reads` on the pattern's
+   `+0x4900` region while driving a SAVE / CHANGE PATTERN; the reader PC is it.
+3. **The eraser** (`[NO]` + knob): check `0x4005fdc6` (release path, writes
+   `+0x4900`) and the `0x4004f2a4` sibling; the `[NO]` handler (corrected keycode).
+4. Then the auto-remove detour: after an erase makes `0x46c7d2e4[step] == 0` and
+   the step has no trig → clear the phantom-lock indicator (likely
+   `0x46c7d2e4[step]` itself is the indicator the sequencer / UI reads).

@@ -91,6 +91,27 @@ steps), `set_track_slot`, `set_machine_type`, `part-name`, `rigproj`/`stamp-defa
 `pattern-diff` turns "which bit is a recorder trig / trigless lock" into a
 30-second hardware measurement — the Phase-0 lever for `file-format.md`'s p-lock map.
 
+### Disassembling `section_3_MAIN_OS.bin` — the image loads at `0x40000400`
+
+> source: `refs/octabam/tools/emu_bringup.py` (`BASE = ENTRY = 0x40000400`, "load
+> base = 0x40000000 + 0x400 header"); our Session 27.
+
+`out/raw/section_3_MAIN_OS.bin` byte 0 maps to **vaddr `0x40000400`**, not
+`0x40000000`. So `vaddr = file_offset + 0x40000400`. Disassemble with:
+
+```
+m68k-elf-objdump -D -b binary -m m68k:5407 --adjust-vma=0x40000400 \
+  --start-address=<vaddr> --stop-address=<vaddr> out/raw/section_3_MAIN_OS.bin
+```
+
+(`m68k-elf-*` is at `/opt/homebrew/bin/`.) Using `--adjust-vma=0x40000000` shifts
+every function label 0x400 low **and** disassembles the wrong 0x400 bytes at any
+given "vaddr" — it silently produces plausible-looking but wrong code (Session 26
+lost a session to it). RAM addresses (`0x46xxxxxx`, `0x8000xxxx`) and code
+immediates are read correctly regardless; only PC-space labels move. Cross-check
+against emulator memory: `rt.uc.mem_read(vaddr, 16)` must equal
+`file[vaddr - 0x40000400 : +16]`.
+
 ### Cave placement — the OS `.bss` tail is not free
 
 > source: `refs/octabam/docs/FAILURE_MODES.md` @ `2f241e1` ("Line-F exception on [PROJECT]")

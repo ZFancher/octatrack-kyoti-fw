@@ -13,17 +13,18 @@ factory OT DEMO, and proves the RAM p-lock array is byte-identical to disk at
 `--watch`  — **in progress**: `watch_mem` the p-lock structures and drive a GRID-REC
 hold-trig + knob gesture to name the writer.
 
-  Session 26 status: the synthetic trig-hold (`call_as_main(TRIG_HANDLER,(kc,1))`)
-  does NOT arm the p-lock editor — the TRIG_HANDLER / KEY_REC addresses are from the
-  unreliable `0x400d2d54` jump table (0x4000a274 is actually a MIDI-TX helper).
-  `--release` (poke #2 then release the trig) produced zero commits.  `--applyknob`
-  (poke the gate state + call the "apply to held steps" sub `0x4004eb54`) runs away
-  in the scheduler without reaching its write.  Real grid-rec trig handler cluster:
-  `0x4005f260..0x4006071a`; real knob→p-lock family: `0x4004d???..0x4004f4??`.
+  Session 27: the image loads at vaddr 0x40000400 (0x400 header) -- Session 26's
+  objdump used 0x40000000 so its fn addresses were 0x400 low.  Corrected:
+  `call_as_main(0x40050f20, (step, 1))` ARMS the editor (0x460d172e / 0x460d174a /
+  0x460d1746).  The knob->p-lock writer 0x4004ef54 then writes EXACTLY
+  `blob + pat*0x8ed8 + 0x4900 + step*0x20 + param*0x8b0 + 2` (the value) and
+  `0x46c7d2e4[step] |= 1<<param`.  `--s27` proves +0x4900 is a transient live-edit
+  buffer (empty for the saved DEMO; #1 TRAC+0x59 holds the locks) -> a serialise
+  repacks it on save/pattern-change.
 
     python3 tools/emu_plock.py --confirm
-    python3 tools/emu_plock.py --watch --rec --trig 4 --param 3 --release
-    python3 tools/emu_plock.py --watch --rec --trig 4 --applyknob 3 90
+    python3 tools/emu_plock.py --s27
+    python3 tools/emu_plock.py --watch --trig 4 --applyknob 3 90
 
 Needs `python3 tools/refs/sync.py` (the octabam cache) + `unicorn>=2.1`.
 Each run is ~2-3 min wall (the emulated LOAD PROJECT dominates).
@@ -89,6 +90,74 @@ def blob_base(rt):
 
 def trac_base(rt, pat, trk):
     return blob_base(rt) + pat * PATTERN_STRIDE + trk * TRAC_STRIDE
+
+
+# Session 27: the real grid-rec trig-press fn.
+#   ⚠️ the image loads at vaddr 0x40000400 (0x400-byte header) -- Session 26's
+#   fresh objdump used --adjust-vma=0x40000000 and every fn addr it derived was
+#   0x400 low.  Correct chain: keymap trig keycodes -> 0x40060ce0 (unpacks
+#   keycode@4/event@8; if 0x460d1736==0 -> 0x400501d8 dispatcher).  The
+#   grid-rec trig dispatcher (0x40060bxx) routes event: 1(press) -> 0x40050f20,
+#   2(hold) -> 0x400587d4, 0(release) -> 0x4005fb44 + 0x4003146c.
+#   0x40050f20(step@4, 1@8): moveml d2-d7/a2-a5 (40 B) -> arg0 @ sp@44 = d3 = step,
+#   arg1 @ sp@48 = a1.  d5 = [0x460d1e04] base step.  gate: [0x460d5db4] in {0,3}
+#   to set the held bit; [0x80000012]==0 (audio) -> sets 0x460d172e=1 @ 0x4005100c,
+#   0x460d174a |= 1<<step @ 0x40050fb8, 0x460d174c = basestep<<4, 0x460d1746 = that+step.
+GRIDREC_TRIG_FN = 0x40050f20
+BASESTEP_SRC = 0x460d1e04
+GR_SUBMODE   = 0x460d5db4
+
+
+def cmd_s27(rt):
+    """Is blob +0x4900 (param-major, what the knob sub 0x4004eb54 writes) the
+    same data as structure #1 (per-track TRAC+0x59, == disk)?  Read both for the
+    DEMO's known-locked pattern and compare."""
+    blob = blob_base(rt)
+    pat_blk = blob + DISK_PAT * PATTERN_STRIDE
+    print(f"\nblob {blob:#x}  pattern-block {pat_blk:#x}")
+
+    tb = trac_base(rt, DISK_PAT, DISK_TRK)
+    one = bytes(rt.uc.mem_read(tb + PLOCK_IN_TRAC, PLOCK_LEN))
+    print(f"\n#1  TRAC+0x59 @ {tb + PLOCK_IN_TRAC:#x} (per-track, step*0x20):")
+    for s in range(64):
+        rec = one[s * 32:(s + 1) * 32]
+        nz = [(hex(i), hex(rec[i])) for i in range(32) if rec[i] != 0xFF]
+        if nz:
+            print(f"    step {s:2}: {nz}")
+
+    # +0x4900 region: 0x4900 + step*0x20 + param*0x8b0 (+2,+3).  Scan params 0..7,
+    # steps 0..63, report bytes != 0xFF at rec offsets 0..5.
+    print(f"\n+0x4900 region @ {pat_blk + 0x4900:#x} (param-major, param*0x8b0 + step*0x20):")
+    found = False
+    for p in range(8):
+        for s in range(64):
+            base = pat_blk + 0x4900 + p * 0x8b0 + s * 0x20
+            rec = bytes(rt.uc.mem_read(base, 8))
+            nz = [(i, rec[i]) for i in range(8) if rec[i] != 0xFF]
+            if nz:
+                found = True
+                print(f"    param {p} step {s:2} @ +{base - pat_blk:#x}: "
+                      f"{[(hex(i), hex(v)) for i, v in nz]}")
+    if not found:
+        print("    (all 0xFF -- nothing stored here for this pattern)")
+
+    print(f"\n0x46c7d2e4 bitmap: {rt.uc.mem_read(PLK_BITMAP, 0x40).hex(' ')}")
+
+    # now try the REAL grid-rec trig-press fn and see if the gates arm.
+    print(f"\n--- calling GRIDREC_TRIG_FN {GRIDREC_TRIG_FN:#x}(step=4, 0) ---")
+    print(f"  before: 0x460d5db4={int.from_bytes(rt.uc.mem_read(GR_SUBMODE, 4), 'big'):#x}  "
+          f"0x80000012={int.from_bytes(rt.uc.mem_read(0x80000012, 4), 'big'):#x}  "
+          f"0x460d1e04={int.from_bytes(rt.uc.mem_read(BASESTEP_SRC, 4), 'big'):#x}")
+    rt.run(until=lambda r: r.pc == er.MAIN_SPIN)
+    try:
+        d0 = rt.call_as_main(GRIDREC_TRIG_FN, args=(4, 0), budget=400_000)
+        print(f"  returned d0={d0:#x}")
+    except Exception as e:
+        print(f"  {type(e).__name__}: {e}")
+    for a, nm in ((PLK_ARMED, "0x460d172e armed"), (PLK_HELD, "0x460d174a held"),
+                  (PLK_BASESTEP, "0x460d174c base"), (0x460d1746, "0x460d1746 rec-ptr")):
+        print(f"  {nm:22} = {int.from_bytes(rt.uc.mem_read(a, 4), 'big'):#x}")
+    return True
 
 
 def cmd_confirm(rt):
@@ -166,22 +235,20 @@ FUN_40033e3c = 0x40033e3c                 # (track@16, 0x2e@20, value@24) -- wha
 SCENE_VALUES = 0x46c7aa24                 # scene p-lock storage (step handler's d2==-1 case)
 MODE_04A = 0x8000004a                     # "what does a knob turn do" bitfield
 
-# Session 26: the [TRIG]-hold + knob "apply to all held steps" sub, reached by the
-# encoder handler.  0x4004eb54 = fn start (0x4004eb24 is its tail-dispatch).
+# Session 27: the [TRIG]-hold + knob "apply to all held steps" sub.
+#   0x4004ef54 = fn start (Session 26 called it 0x4004eb54 -- 0x400 low).
 #   args after `lea sp@(-44),sp; moveml d2-d7/a2-fp`:  arg0->d7  arg1->fp  arg2->a2
 #   d7  = param index (1<<d7, 2224*d7)      fp = value to match (-1 = any unlocked)
 #   a2  = new value (clamped 0..127)
 # guards: 0x4002ea84()==0, 0x460e7424==0, [0x400bcd14]@8==0, 0x460e5e4c==0,
-#         0x460d172e != 0 (p-lock edit armed), loop over 0x460d174a (held-step bits)
+#         0x460d172e != 0 (armed), loop over 0x460d174a (held-step bits @0x4004efa0)
 # inner value write gated on 0x800000cc (EXT LEN GRID-REC PERSONALIZE) and slot==0xFF.
-# writes  [0x46c82456] + [0x100b14d0]*0x8ed8 + 0x4900 + step*0x20 + param*0x8b0  (+2/+3)
-#     and bitmap  0x46c7d2e4[step] |= 1<<param
-# STATUS: even with 0x460d172e/174a/174c poked + 0x800000cc forced, call_as_main
-# runs away in the scheduler (0x40000560) without reaching the write -- the sub's
-# guard chain (jsr 0x4002ea84) or redraw tail blocks in main's context.  The
-# 0x4900 / param*0x8b0 layout is pattern-GLOBAL + param-major, NOT the per-track
-# TRAC+0x59 array (#1, == disk).  Whether it bridges to #1 is still open.
-APPLY_KNOB_SUB = 0x4004eb54
+# writes  [0x46c82456] + [0x100b14d0]*0x8ed8 + 0x4900 + step*0x20 + param*0x8b0  (+2)
+#     mirror 0x1001aa50[...] and bitmap  0x46c7d2e4[step] |= 1<<param  (a5 @0x4004efb8)
+# --s27 (Session 27) proved blob +0x4900 is ALL 0xFF for the saved DEMO while #1
+# (TRAC+0x59) holds the locks -> +0x4900 is a transient live-edit buffer; a
+# serialise step must repack it into the per-track TRAC arrays.
+APPLY_KNOB_SUB = 0x4004ef54
 PLK_ARMED   = 0x460d172e
 PLK_HELD    = 0x460d174a          # 16-bit held-step bitmap the sub loops over
 PLK_BASESTEP = 0x460d174c
@@ -294,16 +361,16 @@ def cmd_watch(rt, ms, do_rec, trig, knob, param, play, call3e3c, release, applyk
             sz = 4 if "held-bits" not in nm else 2
             val = int.from_bytes(rt.uc.mem_read(a, sz), "big")
             print(f"  guard {nm:28} = {val:#x}")
-        # The synthetic trig-hold does NOT arm the p-lock editor (0x460d172e /
-        # 0x460d174a / 0x460d174c stay 0 -- our TRIG_HANDLER addr is off).  Poke
-        # the gate state directly for the held step, force EXT-LEN, then call the
-        # "apply to held steps" sub and see where in the pattern block it writes.
+        # Session 27: arm the p-lock editor the REAL way -- call the grid-rec
+        # trig-press fn 0x40050f20(step, 1) for the held step (proved to set
+        # 0x460d172e / 0x460d174a / 0x460d1746 cleanly).  Then force EXT-LEN so
+        # the knob sub's inner value write is reached, and call it.
         step = trig
-        rt.uc.mem_write(PLK_ARMED, struct.pack(">I", 1))
-        rt.uc.mem_write(PLK_HELD, struct.pack(">H", 1 << step))
-        rt.uc.mem_write(PLK_BASESTEP, struct.pack(">I", 0))
+        drive(f"arm step{step}", GRIDREC_TRIG_FN, (step, 1))
+        held = int.from_bytes(rt.uc.mem_read(PLK_HELD, 2), "big")
+        print(f"  armed: 0x460d172e={rt.uc.mem_read(PLK_ARMED,4).hex()}  "
+              f"0x460d174a(u16)={held:#x}  0x460d1746={int.from_bytes(rt.uc.mem_read(0x460d1746,4),'big'):#x}")
         rt.uc.mem_write(EXT_LEN_GRIDREC, b"\x01")
-        print(f"  poked gates: 0x460d172e=1  0x460d174a={1<<step:#x}  0x460d174c=0  0x800000cc=1")
         drive(f"applyknob p{p}", APPLY_KNOB_SUB, (p, 0xFFFFFFFF, v), budget=1_500_000)
 
     def which(addr):
@@ -344,6 +411,9 @@ def cmd_watch(rt, ms, do_rec, trig, knob, param, play, call3e3c, release, applyk
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--confirm", action="store_true", help="check the RAM p-lock address vs disk")
+    ap.add_argument("--s27", action="store_true",
+                    help="Session 27: compare blob +0x4900 vs structure #1, and try the real "
+                         "grid-rec trig-press fn 0x40050b20")
     ap.add_argument("--watch", action="store_true", help="watch the p-lock band while driving a gesture")
     ap.add_argument("--ms", type=int, default=1500)
     ap.add_argument("--rec", action="store_true", help="press [REC] (GRID REC) before the knob")
@@ -359,8 +429,8 @@ def main():
                     help="after --rec + --trig hold: call the 'apply to held steps' sub "
                          "0x4004eb54(PARAM, -1, VALUE) and watch the whole pattern block")
     a = ap.parse_args()
-    if not (a.confirm or a.watch):
-        ap.error("pick --confirm or --watch")
+    if not (a.confirm or a.watch or a.s27):
+        ap.error("pick --confirm, --watch or --s27")
     if not DEMO_BANK1.exists():
         sys.exit(f"missing {DEMO_BANK1} (the factory OT DEMO export)")
 
@@ -368,6 +438,8 @@ def main():
     ok = True
     if a.confirm:
         ok = cmd_confirm(rt)
+    if a.s27:
+        ok = cmd_s27(rt)
     if a.watch:
         cmd_watch(rt, a.ms, a.rec, a.trig, a.knob, a.param, a.play, a.call3e3c, a.release,
                   tuple(a.applyknob) if a.applyknob else None)
