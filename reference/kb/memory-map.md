@@ -165,25 +165,48 @@ flag word: `0x46c7a6c0`.
 
 ## Key input / dispatch
 
-> sources: `refs/octabam/docs/{MAINMENU,RTOS_FORK}.md` @ `2f241e1` + our own scan (Session 21, `wip`). confidence: **C** for the tables/addresses, **L** for which physical key maps to which slot.
+> sources: `refs/octabam/docs/{MAINMENU,RTOS_FORK}.md` @ `2f241e1` + our own keymap decode (Session 21). confidence: **C** for the tables + keycodes (decoded + disassembled), **L** for the `0x400d2d54` labels.
+
+**The keymap** is 26-byte records `{u8 code, 0, press:u32, release:u32, h3:u32, aux:u32,
+0, u16 flags}` in two tables — T1 `0x400bfc10..` (58 recs) / T2 `0x400c01f4..` (63 recs,
+adds `0x1c..0x1f`); selector structs `{table_ptr, 0x400c085a}` at `0x400c090c` /
+`0x400c0920`. The dispatcher calls `press`/`release` as `handler(keycode@4, event@8)`,
+`event` 1 = press · 0 = release · 2 = hold. **Keycodes (decoded):**
+
+| key | code | handler | key | code | handler |
+|---|---|---|---|---|---|
+| trig 1–16 | `0x00–0x0f` | `0x40060ce0` | **PTN** | `0x2e` | `FUN_4005a044` |
+| track keys | `0x10–0x17` | `0x40040250` → mute `FUN_40083ab4` | **BANK** | `0x2f` | `0x4007af80` |
+| param-page | `0x22–0x26` | `FUN_4005578c` (via `0x400a7280={0,2,1,3,4}`) | **PAGE** | `0x1b` | `FUN_4004ffc4` |
+| MKII MAIN MENU | `0x1c` | `0x40064d78` → `FUN_40064c18` | **YES** | `0x31` | `0x4005e4c8` |
+| | | | **NO** | `0x32` | `0x4005e25c` |
+
+`FUN_4005a044` (**PTN**): press → `0x460d1742 = 1` ("[PTN] held"), clear `0x460d173e`;
+release → opens SELECT PATTERN (`FUN_40059f8c(0x400b484e, 0xf0, 1, 0x40043418)`) **only if
+`0x460d173e == 0` and `0x460d1ab2 != 0`**. **No other handler reads `0x460d1742`** — so
+`[PTN]` + X is a free chord, and a partner that sets `0x460d173e` suppresses the chooser.
+(DIRECT JUMP's `[PTN]`+`[YES]` toggle, NOTES Session 21, uses exactly this.)
+
+`0x4005e4c8` (**YES**): checks arranger `0x460d1aec` (→ `jmp 0x4004903c`), then `0x800000b8`
+(`DISABLE YES/NO ARM`) → `rts`, else `bra 0x4005e294` (arm). Prologue 8 B =
+`222f0004 202f0008`, resume `0x4005e4d0`.
 
 | Addr | Conf | What |
 |---|---|---|
-| `0x400d2d54` | C | **Physical-key jump table** — keycode-indexed, entries invoked directly as `action(edge)` (`edge` 1 = press, 0 = release). `[0..7]` = track keys, `[8..15]` = default `0x4000184c`, `[16..34]` = function keys (`[27]` REC `0x4000a274`, `[28]` PLAY `0x4000a200`, `[29]` STOP `0x4000a1e0`; `[17..26,30..32]` = a cluster of tiny `0x400019xx` "simple key" stubs), `[35..39]` = default `0x400019f4`. Repoint one entry → a stub (octabam's FX2-shortcut technique; one-pointer edit, no array move). |
-| `FUN_4005578c(keycode,edge)` | L | **page-key dispatch** — codes `0x22..0x26` (BANK/PTN/PAGE/FX1/FX2 "kind"), remapped via u32 table `0x400a7280 = {0,2,1,3,4}`. A single press runs `FUN_400554e0(kind)` = the whole page switch (writes `0x460d1684`, mirror `0x46c7d8d8`). |
-| `0x400bfbf6` / `0x400c01f4..0x400c0840` | L | **keymap records** — 26 B `{u8 code, 0, press, release, h3, aux, 0, u16 flags}`. Second table carries `0x1c..0x1f` (`0x1c` = MKII MAIN MENU key → `FUN_40064c18`). |
-| `FUN_4004ffc4` | C | `[PAGE]` press handler — the shelved bankpage patch hooked its entry (`lea -0x10,SP ; movem` prologue), gating `edge==1`, swallowing the key with `rts`. |
-| `0x80000000` | C | current audio track (byte; UI mirror `0x100b14cc`). `0x80000012 != 0` = MIDI mode (page resolution adds +8). |
-| `_DAT_460e5cd0` | C | `== 0` ⇒ no popup/overlay open (standard gate before showing one). |
+| `0x400d2d54` | L | keycode-indexed jump table octabam labelled physical-key (REC `0x4000a274` / PLAY `0x4000a200` / STOP `0x4000a1e0` at `[27..29]`); our disasm shows the neighbours are clock/tick stubs, so treat the "physical-key" label as unconfirmed — the 26-byte keymap above is the reliable one. |
+| `0x80000000` | C | current audio track (byte; UI mirror `0x100b14cc`). `0x80000012 != 0` = MIDI mode (page resolution adds +8). FUNC is **not** a plain keymap record — its held-flag was not located (Session 21). |
+| `_DAT_460e5cd0` | C | `!= 0` ⇒ a `FUN_4006d57c` dialog is open (that ctor bails on it at entry). Gate a new global combo on `== 0`. |
 
 ### Transient overlay primitives
 
 | Fn | Shape |
 |---|---|
-| `FUN_4006d57c(title,nLines,lines,3,handler)` | **blocking** YES/NO dialog (needs a keypress) |
-| `FUN_40059f8c(text, ticks, enable, on_timeout)` | auto-dismiss window — **but hardcodes `0x460d1e54 = 4` countdown boxes** and stores its handle in `0x460d1e5c` (the SELECT-BANK/PTN window global other code keys off). Tick `FUN_40056ab8` → expiry `FUN_40056a70`. |
-| `FUN_4005829c(x,y,w,h,?,close_cb)` | bare window ctor (returns handle); `FUN_40012f30` measures text, `FUN_40057008`/`FUN_40013904` draw. Build a custom timed overlay from these when the 4-box look / global side-effect of `FUN_40059f8c` is unwanted. |
-| `FUN_400808bc` | example non-modal overlay ("RELOADING BANK") — handle in `0x460f790c`, explicit close. |
+| `FUN_4006d57c(title,nLines,lines,3,handler)` | **blocking** YES/NO dialog (needs a keypress); sets `0x460e5cd0` |
+| `FUN_40059f8c(text, ticks, enable, on_timeout)` | auto-dismiss window — **hardcodes `0x460d1e54 = 4` countdown boxes**, handle in `0x460d1e5c` (SELECT-BANK/PTN global, but the "in SELECT BANK" test also needs `0x460d1e60 == 0x4007b408`). Tick `FUN_40056ab8` → expiry `FUN_40056a70` → optional `on_timeout()`. **Used by DIRECT JUMP's toggle** (`ticks 0x28` ≈ 0.66 s). |
+| `FUN_4005a0e0(text)` | **bare text popup**, own handle `0x460d1e64`, small font `0x400ba862`, close cb `FUN_40056bc0`, **no timeout**. **DEAD CODE in stock 1.40C** (0 callers) — revive it + a close-on-tick hook for a box-free toast. |
+| `FUN_4005829c(x,y,w,h,?,close_cb)` | bare window ctor; `FUN_40012f30` measures text, `FUN_40057008`/`FUN_40013904` draw. |
+| `FUN_400808bc` | non-modal overlay example ("RELOADING BANK"), handle `0x460f790c`, explicit close. |
+| `FUN_4001f23c` | recompute + store the `'ANDY'` block checksum (`0x100fff00`, over `0x100fff04`+252 B, `+=514`). Self-contained, no args, `rts`. Call this after writing an ANDY shadow from **outside** the PERSONALIZE dispatcher (which does it via `jmp 0x4001f23c @ 0x40069074`). |
 
 ## Effect & machine parameter-descriptor table (`0x400d2e52`–`0x400d5f00`)
 
