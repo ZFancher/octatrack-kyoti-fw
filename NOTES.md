@@ -5266,17 +5266,16 @@ Working model: the knob edits **#2** (`0x46c7ab30`) for the held step; a
 
 ### No-flash to-do board (Session 25 → onward)
 
-1. **[NEXT] p-lock serialise + eraser + detour (Session 29).** Sessions 27–28
-   mapped it: knob → p-lock **writer** `0x4004ef54(track, matchval, value)` →
-   `blob + pat*0x8ed8 + track*0x8b0 + step*0x20 + 0x4900 + 2`; **eraser**
-   `0x4004f124(track, b2, b3)` (`st`→0xFF); both from the dispatcher `~0x40062a00`
-   gated on `0x460d172e`. `0x400339d8` rebuilds the UI lock bitmaps —
-   `0x46c7d2e4[step]` (live `+0x4900`) & `0x46c7d48c[step]` (stored, `TRAC+59`),
-   each `byte[step]` = track bitmap — and is the **detour anchor**. NEXT: reconcile
-   the `TRAC+59` vs `TRAC+0x59` stored-record offset; `watch_reads` `+0x4900`
-   during SAVE for the serialise; drive the eraser; then hook `0x400339d8` /
-   eraser-exit to clear the trigless-lock trig-mask when a step's lock bit clears
-   and it has no note trig. Full detail in NOTES "Session 28".
+1. **[NEXT] p-lock serialise + eraser + detour (Session 30).** Mapped: knob →
+   **writer** `0x4004ef54(track, matchval, value)` → `blob + pat*0x8ed8 +
+   track*0x8b0 + step*0x20 + 0x4900 + 2`; **eraser** `0x4004f124(track, b2, b3)`
+   (`st`→0xFF); dispatcher `~0x40062a00` gated on `0x460d172e`. **`0x400339d8` =
+   the lock-bitmap rebuild** (`0x46c7d48c[step]` = stored-lock track bitmap,
+   `0x46c7d2e4[step]` = live; Session 29 reconciled — reads #1 at `TRAC+0x59`) =
+   the **detour anchor**. NEXT: `watch_reads` `+0x4900` during SAVE for the
+   serialise; drive the eraser; then hook `0x400339d8` / eraser-exit to clear the
+   trigless-lock trig-mask when a step's lock bit clears and it has no note trig.
+   Need a test pattern with a trigless lock (DEMO has none). NOTES "Session 29".
 2. **DIRECT JUMP v2** — box-free overlay: revive the dead-code `FUN_4005a0e0` + a
    close-on-tick hook instead of the 4-box `FUN_40059f8c`. Small; maybe wait for v1 HW.
 3. **Side-chain step 3 DSP** — "Session 17 continued (8)" open items: disasm payload B's
@@ -5496,21 +5495,45 @@ the auto-remove feature (it runs after edits to refresh the display).
 track + 0x476c9` (the Part-data value), `[blob+0x95048] |= 1<<part`. Gated on
 `0x8000004a` bit 0. Not the p-lock path.
 
-### Open / NEXT (Session 29)
+### Encoder disp printing — `objdump` quirk
 
-1. **Reconcile the stored-record offset**: `0x400339d8` reads it at `TRAC + 59`
-   (`0x3b`); `emu_plock --confirm` proved #1 (== disk, exact 0x800 B) is at
-   `TRAC + 0x59` (89). 30 bytes apart — one is wrong, or `+0x3b` is a compact
-   companion. Re-check `--confirm`'s alignment.
-2. **The `0x800000cc` gate** on the `+2` value write (`0x4004f012`): is EXT LEN
-   GRID-REC really required, or is there another path? (`--applyknob` forced it.)
-3. **The serialise** `+0x4900` → TRAC: `watch_reads` `+0x4900` during SAVE / CHANGE
-   PATTERN → the reader PC.
-4. **Drive the eraser** `0x4004f124(track, b2, b3)` empirically — trace what the
-   `[NO]`+knob / knob-past-min gesture posts as the `a2` event (opcode + `a2@2`).
-5. **The detour**: hook `0x400339d8` (or the eraser's exit) — after an erase, for
-   each step where `0x46c7d48c[step]` bit `track` just cleared AND the step has no
-   note trig (`TRAC+0x00` mask), clear the trigless-lock trig-mask bit so the step
-   goes fully empty. (Need: which `TRAC` mask `+0x08/+0x10/+0x18` = "lock trig".
-   The DEMO has none — build a test pattern with a trigless lock, or find the
-   mask-set site in `0x4004f0xx` / `0x40050xxx`.)
+`m68k-elf-objdump` prints a **brief-format** `lea (d8,An,Xn)` displacement as its
+raw hex value with **no `0x`** (e.g. `lea %a0@(58,%d3:l)` = disp `0x58` = 89, not
+decimal 58), while a 16-bit `(d16,An)` disp prints signed decimal (`sp@(-44)`).
+The `0x400339d8` "TRAC + 59" scare in Session 28's plan was this: `lea (0x58,...)`
+then `lea (1,a3,a0)` = `+0x59` = **exactly #1**. No offset discrepancy.
+
+## Session 29 (2026-09-06, `wip/mute-mode`) — `0x400339d8` = the lock-bitmap rebuild, RECONCILED
+
+`emu_plock.py --s27` rewritten: dumps #1 / `+0x4900` / the TRAC masks / both lock
+bitmaps, then `call_as_main(0x400339d8)` with a write hook on
+`0x46c7d48c`/`0x46c7d2e4`.
+
+**`0x400339d8` reads #1 at `TRAC + 0x59`** (brief-disp `0x58` + 1) — confirmed by
+matching `emu_plock`'s independent read. It runs clean under `call_as_main`
+(64+64 clear writes at `0x400339f0`/`f4`, then `0x40033a38` sets
+`0x46c7d48c[step] |= 1<<track` for every non-`0xFF` stored record;
+`0x40033a4c` does the same into `0x46c7d2e4` from the live `+0x4900` buffer).
+
+**The scare** (`0x400339d8` first lit `{0,16,32,48}` not `{0,2,4,6,8,10,12,14}`):
+the harness's `rt.run(until=MAIN_SPIN)` before the call lets `sys` apply the
+engine reset's "select pattern 0", so `[0x100b14d0]` drifted `0xa → 0` and the
+rebuild read **pattern 0**. Re-asserting `[0x100b14d0] = DISK_PAT` right before
+the call → `0x46c7d48c` bit 1 lights exactly `{0,2,4,6,8,10,12,14}` = #1's
+locked steps. (`--s27` now does this re-assert.)
+
+**So `0x46c7d48c[step] = per-step bitmap of which tracks have a STORED p-lock**
+(`0x46c7d2e4[step]` = same for LIVE `+0x4900` edits). E.g. DEMO P11:
+`0x46c7d48c[0] = 0x13` (tracks 0,1,4), `[4] = 0x43` (0,1,6). **This is the detour
+anchor** for the trigless-lock auto-remove.
+
+### Open / NEXT (Session 30)
+
+1. **The serialise** `+0x4900` → TRAC: `watch_reads` `+0x4900` during SAVE /
+   CHANGE PATTERN → the reader PC.
+2. **Drive the eraser** `0x4004f124(track, b2, b3)` — trace what the `[NO]`+knob
+   gesture posts as the `a2` event (opcode + `a2@2`).
+3. **The detour**: hook `0x400339d8` / eraser-exit — when a step's `0x46c7d48c`
+   bit `track` clears AND the step has no note trig (`TRAC+0x00`), clear the
+   trigless-lock trig-mask bit. (Need which `TRAC` mask `+0x08/+0x10/+0x18` = the
+   lock-trig; build a test pattern with a trigless lock — the DEMO has none.)

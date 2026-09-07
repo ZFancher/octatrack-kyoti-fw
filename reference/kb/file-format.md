@@ -307,17 +307,23 @@ slots), `0x400505f4` / `0x40050b98` (grid-rec), `0x4005fdc6` (release).
 
 **`0x400339d8` rebuilds the UI "step has a lock" bitmaps** — zeroes
 `0x46c7d2e4[0..63]` + `0x46c7d48c[0..63]`, then for track 0–7 × step 0–63 ×
-byte 0–31: live `+0x4900` byte `!= 0xFF` → `0x46c7d2e4[step] |= 1<<track`;
-stored byte (`blob + pat*0x8ed8 + track*0x91a + step*0x20 + 59`) `!= 0xFF` →
-`0x46c7d48c[step] |= 1<<track`. So **`0x46c7d2e4` = live lock presence,
-`0x46c7d48c` = stored lock presence**, `byte[step]` = track bitmap. Detour anchor
-for the trigless-lock auto-remove.
+byte 0–31: stored `#1` byte (`blob + pat*0x8ed8 + track*0x91a + step*0x20 +
+0x59`) `!= 0xFF` → `0x46c7d48c[step] |= 1<<track` (`0x40033a38`); live `+0x4900`
+byte `!= 0xFF` → `0x46c7d2e4[step] |= 1<<track` (`0x40033a4c`). So
+**`0x46c7d48c[step]` = bitmap of which tracks have a STORED p-lock on that step,
+`0x46c7d2e4[step]` = same for LIVE `+0x4900` edits** (Session 29, proved:
+`0x46c7d48c` bit `t` lights exactly #1's locked steps for track `t`). **The
+detour anchor.** ⚠️ it reads `[0x100b14d0]` for the pattern — the emu harness
+drifts that to 0 after a run-to-spin, re-assert before calling.
 
-*Open (Session 29)*: `TRAC+59` (`0x400339d8`) vs `TRAC+0x59` (`--confirm`)
-stored-record offset (30 B apart — reconcile); the `0x800000cc` gate on the `+2`
-write; the serialise (`watch_reads` `+0x4900` during SAVE); drive the eraser;
-then the detour — clear the trigless-lock trig-mask bit when a step's
-`0x46c7d48c` bit clears and it has no note trig (`TRAC+0x00`).
+`objdump` prints a brief-format `lea (d8,An,Xn)` disp as raw hex with no `0x`
+(so `lea %a0@(58,%d3:l)` = `0x58`), unlike a `(d16,An)` disp (signed decimal).
+
+*Open (Session 30)*: the `0x800000cc` gate on the `+2` write; the serialise
+(`watch_reads` `+0x4900` during SAVE); drive the eraser `0x4004f124`; then the
+detour — clear the trigless-lock trig-mask bit when a step's `0x46c7d48c` bit
+clears and it has no note trig (`TRAC+0x00`). Need a test pattern with a trigless
+lock (the DEMO has none).
 
 `0x8000004a` is the "what does a knob turn do" bitfield: bit 0 → write the Part-data
 value (encoder `0x4004eb24`); bit 1 → the CC-lock path.

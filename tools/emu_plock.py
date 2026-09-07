@@ -108,63 +108,102 @@ BASESTEP_SRC = 0x460d1e04
 GR_SUBMODE   = 0x460d5db4
 
 
+LOCK_LIVE    = 0x46c7d2e4     # byte[step] = bitmap of tracks with a LIVE (+0x4900) lock
+LOCK_STORED  = 0x46c7d48c     # byte[step] = bitmap of tracks with a STORED (#1) lock
+LOCK_REBUILD = 0x400339d8     # rebuilds both from the blob (no args)
+
+
+def _steps_of_mask(v):
+    return [i for i in range(64) if v[7 - i // 8] & (1 << (i % 8))]
+
+
+def _bitmap_steps(buf, track):
+    return [s for s in range(64) if buf[s] & (1 << track)]
+
+
 def cmd_s27(rt):
-    """Is blob +0x4900 (param-major, what the knob sub 0x4004eb54 writes) the
-    same data as structure #1 (per-track TRAC+0x59, == disk)?  Read both for the
-    DEMO's known-locked pattern and compare."""
+    """Session 29: (1) reconcile the stored-record offset -- call the rebuild
+    0x400339d8 and check LOCK_STORED lights exactly #1's locked steps for the
+    right track; (2) dump #1 / +0x4900 / the TRAC masks / both lock bitmaps."""
     blob = blob_base(rt)
     pat_blk = blob + DISK_PAT * PATTERN_STRIDE
-    print(f"\nblob {blob:#x}  pattern-block {pat_blk:#x}")
-
     tb = trac_base(rt, DISK_PAT, DISK_TRK)
+    print(f"\nblob {blob:#x}  pattern-block {pat_blk:#x}  TRAC(t{DISK_TRK}) {tb:#x}")
 
-    print(f"\nTRAC RAM masks @ {tb:#x} (8-byte / 64-step bitmaps, byte7 bit0 = step 0):")
-    def steps_of(v):
-        return [i for i in range(64) if v[7 - i // 8] & (1 << (i % 8))]
+    print(f"\nTRAC RAM masks (8-byte / 64-step, byte7 bit0 = step 0):")
     for base in range(0x00, 0x50, 8):
         v = bytes(rt.uc.mem_read(tb + base, 8))
-        print(f"  +{base:#04x}: {v.hex(' ')}   steps={steps_of(v)}")
+        print(f"  +{base:#04x}: {v.hex(' ')}   steps={_steps_of_mask(v)}")
 
     one = bytes(rt.uc.mem_read(tb + PLOCK_IN_TRAC, PLOCK_LEN))
-    print(f"\n#1  TRAC+0x59 @ {tb + PLOCK_IN_TRAC:#x} (per-track, step*0x20):")
+    locked1 = []
+    print(f"\n#1  TRAC+0x59 (per-track, step*0x20):")
     for s in range(64):
         rec = one[s * 32:(s + 1) * 32]
         nz = [(hex(i), hex(rec[i])) for i in range(32) if rec[i] != 0xFF]
         if nz:
+            locked1.append(s)
             print(f"    step {s:2}: {nz}")
+    print(f"  -> #1 locked steps for t{DISK_TRK}: {locked1}")
 
-    # +0x4900 region: 0x4900 + step*0x20 + param*0x8b0 (+2,+3).  Scan params 0..7,
-    # steps 0..63, report bytes != 0xFF at rec offsets 0..5.
-    print(f"\n+0x4900 region @ {pat_blk + 0x4900:#x} (param-major, param*0x8b0 + step*0x20):")
     found = False
-    for p in range(8):
+    print(f"\n+0x4900 region (per-track: track*0x8b0 + step*0x20):")
+    for trk in range(8):
         for s in range(64):
-            base = pat_blk + 0x4900 + p * 0x8b0 + s * 0x20
+            base = pat_blk + 0x4900 + trk * 0x8b0 + s * 0x20
             rec = bytes(rt.uc.mem_read(base, 8))
             nz = [(i, rec[i]) for i in range(8) if rec[i] != 0xFF]
             if nz:
                 found = True
-                print(f"    param {p} step {s:2} @ +{base - pat_blk:#x}: "
-                      f"{[(hex(i), hex(v)) for i, v in nz]}")
+                print(f"    trk {trk} step {s:2}: {[(hex(i), hex(v)) for i, v in nz]}")
     if not found:
         print("    (all 0xFF -- nothing stored here for this pattern)")
 
-    print(f"\n0x46c7d2e4 bitmap: {rt.uc.mem_read(PLK_BITMAP, 0x40).hex(' ')}")
+    def dump_bitmaps(tag):
+        live = bytes(rt.uc.mem_read(LOCK_LIVE, 64))
+        stored = bytes(rt.uc.mem_read(LOCK_STORED, 64))
+        print(f"  [{tag}] LOCK_LIVE   nonzero: "
+              f"{[(s, hex(live[s])) for s in range(64) if live[s]]}")
+        print(f"  [{tag}] LOCK_STORED nonzero: "
+              f"{[(s, hex(stored[s])) for s in range(64) if stored[s]]}")
+        return live, stored
 
-    # now try the REAL grid-rec trig-press fn and see if the gates arm.
-    print(f"\n--- calling GRIDREC_TRIG_FN {GRIDREC_TRIG_FN:#x}(step=4, 0) ---")
-    print(f"  before: 0x460d5db4={int.from_bytes(rt.uc.mem_read(GR_SUBMODE, 4), 'big'):#x}  "
-          f"0x80000012={int.from_bytes(rt.uc.mem_read(0x80000012, 4), 'big'):#x}  "
-          f"0x460d1e04={int.from_bytes(rt.uc.mem_read(BASESTEP_SRC, 4), 'big'):#x}")
+    print(f"\n--- lock bitmaps at rest ---")
+    dump_bitmaps("rest")
+
+    print(f"\n--- call LOCK_REBUILD {LOCK_REBUILD:#x}() ---")
     rt.run(until=lambda r: r.pc == er.MAIN_SPIN)
+    # ⚠️ the run-to-spin lets `sys` apply the engine reset's "select pattern 0",
+    # so 0x100b14d0 drifts to 0 -- re-assert DISK_PAT before the rebuild reads it.
+    was = rt.uc.mem_read(CUR_PAT_MIRROR, 1)[0]
+    rt.uc.mem_write(CUR_PAT_MIRROR, bytes([DISK_PAT]))
+    print(f"  cur-pat was {was:#x}; re-asserted {DISK_PAT:#x}")
+    wrote = []
+
+    def on_w(u, acc, a, size, val, x):
+        wrote.append((u.reg_read(er.eb.UC_M68K_REG_PC), a, size, val))
+    h1 = rt.uc.hook_add(er.eb.UC_HOOK_MEM_WRITE, on_w, begin=LOCK_STORED, end=LOCK_STORED + 63)
+    h2 = rt.uc.hook_add(er.eb.UC_HOOK_MEM_WRITE, on_w, begin=LOCK_LIVE, end=LOCK_LIVE + 63)
+    rt.uc.ctl_flush_tb()
     try:
-        d0 = rt.call_as_main(GRIDREC_TRIG_FN, args=(4, 0), budget=400_000)
-        print(f"  returned d0={d0:#x}")
+        d0 = rt.call_as_main(LOCK_REBUILD, args=(), budget=2_000_000)
+        print(f"  returned d0={d0:#x}  ({len(wrote)} writes into the two bitmaps)")
     except Exception as e:
-        print(f"  {type(e).__name__}: {e}")
-    for a, nm in ((PLK_ARMED, "0x460d172e armed"), (PLK_HELD, "0x460d174a held"),
-                  (PLK_BASESTEP, "0x460d174c base"), (0x460d1746, "0x460d1746 rec-ptr")):
-        print(f"  {nm:22} = {int.from_bytes(rt.uc.mem_read(a, 4), 'big'):#x}")
+        print(f"  {type(e).__name__}: {e}  ({len(wrote)} writes)")
+    rt.uc.hook_del(h1); rt.uc.hook_del(h2)
+    pcs = {}
+    for pc, a, sz, val in wrote:
+        pcs.setdefault(pc, []).append((a, val))
+    for pc, ws in sorted(pcs.items()):
+        arr = "STORED" if all(LOCK_STORED <= a <= LOCK_STORED + 63 for a, _ in ws) else \
+              "LIVE" if all(LOCK_LIVE <= a <= LOCK_LIVE + 63 for a, _ in ws) else "mix"
+        print(f"    pc {pc:#x}  x{len(ws):<4} {arr}  steps touched: "
+              f"{sorted({(a - (LOCK_STORED if a >= LOCK_STORED else LOCK_LIVE)) for a, _ in ws})[:20]}")
+    _, stored = dump_bitmaps("rebuilt")
+    got = _bitmap_steps(stored, DISK_TRK)
+    print(f"\n  RECONCILE: LOCK_STORED steps for t{DISK_TRK} = {got}")
+    print(f"             #1 locked steps               = {locked1}")
+    print(f"             {'MATCH -> 0x400339d8 reads #1 at TRAC+0x59' if got == locked1 else 'MISMATCH -> offset is off'}")
     return True
 
 
