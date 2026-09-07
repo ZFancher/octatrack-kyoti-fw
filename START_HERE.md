@@ -137,10 +137,14 @@ DSP56300 toolchain (`dsp_asm` + `dsp_host`) built in `vendor/` (gitignored; scra
 |---|---|---|
 | `build_sidechain.py` → `SIDECHAIN.*` | `KEY` menu param only (COMPRESSOR pg2, descriptor slot 8), DSP inert | `emu_sidechain.py` clean |
 | `build_sidechain2.py` → `SIDECHAIN2.*` | + 37-word DSP hooks (`patch_sc_dsp.asm` = `sctap`+`scdet`) over a **donated SPATIALIZER** (also pulled from the FX1/FX2 choosers + ID2POS) | `emu_sc_dsp.py --patched` + `emu_sidechain.py` clean |
-| `build_sidechain3.py` → `SIDECHAIN3.*` | all four pg2 params (`KEY`/`KFLT`/`KGAIN`/`MON`), no DSP — independent of step 2 | `kfilt_fmt` LP/OFF/HP emu-verified |
+| `build_sidechain3.py` → `SIDECHAIN3.*` | **step 3 (Session 36):** = step 2 + `KEY GAIN` scaler + `KEY FLT` 2-pole Chamberlin SVF (`patch_sc_dsp3.asm`) + `SC LISTEN` via a 3rd hook `sctail`. `sc_tables.py` = shared 16-word gain / 32-word f tables | `emu_sc_dsp3.py` (isolation + `--patched` end-to-end) clean vs a Python SVF ref; `emu_sidechain.py` formatters clean |
 
 Not emulable: the actual gain-reduction-from-`keybus` chain — `dsp_host` can't run the stock
-compressor end-to-end, so it's a hardware test.
+compressor end-to-end, so it's a hardware test. (`emu_sc_dsp3.py` numerically verifies the
+new GAIN/FLT/LISTEN data transforms against a reference; the compressor's *response* to them
+is HW.) dsp56kEmu quirks worked around in `patch_sc_dsp3.asm`: `move x:(rN+d),a` reads wrong
+(use `,b`); short `move #imm` to data regs is left-aligned (use `cmp #>imm`); `asr` leaves
+bits in acc0 that `tst`/`cmp` see (normalise first). All three fixes are HW-correct.
 
 ### Blocker & NEXT
 
@@ -150,8 +154,9 @@ session, in order:
 1. **Flash DT** — settles the shared "does the DSP keep advancing a 0-amp voice?" unknown
    (DT + the 4th mute mode both rest on it). Checklist: `NOTES.md` "Session 12 → NEXT".
 2. **Flash `SIDECHAIN2`** — HW test plan in `NOTES.md` "Session 17 continued (8)".
-3. If (2) good → **side-chain step 3 DSP** (`KEY FLT` filter + `KEY GAIN` + `SC LISTEN`;
-   ~224 dead SPATIALIZER words of P-space headroom).
+3. If (2) good → **flash `SIDECHAIN3`** (step 3: `KEY GAIN` + `KEY FLT` SVF + `SC LISTEN`,
+   built Session 36). HW test additions in `NOTES.md` "Session 36"; tune `sc_tables.py`
+   (gain law / filter range / q) after a listen.
 4. **Flash `DIRECTJUMP`** — the `[PTN]`+`[YES]` toggle + the 5 sequencer-hook unknowns.
    HW test lists: `NOTES.md` "Session 15 continued" + "Session 21 continued".
 5. Then: build the 4th mute mode; OT+FX-solo checklist (`NOTES.md` "Session 11 → NEXT").

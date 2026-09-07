@@ -2,71 +2,100 @@
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2026 Zac-Kyoti
 """
-SIDE-CHAIN COMPRESSOR -- step 3 MENU SCAFFOLDING (no DSP).
+SIDE-CHAIN COMPRESSOR -- step 3 of 4: KEY GAIN, KEY FLT and SC LISTEN in the DSP.
 
-Stock 1.40C + the Bug-1 fix + the FULL side-chain control surface on the
-COMPRESSOR effect's page 2 -- KEY, KEY FLT, KEY GAIN, SC LISTEN -- with none of
-the DSP hooks.  The knobs do nothing audible; this build exists to prove, on
-real hardware, that all four parameters render, count, format, p-lock and
-survive save/recall, and that the page-2 layout reads right -- independently of
-whether the step-2 DSP framework (build_sidechain2.py) needs tweaking.
+Everything build_sidechain2.py ships (Bug-1 fix, SPATIALIZER donated + pulled
+from the FX choosers, sctap publish tap, scdet detector redirect) PLUS:
 
-COMPRESSOR parameter descriptor (E = 0x400d5a4a), page-2 slots 6..11
-(octabam packing: slot 6->r6+$c hi, 7->r6+$c lo, 8->r6+$d hi, 9->r6+$d lo,
-10->r6+$e hi, 11->r6+$e lo):
+  * three more COMPRESSOR page-2 parameters -- KFLT (slot 9), KGAIN (slot 10),
+    MON / "SC LISTEN" (slot 11) -- next to KEY (slot 8) and RMS (slot 6).
+  * the DSP cave is tools/patch_sc_dsp3.asm (a superset of patch_sc_dsp.asm):
+      scdet   now also scales the staged key by KEY GAIN and runs a one-pole-pair
+              Chamberlin SVF (KEY FLT: <64 low-pass, >64 high-pass, 64 bypass);
+      sctail  is a THIRD hook, spliced over the COMPRESSOR's proc-end
+              `move m0,x:(r7+$f)`, that overwrites the wet output with the
+              processed key when SC LISTEN is on.
+  * two coefficient tables (tools/sc_tables.py: 16-word gain, 32-word f) are
+    appended to the cave; @GTAB@ / @FTAB@ in the .asm are resolved to their
+    absolute P addresses in a first sizing pass.
 
-  slot  6  RMS        (stock, untouched)
-  slot  7  ---        (blank -> a stock-normal page-2 gap, cf. CHORUS/EQ)
-  slot  8  KEY        count 5   OFF / T1..T4 or T5..T8   (key_fmt)
-  slot  9  KFLT       count 128 default 64  LP / OFF / HP (kfilt_fmt)
-  slot 10  KGAIN      count 128 default 64  bipolar -N/+N (stock 0x4003c7a0)
-  slot 11  MON        count 2   default 0   OFF / ON       (stock 0x4003c14c)
+Same donor budget: cave + tables must fit SPATIALIZER's 261-word P region in
+each payload (currently ~230 + 48).
 
 Usage:   python3 tools/build_sidechain3.py [VERSTR]      (default "140C_KYOTI")
 Outputs: out/mainos_sidechain3.bin, out/elek_sidechain3.bin,
          out/OCTATRACK_OS1.40C_SIDECHAIN3.syx, out/OCTATRACK_SIDECHAIN3.bin
 """
 import os, pathlib, subprocess, sys
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import sc_tables
 
 BASE = 0x40000400
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 STOCK_SECT = ROOT / "out/raw/section_3_MAIN_OS.bin"
 STOCK_SYX = ROOT / "downloads/extracted/OCTATRACK_OS1.40C.syx"
 EFT = ROOT / "vendor/elektron-firmware-tool/elektron-firmware-tool"
+DSP_ASM = ROOT / "vendor/dsp56300/build/source/dsp_host/dsp_asm"
+DIS = ROOT / "vendor/dsp56300/build/source/disassemble/dsp56kDisassemble"
 OUT = ROOT / "out/mainos_sidechain3.bin"
 ELEK = ROOT / "out/elek_sidechain3.bin"
 OUT_SYX = ROOT / "out/OCTATRACK_OS1.40C_SIDECHAIN3.syx"
 OUT_BIN = ROOT / "out/OCTATRACK_SIDECHAIN3.bin"
 VERSTR = sys.argv[1] if len(sys.argv) > 1 else "140C_KYOTI"
 
-PATCHES = [
+# ======================= ColdFire =======================
+CF_PATCHES = [
     ("patch_trigscale", 0x400d7b00, [(0x4009b6f2, "cave", "203c0000091a", 18, "jmp")]),
     ("patch_sidechain", 0x400d7000, []),
 ]
-FREE_END = 0x400d7c3c
-
+CF_FREE_END = 0x400d7c3c
 E = 0x400d5a4a
-FMT_BIPOLAR = 0x4003c7a0        # stock: "-N" / "+N" about centre 64
-FMT_ONOFF = 0x4003c14c          # stock: "ON" / "OFF"
+FMT_BIPOLAR = 0x4003c7a0        # stock "-N" / "+N" about centre 64
+FMT_ONOFF = 0x4003c14c          # stock "ON" / "OFF"
 
-# (slot, name, count, default, formatter-key, tag)
-#   formatter-key: "key_fmt" / "kfilt_fmt" from the cave, or a literal address, or None
-PARAMS = [
-    (8,  b"KEY\x00\x00\x00",  5,   0,  "key_fmt",     "KEY  (OFF / same-bank track)"),
-    (9,  b"KFLT\x00\x00",     128, 64, "kfilt_fmt",   "KEY FLT  (LP / OFF / HP)"),
-    (10, b"KGAIN\x00",        128, 64, FMT_BIPOLAR,   "KEY GAIN  (-N / +N about unity)"),
-    (11, b"MON\x00\x00\x00",  2,   0,  FMT_ONOFF,     "SC LISTEN  (OFF / ON)"),
+# descriptor slot -> (name, count, default, A-formatter, current-bytes to assert)
+#   A-formatter: "key_fmt"/"kfilt_fmt" resolved from patch_sidechain.elf, else a literal
+SLOTS = [
+    (8,  b"KEY\x00\x00\x00", 5,   0,  "key_fmt",
+     dict(name="000000000000", cnt="00000080", dflt="7f", b="00000000")),
+    (9,  b"KFLT\x00\x00",     128, 64, "kfilt_fmt",
+     dict(name="000000000000", cnt="00000002", dflt="00", b="400475f8")),
+    (10, b"KGAIN\x00",        128, 64, FMT_BIPOLAR,
+     dict(name="000000000000", cnt="00000080", dflt="00", b="00000000")),
+    (11, b"MON\x00\x00\x00",  2,   0,  FMT_ONOFF,
+     dict(name="000000000000", cnt="00000080", dflt="00", b="00000000")),
 ]
-# per-slot current bytes we assert before writing
-SLOT_CUR = {
-    8:  dict(name="000000000000", cnt="00000080", dflt="7f", b="00000000"),
-    9:  dict(name="000000000000", cnt="00000002", dflt="00", b="400475f8"),
-    10: dict(name="000000000000", cnt="00000080", dflt="00", b="00000000"),
-    11: dict(name="000000000000", cnt="00000080", dflt="00", b="00000000"),
+
+# ======================= DSP (SPATIALIZER donor) =======================
+DSP = {
+    "A": dict(va=0x400e2324, ln=0x136cb, cave_org=0x00aa8, kadj="add     #3,a",
+              disp_hook=0x004a7, comp_proc=0x01ab1, comp_tail=0x01b55,
+              stub_init=0x007c8, stub_proc=0x007c9),
+    "B": dict(va=0x400f59ef, ln=0x12d05, cave_org=0x00868, kadj="sub     #1,a",
+              disp_hook=0x0029c, comp_proc=0x01871, comp_tail=0x01915,
+              stub_init=0x00588, stub_proc=0x00589),
 }
+SC_SRC = ROOT / "tools/patch_sc_dsp3.asm"
+DONOR_WORDS = 261
+NOP = 0x000000
+
+FX1_LIST, FX1_LEN = 0x400d6060, 11
+FX2_LIST, FX2_LEN = 0x400d6090, 15
+ID2POS = 0x400d6150
+SPAT_P = 0x400d4904 + 0x38
+SPAT_POS = 7
 
 
-def jmp(t):
+def w3(v):
+    return v.to_bytes(3, "little")
+
+
+def jsr_short(addr):
+    assert addr <= 0xFFF, f"jsr target 0x{addr:x} too big for the short form"
+    return 0x0D0000 | addr
+
+
+def cf_jmp(t):
     return b"\x4e\xf9" + t.to_bytes(4, "big")
 
 
@@ -74,7 +103,7 @@ def cf_jsr(t):
     return b"\x4e\xb9" + t.to_bytes(4, "big")
 
 
-def assemble(name, at):
+def cf_assemble(name, at):
     subprocess.run(["m68k-elf-as", "-mcpu=5407", "-o", f"out/{name}.o", f"tools/{name}.s"],
                    check=True, cwd=ROOT)
     subprocess.run(["m68k-elf-ld", f"-Ttext=0x{at:x}", "-o", f"out/{name}.elf", f"out/{name}.o"],
@@ -86,20 +115,84 @@ def assemble(name, at):
     return (ROOT / f"out/{name}.bin").read_bytes(), syms
 
 
+def sc_assemble(kadj, org):
+    """assemble patch_sc_dsp3.asm at `org`, append the gain/f tables.
+    Two passes so `move #>@GTAB@` / `move #>@FTAB@` widths don't shift.
+    Returns (words, sctap, scdet, sctail)."""
+    def one(gt, ft):
+        src = (SC_SRC.read_text().replace("@KADJ@", kadj)
+               .replace("@GTAB@", f"${gt:x}").replace("@FTAB@", f"${ft:x}"))
+        a = ROOT / "out/patch_sc_dsp3.asm"; a.write_text(src)
+        o = ROOT / "out/patch_sc_dsp3.bin"
+        r = subprocess.run([str(DSP_ASM), "-in", str(a), "-org", f"{org:x}", "-out", str(o)],
+                           capture_output=True, text=True, cwd=ROOT)
+        if r.returncode:
+            sys.exit(f"dsp_asm failed:\n{r.stdout}\n{r.stderr}")
+        raw = o.read_bytes()
+        return [int.from_bytes(raw[i:i + 3], "little") for i in range(0, len(raw), 3)]
+
+    code = one(org, org)
+    n = len(code)
+    code = one(org + n, org + n + sc_tables.GAIN_N)
+    assert len(code) == n, "cave size shifted between the two sizing passes"
+    words = code + sc_tables.gain_table() + sc_tables.flt_table()
+    if len(words) > DONOR_WORDS:
+        sys.exit(f"cave {len(words)} words > SPATIALIZER donor's {DONOR_WORDS}")
+    # round-trip the code region; reject mpysu/macsu (dsp_asm's `mpy x0,y0` trap)
+    (ROOT / "out/patch_sc_dsp3_code.bin").write_bytes(
+        b"".join(w.to_bytes(3, "little") for w in code))
+    d = subprocess.run([str(DIS), "-in", str(ROOT / "out/patch_sc_dsp3_code.bin"),
+                        "-pc", f"{org:x}", "-le"], capture_output=True, text=True).stdout
+    if " dc " in d or "InvalidInstruction" in d or "mpysu" in d or "macsu" in d:
+        sys.exit(f"cave did not round-trip clean:\n{d}")
+    rts = [i for i, w in enumerate(code) if w == 0x00000c]
+    return words, org, org + rts[0] + 1, org + rts[2] + 1
+
+
+def dsp_module_fileoff(img, va, ln, p_addr):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("mm", ROOT / "refs/octabam/tools/dsp_modmap.py")
+    mm = importlib.util.module_from_spec(spec); spec.loader.exec_module(mm)
+    mods, _ = mm.modules(bytes(img), va, ln)
+    for sp, addr, cnt, data in mods:
+        if sp == 0 and addr <= p_addr < addr + cnt:
+            return (va - BASE) + data + (p_addr - addr) * 3
+    sys.exit(f"P:0x{p_addr:05x} not in any P module of payload @0x{va:08x}")
+
+
+def dsp_xtable_fileoff(img, va, ln, x_addr):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("mm", ROOT / "refs/octabam/tools/dsp_modmap.py")
+    mm = importlib.util.module_from_spec(spec); spec.loader.exec_module(mm)
+    mods, _ = mm.modules(bytes(img), va, ln)
+    for sp, addr, cnt, data in mods:
+        if sp == 1 and addr == x_addr:
+            return (va - BASE) + data
+    sys.exit(f"X:0x{x_addr:05x} module not found in payload @0x{va:08x}")
+
+
+def rd3(img, off):
+    return int.from_bytes(img[off:off + 3], "little")
+
+
 def main():
     if not STOCK_SECT.exists():
         sys.exit(f"missing {STOCK_SECT}")
+    for t in (DSP_ASM, DIS):
+        if not pathlib.Path(t).exists():
+            sys.exit(f"missing {t} -- build the DSP toolchain")
     img = bytearray(STOCK_SECT.read_bytes())
     stock = bytes(img)
 
     def o(a):
         return a - BASE
 
-    print("=== caves + detours ===")
+    # ---------------- ColdFire: caves + detours ----------------
+    print("=== ColdFire: caves + detours ===")
     syms = {}
     spans = []
-    for name, at, detours in PATCHES:
-        blob, s = assemble(name, at)
+    for name, at, detours in CF_PATCHES:
+        blob, s = cf_assemble(name, at)
         syms[name] = s
         co = o(at)
         if any(img[co:co + len(blob)]):
@@ -112,20 +205,19 @@ def main():
             do = o(site)
             if bytes(img[do:do + len(exp)]) != exp:
                 sys.exit(f"detour 0x{site:08x} unexpected: {bytes(img[do:do+len(exp)]).hex()}")
-            img[do:do + n] = jmp(s[sym]) + b"\x4e\x71" * ((n - 6) // 2)
+            br = cf_jsr(s[sym]) if kind == "jsr" else cf_jmp(s[sym])
+            img[do:do + n] = br + b"\x4e\x71" * ((n - 6) // 2)
             print(f"    0x{site:08x} -> {name}:{sym} 0x{s[sym]:08x}")
-    if max(b for _, b in spans) > FREE_END:
-        sys.exit("cave past free zone")
-    fmt_addr = {"key_fmt": syms["patch_sidechain"]["key_fmt"],
-                "kfilt_fmt": syms["patch_sidechain"]["kfilt_fmt"]}
-    print(f"  key_fmt=0x{fmt_addr['key_fmt']:08x}  kfilt_fmt=0x{fmt_addr['kfilt_fmt']:08x}")
+    if max(b for _, b in spans) > CF_FREE_END:
+        sys.exit("CF cave past free zone")
+    fmt_sym = syms["patch_sidechain"]
 
-    print("\n=== COMPRESSOR descriptor: KEY / KFLT / KGAIN / MON ===")
-    for slot, name, cnt, dflt, fmt, tag in PARAMS:
-        cur = SLOT_CUR[slot]
+    # ---------------- ColdFire: COMPRESSOR descriptor (KEY/KFLT/KGAIN/MON) ----
+    print("\n=== ColdFire: COMPRESSOR descriptor slots 8..11 ===")
+    for slot, name, cnt, dflt, fmt, cur in SLOTS:
         na, ca, da, aa, ba = (E + 0x4e + 6 * slot, E + 0xd2 + 4 * slot, E + 0x96 + slot,
                               E + 0x102 + 4 * slot, E + 0x132 + 4 * slot)
-        assert bytes(img[o(na):o(na) + 6]).hex() == cur["name"], f"slot {slot} name not blank"
+        assert bytes(img[o(na):o(na) + 6]).hex() == cur["name"], f"slot {slot} name"
         assert f"{int.from_bytes(img[o(ca):o(ca)+4],'big'):08x}" == cur["cnt"], f"slot {slot} count"
         assert f"{img[o(da)]:02x}" == cur["dflt"], f"slot {slot} default"
         assert f"{int.from_bytes(img[o(ba):o(ba)+4],'big'):08x}" == cur["b"], f"slot {slot} B"
@@ -134,14 +226,82 @@ def main():
         img[o(ca):o(ca) + 4] = cnt.to_bytes(4, "big")
         img[o(da)] = dflt
         img[o(ba):o(ba) + 4] = (0).to_bytes(4, "big")
-        a_val = fmt_addr[fmt] if isinstance(fmt, str) else fmt
+        a_val = fmt_sym[fmt] if isinstance(fmt, str) else fmt
         img[o(aa):o(aa) + 4] = a_val.to_bytes(4, "big")
-        label = name.split(b"\x00")[0].decode()
-        print(f"  slot {slot:2d}: {label:5s}  count {cnt:3d}  default {dflt:3d}  "
-              f"A 0x{a_val:08x}   {tag}")
+        label = name.rstrip(b"\x00").decode()
+        print(f"  slot {slot:2d}  {label:5s}  count {cnt:3d}  "
+              f"default {dflt:3d}  A 0x{a_val:08x}")
+
+    # ---------------- DSP (both payloads) ----------------
+    print("\n=== DSP: SPATIALIZER donor + sctap / scdet / sctail ===")
+    for tag, d in DSP.items():
+        words, sctap, scdet, sctail = sc_assemble(d["kadj"], d["cave_org"])
+        print(f"  payload {tag}: cave {len(words)}w @ P:0x{d['cave_org']:05x}  "
+              f"sctap=0x{sctap:x} scdet=0x{scdet:x} sctail=0x{sctail:x}")
+
+        spat_off = dsp_module_fileoff(img, d["va"], d["ln"], d["cave_org"])
+        assert rd3(img, spat_off) == 0x250000, \
+            f"payload {tag} SPATIALIZER not 'move #0,x0': {rd3(img, spat_off):06x}"
+        for i, wv in enumerate(words):
+            img[spat_off + i * 3: spat_off + i * 3 + 3] = w3(wv)
+        print(f"    cave -> file 0x{spat_off:x} ({len(words)}/{DONOR_WORDS} donor words)")
+
+        hk = dsp_module_fileoff(img, d["va"], d["ln"], d["disp_hook"])
+        assert (rd3(img, hk), rd3(img, hk + 3)) == (0x66f000, 0x000208), \
+            f"payload {tag} disp hook: {rd3(img,hk):06x} {rd3(img,hk+3):06x}"
+        img[hk:hk + 3] = w3(jsr_short(sctap))
+        img[hk + 3:hk + 6] = w3(NOP)
+        print(f"    dispatcher P:0x{d['disp_hook']:05x} -> jsr 0x{sctap:x} + nop")
+
+        cp = dsp_module_fileoff(img, d["va"], d["ln"], d["comp_proc"])
+        assert (rd3(img, cp), rd3(img, cp + 3)) == (0x221e00, 0x346100), \
+            f"payload {tag} comp proc+0: {rd3(img,cp):06x} {rd3(img,cp+3):06x}"
+        img[cp:cp + 3] = w3(jsr_short(scdet))
+        img[cp + 3:cp + 6] = w3(NOP)
+        print(f"    COMPRESSOR P:0x{d['comp_proc']:05x} -> jsr 0x{scdet:x} + nop")
+
+        ct = dsp_module_fileoff(img, d["va"], d["ln"], d["comp_tail"])
+        assert (rd3(img, ct), rd3(img, ct + 3)) == (0x0a77a0, 0x00000f), \
+            f"payload {tag} comp proc-end not `move m0,x:(r7+$f)`: {rd3(img,ct):06x} {rd3(img,ct+3):06x}"
+        img[ct:ct + 3] = w3(jsr_short(sctail))
+        img[ct + 3:ct + 6] = w3(NOP)
+        print(f"    COMPRESSOR P:0x{d['comp_tail']:05x} -> jsr 0x{sctail:x} + nop")
+
+        xt = dsp_xtable_fileoff(img, d["va"], d["ln"], 0x215)
+        ini_off, prc_off = xt + 5 * 3, xt + (0x20 + 5) * 3
+        assert rd3(img, ini_off) == d["cave_org"] and rd3(img, prc_off) == d["cave_org"] + 0xa, \
+            f"payload {tag} disp entry 5: {rd3(img,ini_off):06x} {rd3(img,prc_off):06x}"
+        img[ini_off:ini_off + 3] = w3(d["stub_init"])
+        img[prc_off:prc_off + 3] = w3(d["stub_proc"])
+        print(f"    X:0x215[5] -> null stub (SPATIALIZER -> passthrough)")
+
+    # ---------------- hide SPATIALIZER from the FX choosers ----------------
+    print("\n=== ColdFire: remove SPATIALIZER from FX1/FX2 chooser ===")
+
+    def u32(a):
+        return int.from_bytes(img[o(a):o(a) + 4], "big")
+
+    def wr32(a, v):
+        img[o(a):o(a) + 4] = v.to_bytes(4, "big")
+
+    for base, ln, tag in ((FX1_LIST, FX1_LEN, "FX1"), (FX2_LIST, FX2_LEN, "FX2")):
+        entries = [u32(base + i * 4) for i in range(ln)]
+        assert u32(base + ln * 4) == 0, f"{tag} terminator"
+        assert entries[SPAT_POS] == SPAT_P, f"{tag}[{SPAT_POS}] != SPATIALIZER"
+        new = entries[:SPAT_POS] + entries[SPAT_POS + 1:]
+        for i, v in enumerate(new):
+            wr32(base + i * 4, v)
+        wr32(base + len(new) * 4, 0)
+        print(f"  {tag}: {ln} -> {len(new)} entries")
+    wr32(ID2POS + 0x05 * 4, 0)
+    for idv in range(0x20):
+        pos = u32(ID2POS + idv * 4)
+        if idv != 0x05 and pos > SPAT_POS:
+            wr32(ID2POS + idv * 4, pos - 1)
+    print("  ID2POS rebuilt (id 0x05 -> 0)")
 
     OUT.write_bytes(bytes(img))
-    changed = sum(1 for a, b_ in zip(stock, img) if a != b_)
+    changed = sum(1 for a, b in zip(stock, img) if a != b)
     print(f"\n  {OUT.name}: {changed} bytes changed vs stock")
 
     ts = ROOT / "out/mainos_trigscale_only.bin"
@@ -166,9 +326,10 @@ def main():
         sys.exit(f'version "{VERSTR}" does not fit')
     subprocess.run(["python3", "tools/make_bin.py", str(ELEK), "-o", str(OUT_BIN)], check=True, cwd=ROOT)
     print(f"\n  {OUT_SYX.name}  +  {OUT_BIN.name}")
-    print("  Test: COMPRESSOR on any track -> FX page 2. Encoders after RMS:")
-    print("        (gap) KEY  KFLT  KGAIN  MON.  All inert (no DSP). Check labels,")
-    print("        counts, p-locks, save/reload, and that RMS + page 1 are unchanged.")
+    print("  Test: COMPRESSOR on a track -> FX page 2: RMS (gap) KEY KFLT KGAIN MON.")
+    print("        Kick on T1, pad+COMPRESSOR on T2, KEY=T1 -> pad ducks. KFLT left =")
+    print("        low-pass the key (isolate the thump); KGAIN drives a quiet key;")
+    print("        MON = ON auditions the filtered key. SPATIALIZER now passes through.")
     print("  Revert = flash downloads/extracted/OCTATRACK_OS1.40C.syx")
 
 

@@ -5337,11 +5337,15 @@ Working model: the knob edits **#2** (`0x46c7ab30`) for the held step; a
    `out/OCTATRACK_OS1.40C_DIRECTJUMP_V2.{syx,bin}`, emu-clean, NOT flashed. Box-free
    `FUN_4005a0e0` toast + `dj_tick2` countdown @ `0x400522ca`. HW-test both DJ binaries
    and tune `TOAST_FRAMES` if needed (NOTES "Session 35").
-3. **Side-chain step 3 DSP** — "Session 17 continued (8)" open items: disasm payload B's
-   `func_0004a7`-equivalent injection point + the 2 instrs to displace; the `dsp_host`
-   step-2 harness.
-4. **(blocked on MKI)** flash sequence DT → SIDECHAIN2 → step-3 DSP → DIRECTJUMP (v1 or
-   v2); the p-lock Phase-0 `pattern-diff` pass; Bug 2 HW confirm.
+3. ~~**Side-chain step 3 DSP**~~ — **BUILT (Session 36)**: `KEY GAIN` scaler +
+   `KEY FLT` 2-pole SVF (`tools/patch_sc_dsp3.asm`) + `SC LISTEN` third hook
+   (`sctail`), `tools/{sc_tables,build_sidechain3,emu_sc_dsp3}.py` →
+   `out/OCTATRACK_OS1.40C_SIDECHAIN3.{syx,bin}`. `emu_sc_dsp3.py` (isolation +
+   `--patched` end-to-end) ALL GOOD, NOT flashed. NOTES "Session 36".
+4. **(blocked on MKI)** flash sequence DT → SIDECHAIN2 → SIDECHAIN3 → DIRECTJUMP
+   (v1 or v2); the p-lock Phase-0 `pattern-diff` pass; Bug 2 HW confirm.
+   Nothing no-flash remains on this board except item 1's alt (trace SAVE for the
+   `+0x4900`→`#1` merge, ~2–3 emu sessions).
 
 Housekeeping: `emu_rtos` / `emu_plock` need the EMAC-patched Unicorn — run once per
 machine: `( cd refs/octabam && PY=$(command -v python3) bash scripts/build_unicorn.sh )`.
@@ -5837,3 +5841,101 @@ serialiser. Options, in order of likely payoff:
 The detour's **core action stays validated** (S32): whenever we can identify a
 pure trigless lock that just lost its last lock, `#1[t][step] = 0xFF` +
 `0x400339d8` cleans it with zero collateral.
+
+## Session 36 (2026-09-07, `wip/mute-mode`) — side-chain STEP 3 DSP: KEY GAIN + KEY FLT (2-pole SVF) + SC LISTEN
+
+No-flash to-do board item 3. Steps 1–2 (Session 17) put `KEY` on the COMPRESSOR
+page and wired `keybus` + the detector redirect; step 3 makes the other three
+page-2 controls do their DSP work. **Built + emu-clean (isolation *and* end-to-end
+against the built image), NOT flashed** — the whole side-chain stack is still
+HW-gated on flashing `SIDECHAIN2` first.
+
+### What ships
+
+`tools/patch_sc_dsp3.asm` — a **superset of `patch_sc_dsp.asm`**: ~182 words of
+code + a 16-word gain table + a 32-word f table = **230 / the SPATIALIZER donor's
+261** (31 to spare). The build appends the two tables to the assembled cave, so
+the `230` it reports already includes them.
+
+Three hooks now (was two):
+- `sctap`  — unchanged publish tap (dispatcher FX1 entry).
+- `scdet`  — detector redirect **+ KEY GAIN + KEY FLT**. After staging
+  `keybus[key]` into `X:$40`:
+    * **KEY GAIN** (`x:(r6+$e)` bits 16-23, 64 = unity): index a 16-word table
+      (`KGAIN>>3`) of `gain/64` in Q23, `mpy ; asl #6` per sample. ~±24 dB,
+      ~3 dB/step. `tools/sc_tables.py::gain_table()`.
+    * **KEY FLT** (`x:(r6+$d)` bits 8-15, 64 = bypass, <64 LP, >64 HP): one
+      Chamberlin state-variable filter, **damping q = 1** (so the `-bp` term
+      needs no multiply), coefficient `f = 2·sin(π·fc/fs)` from a 32-word
+      exp-spaced table (fc 40 Hz … 2.2 kHz). LP idx = `KFLT>>1`, HP idx =
+      `(KFLT-64)>>1`. State (lp, bp) in the compressor's own `r7+$16 / r7+$17`
+      (RE: unused by the stock module); warm-start gated on `r7+$f` bit 0 (the
+      stock first-block flag) so **no init hook is needed**. Input is `(L+R)/2`,
+      output written to both L and R slots. One shared loop; `n0` marks LP vs HP
+      for the per-sample output select.
+- `sctail` — **NEW** third hook, `jsr` spliced over the COMPRESSOR's proc-end
+  `move m0,x:(r7+$f)` (`P:0x1b55` A / `P:0x1915` B). When **SC LISTEN** (`MON`,
+  `x:(r6+$e)` bits 8-15) is ON and a KEY is set, overwrite the wet output (the
+  `n6` buffer) with the processed key stashed by `scdet` at `keybus[key]` gen 1
+  (`+$20`). "Listen to exactly what's driving the detector."
+
+`tools/sc_tables.py` — the two tables, shared by the build and the emu so they
+can't drift. `tools/build_sidechain3.py` — reworked from menu-only to
+**`build_sidechain2` + the 3 extra descriptor slots + `patch_sc_dsp3` + the
+`sctail` splice**; `@GTAB@`/`@FTAB@` resolved in a first sizing pass; asserts the
+cave ≤ 261 and round-trips it (rejects `mpysu`/`macsu`).
+Output `out/OCTATRACK_OS1.40C_SIDECHAIN3.{syx,bin}` (`140C_KYOTI`, 1585 B vs
+stock). Both payloads parse 100% (`dsp_modmap`, module counts identical to stock);
+manual-trig fix byte-identical; formatters (`emu_sidechain.py`) pass.
+
+### dsp56kEmu / DSP quirks found the hard way (all fixes are HW-correct too)
+
+1. **`move x:(rN+$disp),a`** (2-word displacement form, **dest a**) reads the
+   *wrong* word under dsp56kEmu — `scdet`'s `move x:(r6+$d),a` came back with the
+   `KGAIN|MON` word instead of `KEY|KFLT`. **Dest `b` is fine.** Every param read
+   in the cave now goes to `b`, then `move b1,a`.
+2. **`move #imm,x0`** (short form, into a data ALU reg) is **left-aligned** —
+   `move #$40,x0` gives `x0 = 0x400000`, not `0x40`, so `cmp x0,a` never matched.
+   Use **`cmp #>$40,acc`** (right-aligns).
+3. **`asr #n,acc,acc`** for field extraction leaves the shifted-out bits in
+   `acc0`, and `tst` / `cmp` see the **full 56-bit accumulator** (real 56k
+   behaviour — stock code always follows with `move acc1,Rn`, never `tst`).
+   Normalise with **`move acc1,otheracc`** before any `tst`/`cmp`.
+
+`tools/emu_sc_dsp3.py` — isolation harness (each hook run as its own `-proc`,
+seeded `.mem`, read back) checked **numerically against a Python SVF reference**:
+KEY copy / KEY=0 no-op / KEY GAIN ×5 levels / KEY FLT LP+HP (≤1 LSB) / SVF state
+persistence across blocks / SC LISTEN stash — **ALL GOOD**. `--patched` rebuilds
+payload B's `.mem` from `out/mainos_sidechain3.bin` (octabam's `dsp_modmap` only
+dumps the stock image, so its `dumpmem` is replicated inline) and reruns every
+test against the **real** cave over the real SPATIALIZER donor with the live
+`jsr` detours — **ALL GOOD**. Also seeds `x:0x20c = 15` because dsp_host's
+context routine can't run headless (empty RX read) → `n7` stays 0 → `do n7`
+loops never execute.
+
+### Still HW-only (unchanged from step 2, plus step-3 items)
+
+- the compressor's gain reduction actually *tracking* the keybus signal
+  (`dsp_host` can't run the stock COMPRESSOR end to end);
+- `r7+$16/$17` genuinely free for our SVF state on the real module (RE says yes;
+  worst case the first-block-zero gate hides a stale value for one block);
+- musical calibration: gain law (±24 dB / ~3 dB steps), filter range
+  (40 Hz–2.2 kHz), and whether q = 1 (Butterworth, no resonance) is the right
+  character — all easy table edits in `sc_tables.py` after a listen;
+- `sctail`'s `n6` still points at the dry/wet buffer at proc-end (RE: yes — the
+  compressor re-anchors `move n6,r0` at stages 4 and 6 and doesn't touch n6
+  after; `sctail` only reads it).
+
+### HW test additions (append to "Session 17 continued (8)")
+
+7. **KFLT**: `COMPRESSOR` on a pad, `KEY = T1` (kick). Turn `KFLT` left → the
+   ducking should follow only the kick's low thump (hats/snare stop triggering
+   it); centre = same as before; right → only high content ducks.
+8. **KGAIN**: with a quiet key, turn `KGAIN` up → deeper ducking; the bipolar
+   readout should roughly match the audible change.
+9. **SC LISTEN = ON**: the compressor's output should be replaced by the
+   filtered/gained key signal (mono, both channels) — sweep `KFLT` and listen to
+   the filter. Turn it OFF → normal compression returns. (Requires `KEY` set;
+   `KEY = OFF` + `SC LISTEN` does nothing.)
+10. **No SVF instability**: hold `KFLT` at the extremes with a loud key for a
+    while — no runaway / self-oscillation / DC.
