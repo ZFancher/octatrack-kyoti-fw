@@ -6022,3 +6022,70 @@ pattern-enter `#2` build (do the working views mask `#1`?) → decide (a) vs (b)
 then design the detour on the winner. `emu_plock.py --save` is the harness;
 add a `--load` mode that hooks the deserialiser after a bank whose `+0x4900`
 disk chunk was hand-cleared for one step.
+
+## Session 38 (2026-09-07, `wip/mute-mode`) — playback reads `#1`, not the working views; the `+0x4900`→`#1` commit is on mode-exit
+
+Static follow-up to Session 37: which structure drives **playback** and the
+**LED** after a LIVE edit, and where is the working-view → `#1` commit.
+
+### Playback = `#1`, unconditionally (step handler `0x4009d1e8`)
+
+Per-param loop `0x4009d7dc`–`0x4009d848`:
+- `sp@(92)` = a per-`(track, step, param)` byte, addressed with the **`0x91a`
+  TRAC stride** + `step<<5` (so: `#1`-family, `TRAC + …`).
+- `0x4009d7e0`: read the byte. `!= 0xFF` → `0x4009d7ee` writes it straight to
+  `sp@(100)` = **`#2` (`0x46c7ab30`)** — the value the engine applies. **No check
+  of `+0x4900` / `+0x48d8` first.**
+- `0x4009d830`: separately AND-tests the `TRAC + 0x0a` param bitmap into `d4`
+  (used downstream), but the `#1 != 0xFF → apply` above is not gated on it.
+
+So the step handler pushes `#1` into the playback set every step. **A LIVE edit
+reaches playback only once it is committed to `#1`.**
+
+### Pattern-enter splices SCENE → `#2`, not `#1` → `#2`
+
+`0x4009b842` / `0x4009c020` (per track): `moveb` loop copies **`#3`
+(`0x46c7aa24`, SCENE)** → `#2` (`0x46c7ab30`) + `#3`-second (`0x46c77c32`) →
+`#2`-second (`0x46c76ac0`), 32 B; then `[#2 bitmap 0x46c75fa0] = [#3 bitmap
+0x46c7a874]`. (`kb/file-format.md`'s "splice #1/#3 → #2" was imprecise — it's
+`#3 → #2`; `#1 → #2` is the per-step step-handler path above.)
+
+### The LIVE cluster never writes `#1` — full disasm of all three
+
+`0x40041784` (LIVE write), `0x40041bc4` (LIVE write/erase, ends `0x40042156`),
+`0x40042480` (LIVE, ends `0x40042718`): each writes only `+0x4900` / `+0x48d0` /
+`+0x48d8` / `+0x2880` / `0x46c7d2e4` / `0x46c7d344` / the `0x1001xxxx` mirrors +
+dirty flags, and calls `0x40027de4` (2-word clear) / `0x400418e0` (status
+redraw) / `0x4009da20` (working-set rebuild, from `0x40041784` only). **No `#1`
+(`0x91a` stride + `0x59`) store anywhere.**
+
+### The `+0x4900` → `#1` commit = the `~0x40062120` mode-exit cluster (not yet pinned)
+
+`0x40062120`-ish (p-lock-edit / screen exit) calls, in order: `0x4004d870`,
+`0x4004d640`, `0x4004d948` (p-lock draw family) · **`0x400339d8`** (LED rebuild
+from `#1`) · `0x400418e0` · then `clrl 0x46c7d344` + `clrl 0x46c7d348`
+(**clears the armed-param bitmap** — "these edits are committed") · `0x40020898`
+· `0x4009da20` (working-set rebuild) · lots more.
+
+The only other places that clear `0x46c7d344/d348`: `0x40062196` (here) and
+`0x40083cc8` (load-time). So the arm-bitmap lifecycle is: `0x40041bc4` **sets** a
+bit on a LIVE edit → `~0x40062120` **clears** it on exit. A `+0x4900` → `#1`
+commit would ride exactly that "clear on exit" — read `+0x4900` for each armed
+`(track, step, param)`, write `#1`, clear the arm bit.
+
+**⇒ Because `#1` drives both playback and the LED, the trigless-lock fix
+almost certainly needs the `#1` clear (Session 32's validated action), not a
+LED-only change.** Best delivery: **hook the commit** (`~0x40062120` / whatever
+does `+0x4900` → `#1`) to make it **symmetric** — propagate `+0x4900 == 0xFF`
+→ `#1 = 0xFF` as well as `!= 0xFF` → `#1 = value`. That fires for every LIVE
+edit (write *and* erase), needs no `0x40041bc4` step decode, and the
+"1→0 trigless lock" case falls out because `0x400339d8` rebuilds the LED from
+`#1` immediately after. Session 13's bug is then explained as: today's commit is
+**add-only** (a LIVE erase's `0xFF` in `+0x4900` is treated as "no edit here",
+so `#1` keeps the stale lock).
+
+**NEXT (Session 39):** pin the commit instruction — search `~0x40062120` /
+`0x4009da20` / the `0x4004d???` family for "reads `blob+0x4900` (`0x400e6ae0`,
+`0x8b0` stride), writes `#1` (`0x91a` stride + `0x59`)", and check whether it's
+add-only. Dynamic: `emu_plock.py --commit` — load DEMO, plant a `+0x4900`
+sentinel + arm bit, `call_as_main(0x40062120)` (or the real exit), watch `#1`.

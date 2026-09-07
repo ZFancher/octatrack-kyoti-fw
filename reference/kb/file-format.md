@@ -251,10 +251,22 @@ the on-disk map above **is** the RAM map — no repack. The param header
 | 3 | `0x46c7aa24` / `0x46c77c32` / `0x46c7a874` | same `[track*32]` shape | **scene** p-lock storage (step handler uses these for the `d2 == -1` master/scene case) |
 | 4 | `0x46c7bf2c` / `0x46c7d7d8` / `0x46c7e0de` | value `[param + heldStep*128]` / bitmap / per-param flag | **MIDI-track CC-lock** send queue — `FUN_40033e3c(track, param, value)` writes it (guard: `[0x8000003f + track]` must equal a held trig; `[0x46c76de0]` = the held list), `FUN_400409f4` sends each set bit as MIDI CC (`FUN_40010bc8` = serial TX ring) then clears it. **`emu_plock.py --call3e3c` (Session 25): `FUN_40033e3c` writes ONLY #4 — so it is NOT the audio p-lock writer.** The `[NO]`+knob path calls it with params `0x34–0x36` (`0x4005e164/e1a8/e1d2`). |
 
-Flow: **load** → `FUN_4009b220` fills #2 with `0xFF` (from boot `0x4001f95c` / project load
-`0x400238a8`), then the deserialiser populates #1; **pattern-enter** → copy loops at
-`0x4009b84c` / `0x4009c02c` splice #1/#3 → #2; **step** → step handler refreshes #2 from
-#1 for the current step; **save** → #1 → disk.
+Flow (Session 38 corrections):
+- **load** → `FUN_4009b220` fills #2 with `0xFF`, then the deserialiser populates #1
+  (TRAC chunk) and `+0x4900` (its own chunk — Session 37).
+- **pattern-enter / start-track** → `0x4009b842` / `0x4009c020` copy **#3 (SCENE)
+  `0x46c7aa24` → #2**, per track (32 B + second array + bitmap). NOT #1→#2.
+- **step** (playhead) → step handler `0x4009d1e8` per-param loop `0x4009d7dc`:
+  reads `#1[step][param]` (`0x91a` stride); `!= 0xFF` → writes it into **#2**
+  unconditionally (no `+0x4900`/`+0x48d8` check). **So #1 drives playback.**
+- **LIVE edit** (`0x40041784`/`0x40041bc4`) → `+0x4900` + bitmaps only, **never #1**;
+  arms a bit in `0x46c7d344/d348`.
+- **p-lock-mode exit** (`~0x40062120`) → draw family + `0x400339d8` (LED from #1) +
+  `0x4009da20` (working set) + **`clrl 0x46c7d344/d348`** (arm bits). The
+  `+0x4900` → #1 **commit** rides here (not yet pinned to an instruction —
+  Session 39); today it is **add-only** (a LIVE erase's `0xFF` doesn't un-lock #1),
+  which is Session 13's bug.
+- **save** → #1 and `+0x4900` written as separate verbatim chunks (Session 37).
 
 **The `[TRIG]`-hold + knob → #1 writer — LOCATED as `0x4004ef54` (Session 27); it
 writes a live-edit buffer `+0x4900`, not #1 directly.**
