@@ -5266,18 +5266,17 @@ Working model: the knob edits **#2** (`0x46c7ab30`) for the held step; a
 
 ### No-flash to-do board (Session 25 → onward)
 
-1. **[NEXT] trigless-lock feature — DECISION POINT (Session 34).** Model + the
-   detour's core action are **solid** (S31/S32): trigless lock ≡ `#1[step] !=
+1. **[BLOCKED on MKI / DECISION] trigless-lock feature.** 9 sessions (S26–34).
+   Model + detour core action **solid** (S31/S32: trigless lock ≡ `#1[step] !=
    0xFF && TRAC+0x00 clear`; `clear #1[t][step] + 0x400339d8` → LED off, zero
-   collateral. **But (S33) the hook is blocked**: `0x40041bc4`'s decode
-   (`0x4009b2d4`) returns `(bank, pattern, param-descriptor)` and **no clean step
-   index**; and the **`+0x4900` (LIVE working view) → `#1` (store) merge is
-   unlocated** — nothing in the sequencer reads `+0x4900`, and the LIVE cluster
-   never writes `#1`. 8 sessions in; past the S13 "3–5" estimate. NEXT: either
-   (a) trace SAVE (`0x400645ce`) / pattern-change commit for the `+0x4900`→`#1`
-   merge (~2–3 sessions), or (b) drive the full LIVE gesture in `emu_plock`
-   (transport+REC+`0x460d172a`) and watch `#1` across frames, or (c) bank the
-   subsystem RE and move on. NOTES "Session 33".
+   collateral). **The gap**: the `+0x4900` (LIVE working view) → `#1` (store)
+   merge — it's not on the edit path (`0x40041bc4` never writes `#1`; S33/S34),
+   it must be in the SAVE serialiser. S34 confirmed the LIVE `[NO]`+knob path is
+   too UI/sequencer-state-dependent to drive headless. **Best path = Session 13's
+   original Phase 0: HW export-and-diff on the MKI** (build targeted test
+   patterns, export, diff banks) — blocked on the MKI being back. Alt: trace
+   `0x400645ce` (SAVE) + `0x40025xxx` for the merge (~2–3 emu sessions). NOTES
+   "Session 34".
 2. **DIRECT JUMP v2** — box-free overlay: revive the dead-code `FUN_4005a0e0` + a
    close-on-tick hook instead of the 4-box `FUN_40059f8c`. Small; maybe wait for v1 HW.
 3. **Side-chain step 3 DSP** — "Session 17 continued (8)" open items: disasm payload B's
@@ -5738,3 +5737,45 @@ bank the (substantial) subsystem RE and move to another item.
 2. OR drive the full LIVE gesture in `emu_plock` (transport running + REC + poke
    `0x460d172a`) and watch `#1` across several frames — see empirically when/if
    a live edit reaches `#1`.
+
+## Session 34 (2026-09-07, `wip/mute-mode`) — the LIVE-erase drive: not tractable headless
+
+`emu_plock.py --s34`: loads the trigless bank, pokes the LIVE gates
+(`0x460d172a = 1`, `0x460d1a90 = 0`, `0x46c775ce = 4`) + the per-track gate
+`[0x80006508 + trk] = 1` (`0x4009b290(track+8)` must return 1), then calls
+`0x40041bc4` and watches `#1` / `+0x4900` / `+0x48d8` / the armed bitmap.
+
+**With the gate poked, `0x40041bc4` runs (`d0 = 0x1ff`) but writes only:**
+- `0x40041f70` → `0x46c7d344 |= <bit>` (arm a param)
+- `0x4004210e` → `0x46c7d2e4[a3] |= 1<<track`, with **`a3 = 0`**
+
+**No write to `#1`, `+0x4900`, or `+0x48d8`.** And `a3 = 0`, not step 4 —
+`0x40041bc4`'s working index is the `remul` sub-index out of `0x4009b2d4`
+(0–23), which collapses to 0 because the decode's inputs
+(`0x46c775bc[track+8]` = per-track pattern, `0x46c7759c[track+8]` = blob
+selector, the param cursor `0x800064e8+trk`) are all **0 / unset** in a headless
+boot. `0x100b14d0` (cur-pat) also drifts to 0; poking it doesn't help because
+the LIVE decode uses the per-track tables, not `0x100b14d0`.
+
+**Conclusion**: the LIVE `[NO]`+knob path is too UI/sequencer-state-dependent to
+drive synthetically without reconstructing the per-track pattern/blob tables, the
+param-page cursor, the playhead, and the record state — and even the partial run
+shows `#1` is never touched by `0x40041bc4`. The `+0x4900` (and the other working
+views) → `#1`/disk merge is **not** on the edit path; it must be on **SAVE** (or
+a STOP / pattern-exit commit).
+
+### Real status / decision (unchanged direction, firmer)
+
+The trigless-lock feature needs the `+0x4900` → `#1` merge, and that lives in the
+serialiser. Options, in order of likely payoff:
+1. **HW export-and-diff** — Session 13's original Phase 0. Build the targeted
+   test patterns on the MKI, export, diff the banks. This is the intended method
+   and sidesteps all the emu state problems. **Blocked on the MKI being back.**
+2. **Trace `0x400645ce` (SAVE PROJECT) + `0x40025xxx` (bank serialise)** for a
+   `+0x4900`/`+0x48d8` read that feeds `#1`/`TRAC`. ~2–3 sessions, emu-only.
+3. **Shelve** — 9 sessions of subsystem RE banked in `kb/file-format.md`; the
+   remaining gap is one well-defined merge in the save path.
+
+The detour's **core action stays validated** (S32): whenever we can identify a
+pure trigless lock that just lost its last lock, `#1[t][step] = 0xFF` +
+`0x400339d8` cleans it with zero collateral.

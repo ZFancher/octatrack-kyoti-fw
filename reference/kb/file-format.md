@@ -353,10 +353,27 @@ step)` working param-bitmap to 0 AND step is a pure trigless lock (`TRAC+0x00`
 and `+0x08/0x10/0x18` bits clear) → clear `#1[track][step]` (32 bytes → `0xFF`) +
 let `0x400339d8` refresh.
 
-*Open (Session 32)*: `0x40041bc4`'s step/track/param decode (via `0x4009b290` /
-`0x4009b2d4`, tables `0x46c7d4cc/d4cd`) + the erase/write discriminator; the
-`+0x4900` → `#1` serialise (unlocated); whether `#1`'s 32 bytes are per-page
-(sample/LFO/FX locks span pages — the predicate must not miss them).
+**Detour core action VALIDATED** (Session 32, `emu_plock.py --trigless`): on the
+trigless bank, `#1 t1 step 4 := 32×0xFF` then `0x400339d8` → `0x46c7d48c[4]` goes
+`0x43 → 0x41` (track-1 bit cleared → LED off), step 0 and other tracks
+untouched. `#1` is what the step handler reads and what serialises, so the fix
+sticks.
+
+**The gap** (Sessions 33–34): the `+0x4900` → `#1` merge is **not on the edit
+path**. `0x40041bc4` (LIVE erase) writes only `0x46c7d344` (arm bit) +
+`0x46c7d2e4[a3]` (`a3` = a `remul` sub-index 0–23 out of `0x4009b2d4`, not a
+step); `blob+0x4900` is referenced only by the LIVE cluster; the sequencer never
+reads it. So the working-view → `#1`/disk merge must be in the **SAVE serialiser**
+(`0x400645ce` / `0x40025xxx`) or a STOP / pattern-exit commit — unlocated.
+`0x4009b290(track+8)` = `[0x80006500 + track+8]` must be 1 to reach the erase
+body; the decode `0x4009b2d4` needs `0x46c775bc[track+8]` (per-track pattern),
+`0x46c7759c[track+8]` (blob selector), `0x800064e8+trk` (param cursor),
+`0x46c775ce` (edit step) — all unset in a headless boot, so the LIVE path is not
+drivable synthetically.
+
+**Best path forward** = Session 13's original **Phase 0: HW export-and-diff** on
+the MKI (targeted test patterns → export → diff banks). Blocked on the MKI.
+`emu_plock.py --s34` is the headless-drive attempt (dead end, kept as a record).
 
 `0x8000004a` is the "what does a knob turn do" bitfield: bit 0 → write the Part-data
 value (encoder `0x4004eb24`); bit 1 → the CC-lock path.

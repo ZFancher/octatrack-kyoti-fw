@@ -289,6 +289,104 @@ def cmd_trigless(rt):
     return True
 
 
+LIVE_EDIT_ACTIVE = 0x460d172a    # LIVE-REC p-lock edit active (gates 0x40041784 / 0x40041bc4)
+LIVE_GATE2       = 0x460d1a90    # must be 0
+EDIT_STEP_BASE   = 0x46c775ce    # [this] - a2@4 = the step 0x4009b2d4 targets
+ARMED_PARAM_LO   = 0x46c7d344    # 64-bit "param is live-armed" bitmap
+LIVE_ERASE_FN    = 0x40041bc4
+
+
+def cmd_s34(rt):
+    """Session 34: drive the LIVE-REC [NO]+knob erase (0x40041bc4) on the trigless
+    test bank + run play frames, watching #1 / +0x4900 / the armed bitmap -- does a
+    live edit EVER reach #1 (TRAC+0x59), and if so from which PC?"""
+    blob = blob_base(rt)
+    pat_blk = blob + DISK_PAT * PATTERN_STRIDE
+    tb = trac_base(rt, DISK_PAT, DISK_TRK)
+    trk = DISK_TRK
+    STEP = 4
+    one_a = tb + PLOCK_IN_TRAC + STEP * 32
+    print(f"\nblob {blob:#x}  TRAC(t{trk}) {tb:#x}  #1[{STEP}] @ {one_a:#x}")
+    print(f"  #1[{STEP}] before: {bytes(rt.uc.mem_read(one_a, 32)).hex(' ')}")
+    for nm, a, n in (("EDIT_STEP_BASE", EDIT_STEP_BASE, 4), ("cur-pat 0x100b14d0", 0x100b14d0, 1),
+                     ("cur-trk 0x100b14cc", 0x100b14cc, 1), ("LIVE_EDIT_ACTIVE", LIVE_EDIT_ACTIVE, 4),
+                     ("REC_ARM 0x800066a0", 0x800066a0, 4), ("TRANSPORT 0x800065b8", 0x800065b8, 4)):
+        print(f"  {nm:22} = {int.from_bytes(rt.uc.mem_read(a, n), 'big'):#x}")
+
+    # --- broad write hook -------------------------------------------------------
+    spans = [(tb + PLOCK_IN_TRAC, PLOCK_LEN),                 # #1 whole array
+             (pat_blk + 0x4900 + trk * 0x8b0, 0x8b0),          # +0x4900 this track
+             (pat_blk + 0x48d8 + trk * 0x8b0, 0x40),           # +0x48d8 hdr
+             (ARMED_PARAM_LO, 8), (LOCK_LIVE, 64), (LOCK_STORED, 64)]
+    wr = []
+
+    def on_w(u, acc, a, size, val, x):
+        wr.append((rt.sample, u.reg_read(er.eb.UC_M68K_REG_PC), a, size, val))
+    for lo, ln in spans:
+        rt.uc.hook_add(er.eb.UC_HOOK_MEM_WRITE, on_w, begin=lo, end=lo + ln - 1)
+    rt.uc.ctl_flush_tb()
+
+    def region(a):
+        if tb + PLOCK_IN_TRAC <= a < tb + PLOCK_IN_TRAC + PLOCK_LEN:
+            o = a - (tb + PLOCK_IN_TRAC)
+            return f"#1 step{o // 32} +{o % 32:#04x}"
+        b49 = pat_blk + 0x4900 + trk * 0x8b0
+        if b49 <= a < b49 + 0x8b0:
+            return f"+0x4900 +{a - b49:#x}"
+        if pat_blk + 0x48d8 + trk * 0x8b0 <= a < pat_blk + 0x48d8 + trk * 0x8b0 + 0x40:
+            return "+0x48d8 hdr"
+        if ARMED_PARAM_LO <= a < ARMED_PARAM_LO + 8:
+            return "ARMED_PARAM"
+        if LOCK_LIVE <= a < LOCK_LIVE + 64:
+            return f"LOCK_LIVE[{a - LOCK_LIVE}]"
+        if LOCK_STORED <= a < LOCK_STORED + 64:
+            return f"LOCK_STORED[{a - LOCK_STORED}]"
+        return hex(a)
+
+    def report(tag, n0):
+        print(f"\n  === {tag}: {len(wr) - n0} writes ===")
+        by_pc = {}
+        for _, pc, a, sz, val in wr[n0:]:
+            by_pc.setdefault(pc, [set(), set()])
+            by_pc[pc][0].add(region(a)); by_pc[pc][1].add(val)
+        for pc, (regs, vals) in sorted(by_pc.items()):
+            print(f"    pc {pc:#x}  {sorted(regs)}  vals={sorted(v for v in vals)[:6]}")
+
+    # --- LIVE-REC gates + edit-step ------------------------------------------------
+    rt.run(until=lambda r: r.pc == er.MAIN_SPIN)
+    rt.uc.mem_write(0x100b14d0, bytes([DISK_PAT]))
+    rt.uc.mem_write(0x100b14cc, bytes([trk]))
+    rt.uc.mem_write(0x80000000, bytes([trk]))
+    rt.uc.mem_write(LIVE_EDIT_ACTIVE, struct.pack(">I", 1))
+    rt.uc.mem_write(LIVE_GATE2, struct.pack(">I", 0))
+    rt.uc.mem_write(EDIT_STEP_BASE, struct.pack(">I", STEP))
+    # 0x4009b290(track+8) must return 1 -> [0x80006500 + track+8] = 1
+    print(f"  gate [0x80006500+{trk}+8] was {rt.uc.mem_read(0x80006508 + trk, 1)[0]:#x}, "
+          f"param [0x800064e0+{trk}+8] was {rt.uc.mem_read(0x800064e8 + trk, 1)[0]:#x}")
+    rt.uc.mem_write(0x80006508 + trk, bytes([1]))
+    print(f"\n  poked: LIVE_EDIT_ACTIVE=1  LIVE_GATE2=0  EDIT_STEP_BASE={STEP}  [0x80006508+{trk}]=1")
+
+    # --- build an a2 event + call the erase --------------------------------------
+    A2 = 0x46cf0000
+    for a2v4 in (0, 1, 0x12):
+        rt.uc.mem_write(A2, b"\x00" * 16)
+        rt.uc.mem_write(A2 + 2, bytes([0xFF]))         # a2@2
+        rt.uc.mem_write(A2 + 3, bytes([0x00]))         # a2@3
+        rt.uc.mem_write(A2 + 4, struct.pack(">I", a2v4))  # a2@4
+        n0 = len(wr)
+        rt.run(until=lambda r: r.pc == er.MAIN_SPIN)
+        try:
+            d0 = rt.call_as_main(LIVE_ERASE_FN,
+                                 args=(trk, 0xFF, 0, a2v4), budget=600_000)
+            print(f"\n  0x40041bc4(t{trk}, 0xFF, 0, a2@4={a2v4}) -> d0={d0:#x}")
+        except Exception as e:
+            print(f"\n  0x40041bc4 a2@4={a2v4} raised {type(e).__name__}: {e}")
+        report(f"erase a2@4={a2v4}", n0)
+
+    print(f"\n  #1[{STEP}] after: {bytes(rt.uc.mem_read(one_a, 32)).hex(' ')}")
+    return True
+
+
 def cmd_confirm(rt):
     blob = blob_base(rt)
     print(f"\nPART_PTR   : blob @ {blob:#x}")
@@ -560,18 +658,23 @@ def main():
     ap.add_argument("--trigless", action="store_true",
                     help="Session 31: load a DEMO copy with P11 t2 step 4's note bit cleared "
                          "(p-lock kept) and dump every mask/view for step 4 vs step 0")
+    ap.add_argument("--s34", action="store_true",
+                    help="Session 34: on the trigless bank, drive 0x40041bc4 (LIVE erase) + play "
+                         "frames and watch whether a live edit ever reaches #1 (TRAC+0x59)")
     a = ap.parse_args()
-    if not (a.confirm or a.watch or a.s27 or a.trigless):
-        ap.error("pick --confirm, --watch, --s27 or --trigless")
+    if not (a.confirm or a.watch or a.s27 or a.trigless or a.s34):
+        ap.error("pick --confirm, --watch, --s27, --trigless or --s34")
     if not DEMO_BANK1.exists():
         sys.exit(f"missing {DEMO_BANK1} (the factory OT DEMO export)")
 
-    rt = boot_and_load(make_trigless_demo() if a.trigless else None)
+    rt = boot_and_load(make_trigless_demo() if (a.trigless or a.s34) else None)
     ok = True
     if a.confirm:
         ok = cmd_confirm(rt)
     if a.trigless:
         ok = cmd_trigless(rt)
+    if a.s34:
+        ok = cmd_s34(rt)
     if a.s27:
         ok = cmd_s27(rt)
     if a.watch:
