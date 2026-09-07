@@ -5266,16 +5266,17 @@ Working model: the knob edits **#2** (`0x46c7ab30`) for the held step; a
 
 ### No-flash to-do board (Session 25 → onward)
 
-1. **[NEXT] p-lock eraser hunt + serialise (Session 28).** Session 27 LOCATED the
-   knob → p-lock **writer** = `0x4004ef54` — writes `blob + pat*0x8ed8 + 0x4900 +
-   step*0x20 + param*0x8b0 + 2` = value, and `0x46c7d2e4[step] |= 1<<param`.
-   `+0x4900` is a transient live-edit buffer (empty for the saved DEMO; #1
-   `TRAC+0x59` holds the real locks) → a serialise repacks it on save/pattern-change.
-   Arming works: `call_as_main(0x40050f20, (step, 1))`. NEXT: (a) understand the
-   `0x800000cc` gate on the value write; (b) `watch_reads` `+0x4900` during SAVE to
-   find the serialise; (c) find the `[NO]`+knob eraser (`0x4005fdc6`? `0x4004f2a4`?);
-   (d) design the auto-remove detour on `0x46c7d2e4[step]==0 && no-trig`. Full
-   detail in NOTES "Session 27".
+1. **[NEXT] p-lock serialise + eraser + detour (Session 29).** Sessions 27–28
+   mapped it: knob → p-lock **writer** `0x4004ef54(track, matchval, value)` →
+   `blob + pat*0x8ed8 + track*0x8b0 + step*0x20 + 0x4900 + 2`; **eraser**
+   `0x4004f124(track, b2, b3)` (`st`→0xFF); both from the dispatcher `~0x40062a00`
+   gated on `0x460d172e`. `0x400339d8` rebuilds the UI lock bitmaps —
+   `0x46c7d2e4[step]` (live `+0x4900`) & `0x46c7d48c[step]` (stored, `TRAC+59`),
+   each `byte[step]` = track bitmap — and is the **detour anchor**. NEXT: reconcile
+   the `TRAC+59` vs `TRAC+0x59` stored-record offset; `watch_reads` `+0x4900`
+   during SAVE for the serialise; drive the eraser; then hook `0x400339d8` /
+   eraser-exit to clear the trigless-lock trig-mask when a step's lock bit clears
+   and it has no note trig. Full detail in NOTES "Session 28".
 2. **DIRECT JUMP v2** — box-free overlay: revive the dead-code `FUN_4005a0e0` + a
    close-on-tick hook instead of the 4-box `FUN_40059f8c`. Small; maybe wait for v1 HW.
 3. **Side-chain step 3 DSP** — "Session 17 continued (8)" open items: disasm payload B's
@@ -5445,20 +5446,71 @@ the `0x46c7d2e4` per-step bitmap; a serialise repacks `+0x4900` → per-track TR
 `+0x4900`).**
 
 Other `+0x4900` writers (byte stores `11 4N 49 0x`): value `0x4004f062`; the
-`+0x4900` companion slot `0x4004f2a4` / `0x4004f3ac` / `0x4004f4d4` / `0x4004f830`;
+`+0x4900` companion slots `0x4004f2a4` / `0x4004f3ac` / `0x4004f4d4` / `0x4004f830`;
 grid-rec `0x400505f4` / `0x40050b98`; **release `0x4005fdc6`**.
 
-### Open / NEXT (Session 28)
+## Session 28 (2026-09-06, `wip/mute-mode`) — the p-lock op dispatcher + the LED-bitmap rebuild
 
-1. **`0x800000cc` gate** — the value write at `0x4004f062` sits behind
-   `0x4004f012: tst.l 0x800000cc; beq …skip`. NOTES calls `0x800000cc` "EXT LEN
-   GRID-REC" (PERSONALIZE), normally 0. Either that label is wrong, or there's a
-   second value-write path for `0x800000cc == 0`. Disasm `0x4004f000..0x4004f0a2`
-   carefully and check `0x800000cc`'s real default/meaning.
-2. **The serialise** `+0x4900` → TRAC `+0x62`: `watch_reads` on the pattern's
-   `+0x4900` region while driving a SAVE / CHANGE PATTERN; the reader PC is it.
-3. **The eraser** (`[NO]` + knob): check `0x4005fdc6` (release path, writes
-   `+0x4900`) and the `0x4004f2a4` sibling; the `[NO]` handler (corrected keycode).
-4. Then the auto-remove detour: after an erase makes `0x46c7d2e4[step] == 0` and
-   the step has no trig → clear the phantom-lock indicator (likely
-   `0x46c7d2e4[step]` itself is the indicator the sequencer / UI reads).
+### `0x4004ef54`'s arg0 = TRACK, not param
+
+The real caller `0x40062a82` passes `0x4004ef54(track = [0x80000000], a2@2, a2@8)`.
+Inside, `d7 = arg0`, and `d5 = 0x8b0 * d7`, `a4 = 1<<d7`, bitmap
+`0x46c7d2e4[step] |= 1<<d7`. So **`d7` is the track** (0–7). `--applyknob 3 90`
+passed `3` and got a write at `3*0x8b0` because it doesn't matter *what* d7 is —
+it's the stride. Corrected: `+0x4900` is **per-track** (`track*0x8b0`, step
+`*0x20`), and `0x46c7d2e4[step]` bit = **which track** has a live lock on that
+step. The 32-B step record's bytes `+0`,`+2`,`+3`,`+4`,`+5` are the **5 encoders**
+of the current param page (`0x4004ef54` writes `+2`; sibling `0x4004f124` `st`s
+`0xFF` into `+0`/`+3`/`+4`/`+5`).
+
+### The p-lock knob op dispatcher (`~0x40062a00`)
+
+A message handler; the event struct is in `a2` (`a2@0` = opcode, `a2@2` param /
+matchval, `a2@3`, `a2@4`, `a2@8` value/ptr). Each opcode: **if `0x460d172e != 0`
+(armed)** → a p-lock op; **elif `0x460d172a != 0`** → a non-armed sibling:
+
+| armed op | from | non-armed sibling |
+|---|---|---|
+| `0x4004f124(track, a2@2, a2@3)` — **eraser** (`st`→`0xFF` into `+0`/`+3`/`+4`/`+5`) | `0x40062a1c` | `0x40041bc4` |
+| `0x4004ef54(track, a2@2, a2@8)` — **writer** (`+2` value) | `0x40062a82` | `0x40041784` |
+| `0x4004f5f8(track, a2@2, a2@3, a2+8)` — third op | `0x40062afc` | — |
+
+`0x460d172a` = a second armed-ish flag (companion to `0x460d172e`).
+
+### `0x400339d8` — rebuilds the "step has a lock" bitmaps
+
+Zeroes `0x46c7d2e4[0..63]` and `0x46c7d48c[0..63]`, then for every track 0–7 ×
+step 0–63 × byte 0–31:
+- if the **live `+0x4900`** record byte `!= 0xFF` → `0x46c7d2e4[step] |= 1<<track`
+- if the **stored** record byte (`blob + pat*0x8ed8 + track*0x91a + step*0x20 +
+  59`) `!= 0xFF` → `0x46c7d48c[step] |= 1<<track`
+
+So **`0x46c7d2e4` = live-edit lock presence, `0x46c7d48c` = stored lock presence**,
+both `byte[step]` = track bitmap. These are the UI "does this step have a p-lock"
+indicators (LED / trig display). `0x400339d8` is the natural **detour anchor** for
+the auto-remove feature (it runs after edits to refresh the display).
+
+### Encoder `0x4004eb24` is the PART-param editor, not p-locks
+
+`0x4004eb24(desc@20, delta@24)`: audio path reads/writes `blob + part*3161 +
+track + 0x476c9` (the Part-data value), `[blob+0x95048] |= 1<<part`. Gated on
+`0x8000004a` bit 0. Not the p-lock path.
+
+### Open / NEXT (Session 29)
+
+1. **Reconcile the stored-record offset**: `0x400339d8` reads it at `TRAC + 59`
+   (`0x3b`); `emu_plock --confirm` proved #1 (== disk, exact 0x800 B) is at
+   `TRAC + 0x59` (89). 30 bytes apart — one is wrong, or `+0x3b` is a compact
+   companion. Re-check `--confirm`'s alignment.
+2. **The `0x800000cc` gate** on the `+2` value write (`0x4004f012`): is EXT LEN
+   GRID-REC really required, or is there another path? (`--applyknob` forced it.)
+3. **The serialise** `+0x4900` → TRAC: `watch_reads` `+0x4900` during SAVE / CHANGE
+   PATTERN → the reader PC.
+4. **Drive the eraser** `0x4004f124(track, b2, b3)` empirically — trace what the
+   `[NO]`+knob / knob-past-min gesture posts as the `a2` event (opcode + `a2@2`).
+5. **The detour**: hook `0x400339d8` (or the eraser's exit) — after an erase, for
+   each step where `0x46c7d48c[step]` bit `track` just cleared AND the step has no
+   note trig (`TRAC+0x00` mask), clear the trigless-lock trig-mask bit so the step
+   goes fully empty. (Need: which `TRAC` mask `+0x08/+0x10/+0x18` = "lock trig".
+   The DEMO has none — build a test pattern with a trigless lock, or find the
+   mask-set site in `0x4004f0xx` / `0x40050xxx`.)

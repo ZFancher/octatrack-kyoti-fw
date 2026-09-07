@@ -117,6 +117,14 @@ def cmd_s27(rt):
     print(f"\nblob {blob:#x}  pattern-block {pat_blk:#x}")
 
     tb = trac_base(rt, DISK_PAT, DISK_TRK)
+
+    print(f"\nTRAC RAM masks @ {tb:#x} (8-byte / 64-step bitmaps, byte7 bit0 = step 0):")
+    def steps_of(v):
+        return [i for i in range(64) if v[7 - i // 8] & (1 << (i % 8))]
+    for base in range(0x00, 0x50, 8):
+        v = bytes(rt.uc.mem_read(tb + base, 8))
+        print(f"  +{base:#04x}: {v.hex(' ')}   steps={steps_of(v)}")
+
     one = bytes(rt.uc.mem_read(tb + PLOCK_IN_TRAC, PLOCK_LEN))
     print(f"\n#1  TRAC+0x59 @ {tb + PLOCK_IN_TRAC:#x} (per-track, step*0x20):")
     for s in range(64):

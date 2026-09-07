@@ -284,25 +284,40 @@ never `0x40000000`. Session 26's fresh fn addresses are all 0x400 low):
   `0x4005100c`), `0x460d174a |= 1<<step` (u16 held bitmap, `0x40050fb8`),
   `0x460d174c = basestep<<4` (u16, `basestep = [0x460d1e04]`),
   `0x460d1746 = basestep<<4 + step`. Gate: `0x460d5db4 ∈ {0,3}`, `0x80000012==0`.
-- **knob → p-lock writer** = **`0x4004ef54(param@d7, matchval@fp, newval@a2)`**
-  ("apply to every held step"). Proved (`emu_plock.py --applyknob`, gates armed
-  via `0x40050f20`, `0x800000cc` forced) to write **exactly**:
-  `blob + pat*0x8ed8 + 0x4900 + step*0x20 + param*0x8b0 + 2` = the value
-  (`0x4004f062`), and `0x46c7d2e4[step] |= 1<<param` (`0x4004f09e`). Nothing to
-  #1 / #2 / the `0x1001aa50` mirror.
+- **p-lock knob-op dispatcher** = `~0x40062a00` (message handler, event struct in
+  `a2`: `a2@0` opcode, `a2@2` param/matchval, `a2@8` value). Each opcode: if
+  `0x460d172e != 0` (armed) → a p-lock op; elif `0x460d172a != 0` → a non-armed
+  sibling.
+  - **writer** `0x4004ef54(track@d7, matchval@fp, value@a2)` (from `0x40062a82`) —
+    ⚠️ arg0 is the **track** (`d7`, drives `d5 = track*0x8b0`, `1<<track`). Writes
+    `blob + pat*0x8ed8 + track*0x8b0 + step*0x20 + 0x4900 + 2` = value
+    (`0x4004f062`), `0x46c7d2e4[step] |= 1<<track` (`0x4004f09e`). Only the `+2`
+    byte; the record's `+0`/`+3`/`+4`/`+5` are the other 4 encoders of the page.
+  - **eraser** `0x4004f124(track, a2@2, a2@3)` (from `0x40062a1c`) — `st`→`0xFF`
+    into `+0`/`+3`/`+4`/`+5`.
+  - **op 3** `0x4004f5f8(track, a2@2, a2@3, a2+8)` (from `0x40062afc`).
 
-**`+0x4900` is a transient live-edit buffer, not the store.** `emu_plock.py --s27`:
-for the saved DEMO, `blob + 10*0x8ed8 + 0x4900 + …` is **all `0xFF`** while #1
-(`TRAC+0x59`) holds every DEMO lock and `0x46c7d2e4` is zero. Model: live edits →
-`+0x4900` (param-major) + `0x46c7d2e4` bitmap; a **serialise repacks `+0x4900` →
-per-track TRAC `+0x62` (#1)** on save / pattern-change; load goes TRAC → #2
-working set (not `+0x4900`). Other `+0x4900` byte writers: `0x4004f2a4` /
-`0x4004f3ac` / `0x4004f4d4` / `0x4004f830` (companion slot), `0x400505f4` /
-`0x40050b98` (grid-rec), `0x4005fdc6` (release).
+**`+0x4900` is a transient per-track live-edit buffer** (stride `track*0x8b0`,
+step `*0x20`), not the store. `emu_plock.py --s27`: for the saved DEMO it is all
+`0xFF` while #1 holds every lock and `0x46c7d2e4` is zero. Model: live edits →
+`+0x4900` + `0x46c7d2e4` bitmap; a **serialise repacks `+0x4900` → per-track TRAC
+`+0x62` (#1)** on save / pattern-change; load goes TRAC → #2 (not `+0x4900`).
+Other `+0x4900` byte writers: `0x4004f2a4` / `f3ac` / `f4d4` / `f830` (companion
+slots), `0x400505f4` / `0x40050b98` (grid-rec), `0x4005fdc6` (release).
 
-*Open (Session 28)*: the `0x800000cc` gate on the value write; the serialise
-(`watch_reads` `+0x4900` during SAVE); the `[NO]`+knob eraser (`0x4005fdc6`?
-`0x4004f2a4`?); then the auto-remove detour on `0x46c7d2e4[step]==0 && no-trig`.
+**`0x400339d8` rebuilds the UI "step has a lock" bitmaps** — zeroes
+`0x46c7d2e4[0..63]` + `0x46c7d48c[0..63]`, then for track 0–7 × step 0–63 ×
+byte 0–31: live `+0x4900` byte `!= 0xFF` → `0x46c7d2e4[step] |= 1<<track`;
+stored byte (`blob + pat*0x8ed8 + track*0x91a + step*0x20 + 59`) `!= 0xFF` →
+`0x46c7d48c[step] |= 1<<track`. So **`0x46c7d2e4` = live lock presence,
+`0x46c7d48c` = stored lock presence**, `byte[step]` = track bitmap. Detour anchor
+for the trigless-lock auto-remove.
+
+*Open (Session 29)*: `TRAC+59` (`0x400339d8`) vs `TRAC+0x59` (`--confirm`)
+stored-record offset (30 B apart — reconcile); the `0x800000cc` gate on the `+2`
+write; the serialise (`watch_reads` `+0x4900` during SAVE); drive the eraser;
+then the detour — clear the trigless-lock trig-mask bit when a step's
+`0x46c7d48c` bit clears and it has no note trig (`TRAC+0x00`).
 
 `0x8000004a` is the "what does a knob turn do" bitfield: bit 0 → write the Part-data
 value (encoder `0x4004eb24`); bit 1 → the CC-lock path.
