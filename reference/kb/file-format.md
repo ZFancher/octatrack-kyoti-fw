@@ -257,8 +257,16 @@ Flow (Session 38 corrections):
 - **pattern-enter / start-track** → `0x4009b842` / `0x4009c020` copy **#3 (SCENE)
   `0x46c7aa24` → #2**, per track (32 B + second array + bitmap). NOT #1→#2.
 - **step** (playhead) → step handler `0x4009d1e8` per-param loop `0x4009d7dc`:
-  reads `#1[step][param]` (`0x91a` stride); `!= 0xFF` → writes it into **#2**
-  unconditionally (no `+0x4900`/`+0x48d8` check). **So #1 drives playback.**
+  reads `#1[step][param]` (`0x91a` stride, `+0x59` — the `lea @(0x58,Xn);lea
+  @(1,An)`); `!= 0xFF` → writes it into **#2** unconditionally (no
+  `+0x4900`/`+0x48d8` check). Then **per-frame apply `0x4000bad4`** reads the
+  `#2` bitmap `0x46c75fa0` and applies to the engine. **Playback = `#1` → `#2`
+  → engine; `+0x4900` is nowhere in the chain (Session 39).**
+- **`+0x4900` → `#1` commit**: not found (S39). Not in edit (`0x4004ef54`) /
+  release (`0x4005fb44`) / save (`0x4008a740`) / pattern-enter / step-handler /
+  `0x4009da20` / frame-apply. `blob+0x4900` (`0x400e6ae0`) has 4 refs
+  image-wide, all in the LIVE cluster. The commit is on transport (STOP/PLAY,
+  `FW_TRANSPORT 0x4009b964`) / loop-wrap / a deferred task — untraced.
 - **LIVE edit** (`0x40041784`/`0x40041bc4`) → `+0x4900` + bitmaps only, **never #1**;
   arms a bit in `0x46c7d344/d348`.
 - **p-lock-mode exit** (`~0x40062120`) → draw family + `0x400339d8` (LED from #1) +

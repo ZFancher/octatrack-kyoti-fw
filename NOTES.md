@@ -6089,3 +6089,65 @@ so `#1` keeps the stale lock).
 `0x8b0` stride), writes `#1` (`0x91a` stride + `0x59`)", and check whether it's
 add-only. Dynamic: `emu_plock.py --commit` — load DEMO, plant a `+0x4900`
 sentinel + arm bit, `call_as_main(0x40062120)` (or the real exit), watch `#1`.
+
+## Session 39 (2026-09-07, `wip/mute-mode`) — the playback chain is `#1`-only; the `+0x4900`→`#1` commit is not in any edit/release/save path
+
+Hunted the `+0x4900` → `#1` commit (Session 38's open question). **Did not find
+it** — and mapped enough to know it is not where it "should" be.
+
+### The full playback chain — `+0x4900` is nowhere in it
+
+`#1` (`TRAC+0x59`) → **step handler `0x4009d1e8`** (per-param loop, reads
+`#1[step][param]`, `!= 0xFF` → writes `#2` `0x46c7ab30`) → **per-frame apply
+`0x4000bad4`** (reads `#2` bitmap `0x46c75fa0`, applies to the engine). Both
+disassembled; neither reads `blob+0x4900` (`0x400e6ae0`) or the LIVE bitmap
+`0x46c7d2e4`. The `lea @(0x58,Xn); lea @(1,An)` in the step handler = `TRAC+0x59`
+exactly (`0x58` is *hex* — brief-format displacement — earlier "+59 decimal"
+was a misread).
+
+### Nothing writes `#1` from `+0x4900`
+
+Fully disassembled and checked for a `#1` (`0x91a` stride + `0x59`) write that
+reads `+0x4900`:
+- **edit** `0x4004ef54` (grid-rec knob writer) → writes `+0x4902` + `0x46c7d2e4`,
+  calls `0x400369c8` (encoder-display preview — reads `+0x4900..+0x4905`, no
+  write), `0x4009da20`, `0x400418e0`. No `#1`.
+- **`0x400369c8`** — display only (fills `sp@20..44` with the 5 encoder values
+  to show, from `+0x4900` + the `pat*0x18b2` PART-view). No `#1`.
+- **release** `0x4005fb44` (grid-rec trig release, full disasm) → draws
+  (`0x4002ce54` / `0x4002cef0` → `0x400356a8` + `0x40041760` "get held step") +
+  clears the `+0x2470` 16-bit view + clears `+0x4900` to `0xFF` (`0x4005fdc6`) +
+  clears `0x46c7d2e4`/mirrors. **No `#1` write, no `+0x4900` → `#1` copy.**
+- **`0x4009da20`** (working-set rebuild, ran after every edit) — reads
+  `TRAC+0x50/0x51` (param header) + `#1`, builds `#2` / scheduled events /
+  `0x46c7a8xx`. Does not touch `+0x4900`; does not write `#1`.
+- **`blob+0x4900` (`0x400e6ae0`) has exactly 4 refs image-wide** — all in the
+  LIVE cluster (`0x40041f02/f72`, `0x40042546/642`). Nothing else, anywhere,
+  reads or writes it by that literal.
+
+### So the commit is on transport (STOP/PLAY) or a loop-wrap / deferred task
+
+LIVE edits *do* reach playback on hardware, and playback is `#1`-only, so a
+`+0x4900` → `#1` commit exists — just not in the edit / release / save /
+pattern-enter / step-handler / frame-apply paths. Remaining candidates:
+`FW_TRANSPORT` `0x4009b964` (STOP or PLAY case — complex, not yet traced),
+a pattern-loop-wrap commit, or a deferred/idle task. `0x40062120` (p-lock-mode
+exit) stays a candidate too — it clears the arm bitmap `0x46c7d344/d348`.
+
+### Honest status / decision (11 p-lock sessions: S26–34, S37–39)
+
+The data model is now **deeply mapped** (5 RAM structures, the disk chunk
+layout, the serialiser, the playback chain, every edit path). The one missing
+piece — the working-view → `#1` commit — has resisted a full static sweep of
+the cheap leads. Finding it is ~1–2 more emu sessions (trace `FW_TRANSPORT`'s
+stop path + a running-transport `emu_plock` that stops and watches `#1`), then
+design + build is ~2 more.
+
+**Recommendation: shelve the build until the MKI is back and do Session 13's
+Phase 0** — export targeted test patterns (pure trigless lock w/ 2 locks; after
+a LIVE erase of one; after erasing both; a manually-placed empty trigless lock;
+etc.) and diff the banks. That settles the commit + the "trigless lock ≡ ?"
+predicate directly and in one HW session, vs. several more emu sessions
+chasing the commit. All the RE is banked in `kb/file-format.md`. The detour
+core action (`clear #1[t][step] + 0x400339d8` → LED off) is already validated
+(S32) and will slot straight in once Phase 0 names the hook point.
