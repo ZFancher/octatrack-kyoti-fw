@@ -18,17 +18,28 @@ FUN_4009e884 (the real PC sender) is stubbed: the call is trapped, its args reco
 and control returned -- we only assert that dj_a calls it with (bank, pat) at the right
 times.
 """
-import pathlib, struct, sys
+import pathlib, struct, subprocess, sys
 from unicorn import *
 from unicorn.m68k_const import *
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 STUB = (ROOT / "out/patch_directjump.bin").read_bytes()
 LOAD = 0x400d7400
-DJ_A, DJ_B, DJ_C = 0x400d747a, 0x400d7534, 0x400d754e
+_nm = subprocess.run(["m68k-elf-nm", str(ROOT / "out/patch_directjump.elf")],
+                     capture_output=True, text=True).stdout
+SYM = {p[2]: int(p[0], 16) for p in (l.split() for l in _nm.splitlines()) if len(p) == 3}
+DJ_A, DJ_B, DJ_C, DJ_TOGGLE = SYM["dj_a"], SYM["dj_b"], SYM["dj_c"], SYM["dj_toggle"]
 PC_SEND = 0x4009e884
+CKSUM = 0x4001f23c            # FUN_4001f23c -- ANDY-block re-checksum
+SHOW_MSG = 0x40059f8c        # FUN_40059f8c(text, ticks, enable, on_timeout)
+YES_RESUME = 0x4005e4d0
+DJ_MSG_ON, DJ_MSG_OFF = SYM["dj_msg_on"], SYM["dj_msg_off"]
 
-DJ_MODE = 0x800000a8
+DJ_MODE = 0x800000d8
+SH_DJ = 0x100fff68
+PTN_MODE = 0x460d1742
+PTN_USED = 0x460d173e
+POPUP = 0x460e5cd0
 G_ARMED, G_STEP, G_PCPAT = 0x80006a40, 0x80006a41, 0x80006a42
 ACT_PAT, ACT_BANK = 0x800065be, 0x800065bd
 PEND_PAT, PEND_BANK = 0x800065c0, 0x800065bf
@@ -65,7 +76,12 @@ def mk():
     uc.mem_map(0x46000000, 0x1000000)
     uc.mem_map(0x80000000, 0x20000)
     uc.mem_map(0x41000000, 0x20000)
+    uc.mem_map(0x10000000, 0x1000000)      # metadata SRAM (ANDY block @ 0x100fff00)
     uc.mem_write(LOAD, STUB)
+    # the toggle stub calls two OS routines by absolute address -- stub each with an rts
+    # so the isolated run returns; the tests hook the sites to record the call.
+    for a in (CKSUM, SHOW_MSG):
+        uc.mem_write(a, b"\x4e\x75")
     # pattern-length table: index 4 -> 16, index 6 -> 64  (just two entries we use)
     for idx, ln in ((4, 16), (6, 64), (2, 8)):
         uc.mem_write(LEN_TBL + idx * 4, struct.pack(">I", ln))
@@ -255,6 +271,88 @@ def test_c():
     check("armed longer: STEP = 20", uc.mem_read(STEP, 1) == b"\x14")
 
 
+# ---------------------------------------------------------------- dj_toggle
+def run_toggle(event, ptn_mode, arr=0, popup=0, dj_mode=0, sh=0xdead):
+    """Drive dj_toggle. Returns (dj_mode, shadow, cksum_called, msg_text_ptr, ptn_used,
+    reached_yes_resume)."""
+    uc = mk()
+    uc.mem_write(DJ_MODE, struct.pack(">I", dj_mode))
+    uc.mem_write(SH_DJ, struct.pack(">I", sh))
+    uc.mem_write(PTN_MODE, struct.pack(">I", ptn_mode))
+    uc.mem_write(PTN_USED, struct.pack(">I", 0))
+    uc.mem_write(ARR_ACT, struct.pack(">I", arr))
+    uc.mem_write(POPUP, struct.pack(">I", popup))
+    # the YES handler's stack frame: 0(sp)=ret, 4(sp)=keycode(0x31), 8(sp)=event
+    sp0 = 0x41010000
+    uc.mem_write(sp0, struct.pack(">III", 0xCAFE, 0x31, event))
+    uc.reg_write(UC_M68K_REG_A7, sp0)
+    st = {"cksum": False, "msg": None, "yes_resume": False}
+
+    def hook(uc, addr, size, u):
+        if addr == CKSUM:
+            st["cksum"] = True
+        elif addr == SHOW_MSG:
+            sp = uc.reg_read(UC_M68K_REG_A7)
+            st["msg"] = struct.unpack(">I", uc.mem_read(sp + 4, 4))[0]  # 0(sp)=ret, 4(sp)=text
+        elif addr == YES_RESUME:
+            st["yes_resume"] = True
+            uc.emu_stop()
+        elif addr == 0xCAFE:            # the swallow path rts'd back to our fake caller
+            uc.emu_stop()
+
+    h = uc.hook_add(UC_HOOK_CODE, hook)
+    try:
+        uc.emu_start(DJ_TOGGLE, 0, count=20000)
+    except UcError:
+        pass
+    uc.hook_del(h)
+    return (struct.unpack(">I", uc.mem_read(DJ_MODE, 4))[0],
+            struct.unpack(">I", uc.mem_read(SH_DJ, 4))[0],
+            st["cksum"],
+            st["msg"],
+            struct.unpack(">I", uc.mem_read(PTN_USED, 4))[0],
+            st["yes_resume"])
+
+
+def test_toggle():
+    print("dj_toggle  ([PTN] + [YES]) --------------------------------------")
+
+    # OFF -> ON: PTN held, press, base view
+    dj, sh, ck, msg, used, resume = run_toggle(event=1, ptn_mode=1, dj_mode=0)
+    check("OFF->ON: DJ_MODE = 1", dj == 1)
+    check("OFF->ON: shadow = 1", sh == 1)
+    check("OFF->ON: re-checksummed", ck)
+    check("OFF->ON: popup text = 'DIRECT JUMP ON'", msg == DJ_MSG_ON, hex(msg or 0))
+    check("OFF->ON: PTN chooser suppressed (0x460d173e = 1)", used == 1)
+    check("OFF->ON: YES swallowed (no stock resume)", not resume)
+
+    # ON -> OFF
+    dj, sh, ck, msg, used, resume = run_toggle(event=1, ptn_mode=1, dj_mode=1)
+    check("ON->OFF: DJ_MODE = 0", dj == 0)
+    check("ON->OFF: shadow = 0", sh == 0)
+    check("ON->OFF: popup text = 'DIRECT JUMP OFF'", msg == DJ_MSG_OFF, hex(msg or 0))
+
+    # PTN not held -> stock YES, no toggle
+    dj, sh, ck, msg, used, resume = run_toggle(event=1, ptn_mode=0, dj_mode=0)
+    check("no PTN: DJ_MODE untouched", dj == 0)
+    check("no PTN: not re-checksummed", not ck)
+    check("no PTN: no popup", msg is None)
+    check("no PTN: falls through to stock YES (0x4005e4d0)", resume)
+
+    # release event -> stock
+    _, _, ck, msg, _, resume = run_toggle(event=0, ptn_mode=1, dj_mode=0)
+    check("release: stock path", resume and not ck and msg is None)
+
+    # PTN held but arranger up -> stock (don't shadow arranger-YES)
+    dj, _, ck, _, _, resume = run_toggle(event=1, ptn_mode=1, arr=1, dj_mode=0)
+    check("arranger: DJ_MODE untouched + stock path", dj == 0 and resume and not ck)
+
+    # PTN held but a modal popup is open -> stock
+    dj, _, _, _, _, resume = run_toggle(event=1, ptn_mode=1, popup=1, dj_mode=0)
+    check("popup open: stock path", dj == 0 and resume)
+
+
+test_toggle()
 test_a()
 test_b()
 test_c()

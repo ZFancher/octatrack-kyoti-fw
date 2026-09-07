@@ -1,21 +1,34 @@
 | SPDX-License-Identifier: MIT
 | SPDX-FileCopyrightText: 2026 Zac-Kyoti
 |
-| patch_directjump -- "DIRECT JUMP" PERSONALIZE entry + the sequencer hooks.
+| patch_directjump -- "DIRECT JUMP" front-panel toggle + the sequencer hooks.
 |
-|   DIRECT JUMP   0x800000a8   0 = "OFF"  -> stock: a cued pattern switches at the
-|                                            CHAIN AFTER point (PLEN by default),
-|                                            restarting at step 1.
-|                              1 = "ON"   -> a manually cued pattern switches on the
-|                                            NEXT step tick (stays in time -- NOT the
-|                                            instant the key is pressed) and playback
-|                                            CONTINUES from the current step position;
-|                                            the new pattern's Part loads at once; the
-|                                            MIDI Program Change goes out ~1 step ahead.
-|                                            Arranger and pattern chains are untouched.
+|   [PTN] + [YES]   toggles DIRECT JUMP  0 <-> 1, flashing "DIRECT JUMP ON" / "DIRECT
+|                   JUMP OFF" for ~0.7 s.  No PERSONALIZE entry (Session 21 re-scope).
 |
-| 0x800000a8 is the last free battery-backed PERSONALIZE word (0xd4/d8/dc are taken).
-| Zero refs in the stock image -> a freshly flashed unit reads 0 and is exactly stock.
+|   DIRECT JUMP  0 = "OFF"  -> stock: a cued pattern switches at the CHAIN AFTER point
+|                              (PLEN by default), restarting at step 1.
+|                1 = "ON"   -> a manually cued pattern switches on the NEXT step tick
+|                              (stays in time -- NOT the instant the key is pressed) and
+|                              playback CONTINUES from the current step position; the new
+|                              pattern's Part loads at once; the MIDI Program Change goes
+|                              out ~1 step ahead.  Arranger + pattern chains are untouched.
+|
+| STATE = 0x800000d8 (Session 21; was 0x800000a8).  Zero stock refs (image-wide scan),
+| and NOT in the stock PERSONALIZE word set (0x8c..0xd0).  It is volatile DSP shared RAM,
+| so persistence works like MUTE MODE's (NOTES Session 19): the setter also writes the
+| checksummed 'ANDY' battery-SRAM shadow 0x100fff68 (= 0x100fff00 + DJ_MODE - 0x80000070),
+| build_directjump.py extends the block restore pea 0x64 -> pea 0x70 at 3 sites, and --
+| because we DON'T go through the PERSONALIZE dispatcher's `jmp 0x4001f23c @ 0x40069074` --
+| the toggle stub re-checksums the block itself (jsr FUN_4001f23c).  Default 0 = stock.
+|
+| ---- the combo (RE: NOTES "Session 21") ----
+| PTN handler FUN_4005a044(keycode@4, event@8): press (event 1) sets 0x460d1742 = 1
+| ("PTN held") and clears 0x460d173e; on RELEASE the SELECT PATTERN chooser opens only if
+| 0x460d173e == 0.  No other key handler reads 0x460d1742, so [PTN]+X is entirely free.
+| We hook the YES handler 0x4005e4c8 (keycode 0x31): if event==press AND 0x460d1742 == 1
+| AND not-arranger AND no popup -> toggle + popup + set 0x460d173e (suppress the chooser)
+| + swallow YES.  Otherwise replay the displaced prologue and resume at 0x4005e4d0.
 |
 | ---- how the stock per-step switch works (FUN_400a1eea, see NOTES "Session 15") ----
 |   0x400a3fdc  DAT_800065b6 (master step, byte) ++ ; wraps to 0 at pattern length
@@ -41,12 +54,15 @@
 |   Hook C @0x400a4840  replaces `DAT_800065b6 = 0`: if armed, instead set D7 and
 |     DAT_800065b6 to (savedStep % newPatternLen) so every per-track position that the
 |     switch body derives from D7 resumes at the playhead; clear the arm flag
-|
-| Menu ABI: renderer FUN_40068e00 jsr's the getter (pushes D0 as the column text);
-| input FUN_40068fd0 calls (*setter)(delta @ 4(sp), wrap @ 8(sp)).
 
-    .equ DJ_MODE,   0x800000a8          | PERSONALIZE word (0 = OFF/stock, 1 = ON)
-    .equ NMAX,      1
+    .equ DJ_MODE,   0x800000d8          | state word (0 = OFF/stock, 1 = ON)
+    .equ SH_DJ,     0x100fff68          | its 'ANDY' battery-SRAM shadow
+    .equ CKSUM,     0x4001f23c          | FUN_4001f23c -- recompute the ANDY block checksum
+    .equ PTN_MODE,  0x460d1742          | 1 = [PTN] currently held (set by FUN_4005a044 press)
+    .equ PTN_USED,  0x460d173e          | !=0 on [PTN] release -> the chooser does NOT open
+    .equ POPUP,     0x460e5cd0          | !=0 = a modal popup is up (skip our combo then)
+    .equ SHOW_MSG,  0x40059f8c          | FUN_40059f8c(text, ticks, enable, on_timeout)
+    .equ YES_RESUME,0x4005e4d0          | back into the stock YES handler after the 2 moves
 
 |   free battery-backed scratch (this build has no lazypart/scene stubs to collide with)
     .equ G_ARMED,   0x80006a40          | 0 = idle, !=0 = a direct jump is armed
@@ -71,64 +87,63 @@
 
     .text
 
-| ================= PERSONALIZE menu =================
+| ================= [PTN] + [YES] toggle =================
+| Detour replaces the first 8 bytes of the YES handler 0x4005e4c8:
+|     0x4005e4c8  222f 0004   move.l 4(%sp),%d1     ; keycode
+|     0x4005e4cc  202f 0008   move.l 8(%sp),%d0     ; event
+| with `jmp dj_toggle` + nop.  On entry the stack is exactly what the stock handler saw:
+| 0(%sp) = return addr, 4(%sp) = keycode, 8(%sp) = event (1 press / 0 release / 2 hold).
+| Only D0/D1/A0 are touched; the stock resume path restores nothing, so that's fine.
 
-    .global lbl_directjump
-lbl_directjump:
-    .asciz "DIRECT JUMP"
-    .align 2
-vd_0:
-    .asciz "OFF"
-    .align 2
-vd_1:
-    .asciz "ON"
-    .align 2
-vd_tbl:
-    .long vd_0
-    .long vd_1
+    .global dj_toggle
+dj_toggle:
+    moveq   #1,%d0
+    cmp.l   8(%sp),%d0                 | event == press ?
+    bne.w   djt_stock
+    move.l  PTN_MODE,%d0
+    subq.l  #1,%d0
+    bne.w   djt_stock                  | [PTN] not held -> stock YES
+    tst.l   ARR_ACT
+    bne.w   djt_stock                  | arranger up -> don't shadow arranger-YES
+    tst.l   POPUP
+    bne.w   djt_stock                  | a modal popup is open -> stock
 
-    .global get_directjump
-get_directjump:
+|   --- our combo: flip DIRECT JUMP ---
     move.l  DJ_MODE,%d0
-    bpl.b   gd_hi
-    moveq   #0,%d0
-gd_hi:
-    cmpi.l  #NMAX,%d0
-    ble.b   gd_ok
-    moveq   #NMAX,%d0
-gd_ok:
-    lsl.l   #2,%d0
-    lea     vd_tbl,%a0
-    move.l  (%a0,%d0.l),%d0
-    rts
-
-    .global set_directjump
-set_directjump:
-    move.l  DJ_MODE,%d0
-    add.l   4(%sp),%d0
-    tst.l   8(%sp)
-    bne.b   sd_wrap
-    tst.l   %d0
-    bpl.b   sd_clhi
-    moveq   #0,%d0
-    bra.b   sd_store
-sd_clhi:
-    cmpi.l  #NMAX,%d0
-    ble.b   sd_store
-    moveq   #NMAX,%d0
-    bra.b   sd_store
-sd_wrap:
-    cmpi.l  #NMAX,%d0
-    ble.b   sd_wlo
-    moveq   #0,%d0
-    bra.b   sd_store
-sd_wlo:
-    tst.l   %d0
-    bpl.b   sd_store
-    moveq   #NMAX,%d0
-sd_store:
+    eori.l  #1,%d0
+    andi.l  #1,%d0
     move.l  %d0,DJ_MODE
-    rts
+    move.l  %d0,SH_DJ                  | battery-SRAM shadow
+    jsr     CKSUM                      | re-checksum the ANDY block (bypasses the menu path)
+
+    move.l  DJ_MODE,%d0
+    lea     dj_msg_off,%a0
+    tst.l   %d0
+    beq.b   djt_show
+    lea     dj_msg_on,%a0
+djt_show:
+    clr.l   -(%sp)                     | on_timeout = 0
+    pea     1                          | enable = 1
+    pea     0x28                       | ticks (~0.66 s -> 4 boxes drain fast)
+    move.l  %a0,-(%sp)                 | text
+    jsr     SHOW_MSG
+    lea     16(%sp),%sp
+
+    moveq   #1,%d0
+    move.l  %d0,PTN_USED               | so [PTN] release does NOT open the chooser
+    rts                                | swallow the YES key
+
+djt_stock:
+    move.l  4(%sp),%d1                 | displaced: move.l 4(%sp),%d1
+    move.l  8(%sp),%d0                 | displaced: move.l 8(%sp),%d0
+    jmp     YES_RESUME
+
+dj_msg_on:
+    .asciz "DIRECT JUMP ON"
+    .align 2
+dj_msg_off:
+    .asciz "DIRECT JUMP OFF"
+    .align 2
 
 | ================= Hook A @ 0x400a4006 =================
 | detour replaces `tst.b (0x8000667e).l` (6 B).  Runs every step tick.  The step engine

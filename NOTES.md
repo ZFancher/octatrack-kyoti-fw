@@ -4742,3 +4742,77 @@ than the menu version.
 - HW test: press the combo → overlay reads `DIRECT JUMP ON`, disappears ~0.7 s; press
   again → `OFF`; power-cycle → the setting persists; the combo's stock function (if any in
   another view) still works there; DIRECT JUMP behaviour matches Session 15's S2/S3.
+
+### Session 21 continued — RE closed + BUILT (emu-clean, NOT flashed)
+
+**Combo = [PTN] + [YES].** FUNC turned out NOT to be a plain keymap entry (no discoverable
+"FUNC held" flag in the time budget), so the user's fallback was taken — and it's
+genuinely clean: **no stock key handler reads `0x460d1742`** (the "[PTN] held" flag), so
+`[PTN]` + anything is entirely free as a chord.
+
+**Keymap RE** (26-byte records `{code, 0, press:u32, release:u32, h3:u32, aux:u32, 0,
+flags:u16}`; two tables T1 `0x400bfc10..` / T2 `0x400c01f4..`, selector structs at
+`0x400c090c` / `0x400c0920`). Keycodes: trig 1–16 = `0x00–0x0f` (`0x40060ce0`); track
+keys `0x10–0x17` (`0x40040250` → mute `FUN_40083ab4`); param-page keys `0x22–0x26`
+(`FUN_4005578c`, via `0x400a7280 = {0,2,1,3,4}`); **PTN = `0x2e`** (`FUN_4005a044`);
+**BANK = `0x2f`** (`0x4007af80`); **PAGE = `0x1b`** (`FUN_4004ffc4`); **YES = `0x31`**
+(`0x4005e4c8`); **NO = `0x32`** (`0x4005e25c`); MKII MAIN MENU = `0x1c`.
+
+**PTN handler `FUN_4005a044(keycode@4, event@8)`**: event 1 = press → `0x460d1742 = 1`,
+clear `0x460d173e`; event 0 = release → opens SELECT PATTERN (`FUN_40059f8c(0x400b484e,
+0xf0, 1, 0x40043418)`) **only if `0x460d173e == 0` and `0x460d1ab2 != 0`**. So a chord
+partner that sets `0x460d173e` makes the chooser never appear.
+
+**YES handler `0x4005e4c8(keycode@4, event@8)`**: checks arranger `0x460d1aec`
+(→ `jmp 0x4004903c`), then `0x800000b8` (`DISABLE YES/NO ARM`) → `rts`, else `bra
+0x4005e294` (arm). Does **not** read `0x460d1742`. First 8 bytes = `222f0004 202f0008`
+(`move.l 4(sp),d1 ; move.l 8(sp),d0`) — displace 8 with `jmp + nop`, resume `0x4005e4d0`.
+
+**Overlay:** `FUN_4005a0e0(text)` is a **bare text-popup builder** (own handle
+`0x460d1e64`, small font, no timeout) that is **DEAD CODE in stock 1.40C** (0 callers) —
+noted for a v2. **v1 uses `FUN_40059f8c(text, 0x28, 1, 0)`** — titled window with 4
+countdown boxes that drain in ~0.66 s, auto-closes via the existing `FUN_40056ab8` tick.
+Handle in `0x460d1e5c` (SELECT-window global) — the only side effect for < 1 s; the
+"in SELECT BANK" test also needs `0x460d1e60 == 0x4007b408` which we don't set.
+
+**`FUN_4001f23c`** (the ANDY re-checksum): self-contained, no args, sums `0x100fff04`
++252 B, `+= 514`, writes `0x100fff00`, `rts`. `dj_toggle` `jsr`s it after writing the
+shadow — mirrors the PERSONALIZE dispatcher's `jmp 0x4001f23c @ 0x40069074`.
+
+**`dj_toggle` @ `0x4005e4c8`**: `event == press` AND `0x460d1742 == 1` AND `0x460d1aec ==
+0` AND `0x460e5cd0 == 0` → `DJ_MODE ^= 1` @ `0x800000d8`, write shadow `0x100fff68`,
+`jsr FUN_4001f23c`, `FUN_40059f8c("DIRECT JUMP ON"/"OFF", 0x28, 1, 0)`, `0x460d173e = 1`,
+`rts` (swallow). Otherwise replay the 2 moves and `jmp 0x4005e4d0`.
+
+**Build** — `patch_directjump.s`: menu (label/getter/setter/value-table) **deleted**,
+`dj_toggle` added, `DJ_MODE` `0x800000a8` → `0x800000d8` + `SH_DJ 0x100fff68`. The 3
+sequencer hooks (`dj_a/b/c`) unchanged. `build_directjump.py`: **all menu-array surgery
+removed** (no relocation, no `moveq #15→#16`, no ref repoint); adds one detour
+(`0x4005e4c8`, 8 B, `jmp`) + the 3-site `pea 0x64 → 0x70` (identical to `build_mutemode.py`
+Session 19). → `out/OCTATRACK_OS1.40C_DIRECTJUMP.{syx,bin}` `140C_KYOTI`, **522 B changed
+vs stock** (was 684), round-trip ok, Bug-1 fix byte-identical, `patch_directjump` 498 B @
+`0x400d7400`. **NOT flashed.**
+
+**Verified — `tools/emu_directjump.py` : ALL GOOD.** New `test_toggle` (7 cases):
+OFF→ON / ON→OFF (DJ_MODE + shadow + re-checksum + right string + `0x460d173e` set + YES
+swallowed), PTN-not-held → stock resume, release event → stock, arranger up → stock,
+popup open → stock. `dj_a/b/c` tests unchanged, still green. (`emu_directjump.py` now
+reads the stub offsets from `out/patch_directjump.elf` via `nm` instead of hardcoding.)
+
+### HW test (adds to Session 15's list)
+
+- Base sequencer view: hold `[PTN]`, tap `[YES]` → "DIRECT JUMP ON" flashes ~0.7 s, no
+  SELECT PATTERN window. Tap again → "DIRECT JUMP OFF".
+- `[PTN]` tapped alone still opens SELECT PATTERN normally (4-second countdown intact).
+- `[YES]` alone still arms/disarms the sequencer; `[YES]` in a confirm dialog still works.
+- Power-cycle → the ON/OFF setting persists (this is the Session-19 mechanism on `0xd8`).
+- With DIRECT JUMP ON, the Session-15 S2/S3 behaviour (next-step switch, playhead resume,
+  PC ~1 step ahead) is unchanged.
+- Re-flash stock 1.40C → gone, no residue.
+
+### Still open / v2
+
+- The 4 countdown boxes under the text read as a SELECT-window; if the user wants a
+  cleaner look, v2 = revive the dead `FUN_4005a0e0` + a small close-on-tick hook.
+- `[PTN]` + `[YES]` shadows the (obscure) stock "arm while a pattern is cued" — acceptable
+  per the re-scope, but worth a note in the manual/README for this build.

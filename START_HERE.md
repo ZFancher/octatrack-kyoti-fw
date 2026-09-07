@@ -109,7 +109,7 @@ Everything below is here, emulator-verified, **nothing flashed**.
 | **DT** mute mode | built, `emu_dt.py` clean · `build_mutemode_dt.py` | `NOTES.md` "Session 12" |
 | **OT+FX → SOLO** (softmute V7) | built, `emu_solo.py` clean · `build_mutemode.py` on this branch | `NOTES.md` "Session 11" |
 | **4th MUTE MODE** — instant cut + FX tails + resume-at-playhead | RE'd, not built; gated on the same HW unknown as DT | `NOTES.md` "Session 14" |
-| **DIRECT JUMP** pattern-change mode | 3 sequencer hooks built + `emu_directjump.py` clean. **Activation being re-scoped** (Session 21): drop the PERSONALIZE menu → a front-panel key combo + a transient "DIRECT JUMP ON/OFF" overlay; `DJ_MODE` moves `0x800000a8`→`0x800000d8` + gets the Session-19 ANDY-shadow persistence. Needs a Ghidra session (combo choice, FUNC-held global, overlay primitive) before rebuild. | `NOTES.md` "Session 15" + "Session 21" |
+| **DIRECT JUMP** pattern-change mode | **Re-scoped + rebuilt (Session 21):** toggle is now **`[PTN]` + `[YES]`** (flashes "DIRECT JUMP ON/OFF" ~0.7 s) — no PERSONALIZE entry, so **no menu-array surgery**. `DJ_MODE` `0x800000a8`→`0x800000d8` with the Session-19 ANDY-shadow persistence. `patch_directjump.s` / `build_directjump.py` / `emu_directjump.py` updated, `emu_directjump.py` ALL GOOD (adds `test_toggle`). 522 B vs stock. **Not flashed.** | `NOTES.md` "Session 15" + "Session 21" (+ continued) |
 | **DSP side-chain compressor** | see below | `NOTES.md` "Session 17" (+ continued 1–8) |
 
 The shared HW unknown for **DT** and the **4th mode**: does the DSP keep advancing a

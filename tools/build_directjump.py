@@ -2,31 +2,33 @@
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2026 Zac-Kyoti
 """
-DIRECT JUMP -- stock 1.40C + the MIDI manual-trig fix + a "DIRECT JUMP" ON/OFF
-PERSONALIZE entry and the three sequencer hooks it gates.
+DIRECT JUMP -- stock 1.40C + the MIDI manual-trig fix + a [PTN]+[YES] front-panel
+toggle and the three sequencer hooks it gates.  (Session 21 re-scope: NO PERSONALIZE
+entry -- so NO menu-array surgery, the riskiest part of the earlier build.)
 
   1. patch_trigscale  -- MIDI manual-trig stall fix.  Byte-identical detour + cave to
                          build_trigscale_only.py / build_mutemode.py.
-  2. patch_directjump -- the "DIRECT JUMP" PERSONALIZE entry (getter/setter modeled on
-                         the stock LED BRIGHTNESS item), value in 0x800000a8, PLUS three
-                         detours into the per-step sequencer engine FUN_400a1eea:
-                           Hook A @0x400a4006  arm + send Program Change + force the
-                                               step==0 body on the next tick
+  2. patch_directjump -- four detours:
+                           dj_toggle @0x4005e4c8  the YES handler.  [PTN]+[YES] flips
+                                                  DIRECT JUMP 0<->1, flashes "DIRECT JUMP
+                                                  ON/OFF" ~0.7 s, writes the 'ANDY' shadow
+                                                  + re-checksums, suppresses the PTN
+                                                  chooser, swallows YES.  Any other YES
+                                                  press replays the displaced prologue.
+                           Hook A @0x400a4006  arm + send Program Change + force step==0
                            Hook B @0x400a42fa  bypass the CHAIN-AFTER gate when armed
                            Hook C @0x400a4840  resume every position at the playhead
-                                               (savedStep % newPatternLen) instead of 0
-                         All three are inert when DIRECT JUMP == 0 (a fresh unit) and
-                         when the arranger or a pattern chain is running.
+                         The 3 sequencer hooks are inert when DIRECT JUMP == 0 (a fresh
+                         unit) and when the arranger or a pattern chain is running.
 
-  UNFLASHED / UNVERIFIED: the hooks are emulator-checked only (tools/emu_directjump.py);
+  State word 0x800000d8 (was 0x800000a8): 0 stock refs, not a stock PERSONALIZE word,
+  and it gets the MUTE-MODE persistence treatment (Session 19): dj_toggle writes shadow
+  0x100fff68 and the build extends the 'ANDY' block restore pea 0x64 -> pea 0x70 at the
+  3 sites (0x4001f322 / 0x4001f3be / 0x4001fb24), so DIRECT JUMP survives a power cycle.
+
+  UNFLASHED / UNVERIFIED: hooks are emulator-checked only (tools/emu_directjump.py);
   FUN_400a1eea has Unicorn-unsupported instructions so the harness exercises the stubs
   on a hand-built state, not the whole handler.  Needs a hardware pass.
-
-  PERSONALIZE menu surgery is the proven build_mutemode.py technique: the three parallel
-  16-entry arrays (labels 0x400b2a34, getters 0x400b2a74, setters 0x400b2ac0) are copied
-  into the free code cave with ONE entry spliced in at index 2 (after "PREVIEW WITHOUT
-  FX"), the five array refs are repointed from the linker symbol table, and the item
-  count moveq #15 @0x40068fb2 -> #16.
 
 Usage:   python3 tools/build_directjump.py [VERSTR]      (default VERSTR = "140C_KYOTI")
 Outputs: out/mainos_directjump.bin, out/elek_directjump.bin,
@@ -54,21 +56,16 @@ PATCHES = [
     ("patch_trigscale", 0x400d7b00, None,
      [(0x4009b6f2, "cave", "203c0000091a", 18, "jmp")]),
     ("patch_directjump", 0x400d7400, None,
-     [(0x400a4006, "dj_a", "4a398000667e",     6, "jsr"),   # tst.b (0x8000667e).l
+     [(0x4005e4c8, "dj_toggle", "222f0004202f0008", 8, "jmp"),  # YES handler: move.l 4(sp),d1 ; move.l 8(sp),d0
+      (0x400a4006, "dj_a", "4a398000667e",     6, "jsr"),   # tst.b (0x8000667e).l
       (0x400a42fa, "dj_b", "203c00008e56",     6, "jsr"),   # move.l #0x8e56,d0
       (0x400a4840, "dj_c", "420013c0800065b6", 8, "jsr")]), # clr.b d0 ; move.b d0,(0x800065b6).l
 ]
 
-# --- PERSONALIZE menu arrays (stock) ---
-OLD_LBL, OLD_GET, OLD_SET, N_OLD = 0x400b2a34, 0x400b2a74, 0x400b2ac0, 16
-SPLICE_AT = 2                                            # after "PREVIEW WITHOUT FX"
-LBL_AT, GET_AT, SET_AT = 0x400d7700, 0x400d7780, 0x400d7800
-REFS = [(0x40068efe, OLD_LBL, "labels  move.l #imm,D5"),
-        (0x40068f0a, OLD_GET, "getters lea"),
-        (0x40069022, OLD_SET, "setters lea #1"),
-        (0x4006903e, OLD_SET, "setters lea #2"),
-        (0x40069056, OLD_SET, "setters lea #3")]
-COUNT_AT = 0x40068fb2                                    # moveq #15 -> #16
+# --- PERSONALIZE persistence: 0x800000d8 rides the 'ANDY' battery-SRAM restore ---
+#     memcpy(0x80000070, 0x100fff00, 0x64) at 3 sites -> 0x64 ends at 0x800000d3, one
+#     short of DIRECT JUMP's word.  Extend each to 0x70 (identical to build_mutemode.py).
+RESTORE_SITES = (0x4001f322, 0x4001f3be, 0x4001fb24)     # boot / validate / defaults
 FREE_END = 0x400d7c3c
 
 
@@ -126,33 +123,14 @@ def main():
             img[do:do + n] = branch + b"\x4e\x71" * ((n - 6) // 2)
             print(f"    0x{site:08x} -> {name}:{sym} 0x{s[sym]:08x}  ({kind}, {n} B)")
 
-    # --- PERSONALIZE menu: relocate the 3 arrays with DIRECT JUMP spliced at SPLICE_AT ---
-    print("\n=== PERSONALIZE menu ===")
-    new_entry = {OLD_LBL: syms["patch_directjump"]["lbl_directjump"],
-                 OLD_GET: syms["patch_directjump"]["get_directjump"],
-                 OLD_SET: syms["patch_directjump"]["set_directjump"]}
-    dst = {OLD_LBL: LBL_AT, OLD_GET: GET_AT, OLD_SET: SET_AT}
-    for old in (OLD_LBL, OLD_GET, OLD_SET):
-        ents = [int.from_bytes(img[o(old + i * 4):o(old + i * 4) + 4], "big") for i in range(N_OLD)]
-        ents = ents[:SPLICE_AT] + [new_entry[old]] + ents[SPLICE_AT:]      # 17 entries
-        d = dst[old]
-        spans.append((d, d + len(ents) * 4, f"menu@{d:08x}"))
-        if any(img[o(d):o(d + len(ents) * 4)]):
-            sys.exit(f"menu array cave 0x{d:08x} not free")
-        for i, v in enumerate(ents):
-            img[o(d + i * 4):o(d + i * 4) + 4] = v.to_bytes(4, "big")
-        print(f"  array 0x{d:08x}: {len(ents)} entries (16 stock + DIRECT JUMP @ idx {SPLICE_AT})")
-
-    for a, old, tag in REFS:
-        if bytes(img[o(a):o(a) + 4]) != old.to_bytes(4, "big"):
-            sys.exit(f"ref 0x{a:08x} ({tag}) is not 0x{old:08x}: {bytes(img[o(a):o(a)+4]).hex()}")
-        img[o(a):o(a) + 4] = dst[old].to_bytes(4, "big")
-        print(f"  repoint 0x{a:08x}  {tag}: -> 0x{dst[old]:08x}")
-
-    if bytes(img[o(COUNT_AT):o(COUNT_AT) + 2]) != b"\x72\x0f":
-        sys.exit(f"count 0x{COUNT_AT:08x} is not moveq #15: {bytes(img[o(COUNT_AT):o(COUNT_AT)+2]).hex()}")
-    img[o(COUNT_AT):o(COUNT_AT) + 2] = b"\x72\x10"
-    print(f"  count   0x{COUNT_AT:08x}  moveq #15 -> #16")
+    # --- PERSONALIZE persistence: extend the 'ANDY' block restore 0x64 -> 0x70 ---
+    print("\n=== PERSONALIZE persistence ===")
+    for site in RESTORE_SITES:
+        so = o(site)
+        if bytes(img[so:so + 4]) != b"\x48\x78\x00\x64":
+            sys.exit(f"restore-length pea 0x{site:08x}: {bytes(img[so:so+4]).hex()} != 48780064")
+        img[so + 3] = 0x70
+        print(f"  restore 0x{site:08x}  pea 0x64 -> pea 0x70  (0x800000d8 now rides the boot restore)")
 
     # --- no cave span may overlap another, nor run past the free zone ---
     spans.sort()
@@ -192,7 +170,8 @@ def main():
 
     print(f"\n  {OUT_SYX.name}  (MIDI DIN)  +  {OUT_BIN.name}  (CF card)")
     print(f"  version screen / SYSTEM STATUS -> OS VERSION will read:  {VERSTR}")
-    print("  PERSONALIZE -> DIRECT JUMP:  OFF (stock)  |  ON  (next-step switch, playhead-resume, PC ~1 step ahead)")
+    print("  [PTN] + [YES]  ->  toggles DIRECT JUMP, flashes DIRECT JUMP ON / OFF (~0.7 s).")
+    print("  ON = next-step switch, playhead-resume, PC ~1 step ahead.  Default OFF = stock.  Survives a power cycle.")
     print("  Revert = flash downloads/extracted/OCTATRACK_OS1.40C.syx")
 
 
