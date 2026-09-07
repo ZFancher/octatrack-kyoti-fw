@@ -73,11 +73,16 @@ PART block addresses (1..8 — **OctaLib notes "two sets of parts, why?"**, like
 
 ### Machine types
 
-Stored as consecutive bytes with the part definition. `00` = STATIC (default);
-FLEX has its own code. Machine-type→code table still open at the byte level, but
-firmware `FUN_40097168` dispatches `0-4 = FLEX/STATIC/THRU/NEIGHBOR/PICKUP`, and
-the FLEX/STATIC parameter descriptors are located: `0x400d2fe4` / `0x400d3176`
-(see `memory-map.md` "Effect & machine descriptor table").
+Machine-type byte values (octabam RTOS §10.13, by code + data — corrects the
+earlier "0/1 = FLEX/STATIC" guess): **`0` = STATIC · `1` = FLEX · `4` = PICKUP**;
+THRU / NEIGHBOR have no slot. FLEX/STATIC descriptors `0x400d2fe4` / `0x400d3176`
+(`memory-map.md`).
+
+**Per-track slot record — 5 bytes**, at part-record `+0x2d3 + 5*track + type`
+(RAM `blob + part*0x18b2 + track*5 + type + 0x8f04a`): byte `+0` = STATIC slot,
+`+1` = FLEX slot, `+4` = PICKUP buffer. Slot bytes are 0-based (`0` = slot 1,
+`128` = recording buffer R1 — the file's `SLOT=129`). PICKUP's setter forces
+`128+track` (its own recorder). `ot_project.py track-slot` writes these.
 
 ### Effect types → id  (from octa-bt-pt)
 

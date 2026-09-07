@@ -117,7 +117,9 @@ flag word: `0x46c7a6c0`.
 |---|---|---|---|
 | `0x800049d8` | C | Per-track voice state. Stride `0xA8`, 8 tracks. `byte[0]` = active. | NOTES L192 |
 | `FUN_40005178` | C | Queues per-track voice commands into mailboxes `0x46c7e9fa` / `0x800018be` / `0x800018de`, indexed `[t*4]`. | NOTES L196 |
-| `FUN_40097168` | L | Machine-type dispatch → 0–4 = FLEX / STATIC / THRU / NEIGHBOR / PICKUP | COVERAGE |
+| `FUN_40097168` | L | Machine-type page dispatch (5 PLAYBACK descriptor entries). ⚠️ the **stored machine-type byte** values are **0 = STATIC · 1 = FLEX · 4 = PICKUP** (octabam RTOS §10.13, by code + data — the trig-side slot lookup `0x400050b8` routes type 0 → STATIC arena `0x100d5b30+id*1096`, types 1/4 → FLEX arena `0x100b14f0+id*1096`). THRU/NEIGHBOR have no slot. | COVERAGE · octabam `47f6cc5` |
+| `0x80004f1c` | C | **per-track RECORDER state record** — 16 × 84 B (2 banks × 8 tracks, double-buffered; bank bit per track in `0x80004f18`). Arm caller fills the *other* bank (header `0x00000101`, `+2` = 1 pending); per-frame track fn `0x400068e4` promotes 1 → 2 and flips the bank. Not a sample-slot record. | octabam RTOS §10.13 |
+| `0x80003c20 + 16*type` | C | recorder **block-table reciprocal** = `2^31 / block_size` (type 0: 2048 / 3 B/sample · 1: 1024 / 6 · 2: 3072 / 2 · 3: 1536 / 4). `macl pos,recip` (fractional) = `pos / block`. | octabam RTOS §10.16 |
 | `FUN_40008f84(track)` | C | Start a graceful voice release — sets `DAT_8000184a \|= 1<<t` (release *state*). | NOTES L2703 |
 | `FUN_40008fe4(track)` | C | Wraps `FUN_40008f84`; also sets `DAT_8000184c = 0xff`. `FUN_40008fe4(0xffffffff)` = all. | NOTES L2709 |
 | `DAT_8000184a` | C | voice-release state bitfield (`1<<t`) | NOTES Session 9 |

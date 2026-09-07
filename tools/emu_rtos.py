@@ -55,6 +55,17 @@ def main(argv):
     if not OUR_IMAGE.exists():
         sys.exit(f"missing {OUR_IMAGE.relative_to(ROOT)}  -> ./fetch-os.sh && ./analyze.sh")
 
+    # octabam's emu_rtos now refuses route A on stock Unicorn 2.1.4 (its ColdFire EMAC
+    # halves every fractional product -- RTOS_FORK.md §10.16).  build_unicorn.sh parks a
+    # patched libunicorn where emu_bringup auto-detects it.
+    emac_lib = OCTABAM / ".venv" / "lib" / "unicorn-emac"
+    if not emac_lib.is_dir():
+        sys.exit(
+            f"missing the EMAC-patched Unicorn ({emac_lib.relative_to(ROOT)})\n"
+            f"  -> build it once (needs cmake):\n"
+            f"     ( cd {OCTABAM.relative_to(ROOT)} && PY=$(command -v python3) bash scripts/build_unicorn.sh )"
+        )
+
     passthru = list(argv)
     if not any(a == "--image" or a.startswith("--image=") for a in passthru):
         passthru = ["--image", str(OUR_IMAGE)] + passthru

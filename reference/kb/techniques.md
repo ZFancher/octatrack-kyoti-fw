@@ -40,7 +40,7 @@ PERSONALIZE entries.
 
 ### octabam `emu_rtos.py` — full-firmware emulator (route A)
 
-> source: `refs/octabam/docs/RTOS_FORK.md` @ `2f241e1` (2026-09-06)
+> source: `refs/octabam/docs/RTOS_FORK.md` @ `47f6cc5` (2026-09-07)
 
 Runs **the firmware's own scheduler**: the handoff trap, PIT0 ticking, all eleven
 tasks, tasks posting to each other through the kernel, a real CompactFlash mount,
@@ -56,12 +56,24 @@ dynamic analysis"). Kernel/task/interrupt map is in `memory-map.md` "Kernel / RT
 **Wired up (Session 23): `tools/emu_rtos.py`** — a thin wrapper (no vendoring: it
 runs `refs/octabam/tools/emu_rtos.py` in place with `--image` pointed at our
 `section_3_MAIN_OS.bin`, same call as `build_sidechain2.py` ↔ `dsp_modmap.py`).
-Plain `unicorn>=2.1` decodes the CFV4E ops fine. Verified on our image:
-- **M6a** (`--ms 800 --until-gate`) — 11 tasks created, scheduler running. **PASS.**
-- **M6b** (`--load-project`) — reads the DEMO's `bank01.work` PART FX ids through
-  the real storage stack. **PASS.**
-- **M6c** (`--sequencer --via-key`) — starts the transport, steps the bank *(slow:
-  ~10 s wall / 200 emulated ms; a 400-frame run is minutes)*.
+M6a / M6b verified on our image; M6c is slow (~10 s wall / 200 emulated ms).
+
+⚠️ **Needs the EMAC-patched Unicorn** (Session 25 / octabam RTOS §10.16): stock
+`unicorn 2.1.4` computes the ColdFire **fractional `macl`** as an unsigned product
+`>> 32`; hardware's is signed, `<< 1` then `>> 31` — so every EMAC result under
+stock Unicorn was *half* of hardware's, and octabam's `emu_rtos` now refuses route
+A on it. The firmware's `2^31/N` reciprocal idiom (recorder block walk, PCM pool
+`0x40095c46`, tempo/timing) only works with the fix, and ~5,600 EMAC-site
+instructions run per sequencer frame so a Python shim isn't viable. Build once
+(needs `cmake`):
+
+    ( cd refs/octabam && PY=$(command -v python3) bash scripts/build_unicorn.sh )
+
+It parks `libunicorn.2.dylib` in `refs/octabam/.venv/lib/unicorn-emac/` (gitignored)
+where `emu_bringup` auto-detects it via `LIBUNICORN_PATH`; `emac_selftest` then
+reports **OK**. Our `tools/emu_rtos.py` / `emu_plock.py` check for the dir and
+print this command if it's missing. (Also fixed: MAC-vs-MSAC is *extension*-word
+bit 8, not opcode bit 8 — stock added where the frame builder subtracts.)
 
 Key injection: **`press_key_live(handler_addr, edge)`** calls any key handler as
 `action(edge)` via `call_as_main` — parameterised, not just PLAY/REC/STOP. So the
