@@ -5266,18 +5266,17 @@ Working model: the knob edits **#2** (`0x46c7ab30`) for the held step; a
 
 ### No-flash to-do board (Session 25 → onward)
 
-1. **[NEXT] trigless-lock feature — build the detour (Session 32).** Session 31
-   settled the model: **a pure p-lock trigless lock is DERIVED** (`#1[step] !=
-   0xFF && TRAC+0x00 note bit clear`) — no separate flag. `#1` (`TRAC+0x59`) =
-   the store; `TRAC+0x0a`/`+0x48d8`/`+0x4900` = lazy working views. **`0x40041bc4`
-   (LIVE `[NO]`+knob erase) clears the working views but NOT `#1`** → emptied lock
-   survives, LED (`0x46c7d48c` ← `0x400339d8` ← `#1`) stays lit = Session 13's
-   complaint. **Detour (Option B)**: hook `0x40041bc4` exit — erase that zeroed
-   the `(track,step)` working param-bitmap AND step is a pure trigless lock →
-   clear `#1[track][step]` (32 B → 0xFF) + `0x400339d8` refresh. NEXT: pin
-   `0x40041bc4`'s step/track/param decode + erase-vs-write discriminator; find
-   the `+0x4900`→`#1` serialise; confirm `#1`'s 32 bytes cover all lock pages
-   (sample/LFO/FX); then build. NOTES "Session 31".
+1. **[NEXT] trigless-lock feature — the build (Session 33).** Model settled
+   (S31): trigless lock ≡ `#1[step] != 0xFF && TRAC+0x00 clear`, no flag; `#1`
+   (`TRAC+0x59`) = store; `0x40041bc4` (LIVE `[NO]`+knob erase) clears working
+   views but NOT `#1`. **S32: the detour's core action is VALIDATED** — hand-write
+   `#1[t][step] = 0xFF` + `0x400339d8` → `0x46c7d48c[step]` bit clears (LED off),
+   zero collateral. Detour: hook `0x40041bc4` exit → do the per-param `#1` clear
+   the firmware skips (`#1[curtrack][playheadstep][param] = 0xFF`) when the step
+   is a pure trigless lock; multi-pass falls out. NEXT: (a) per-track playhead
+   step global (from `0x4009d1e8`); (b) `0x40041bc4`'s erased-param index
+   (`fp@-2`/`a3`); (c) build `patch_triglock.s` + `build_triglock.py` →
+   `140C_KYOTI`. NOTES "Session 32".
 2. **DIRECT JUMP v2** — box-free overlay: revive the dead-code `FUN_4005a0e0` + a
    close-on-tick hook instead of the 4-box `FUN_40059f8c`. Small; maybe wait for v1 HW.
 3. **Side-chain step 3 DSP** — "Session 17 continued (8)" open items: disasm payload B's
@@ -5626,3 +5625,62 @@ Still needed for the build (Session 32):
    other pages, trig conditions — check whether those live in `#1`'s 32 bytes or
    a separate per-page record (`0x40041784` writes `+0x4902` for *one* page; the
    OT locks span several pages → `#1` is likely per-(page) not global).
+
+## Session 32 (2026-09-06, `wip/mute-mode`) — detour core action VALIDATED; decoder + lazy-load mapped
+
+### The detour's core action works (`emu_plock.py --trigless`, extended)
+
+On the trigless-lock test bank (P11 t2 step 4 = p-lock, no note): wrote
+`#1 t1 step 4 = 32×0xFF` by hand, re-asserted the pattern, called `0x400339d8`:
+`0x46c7d48c[4]` went **`0x43 → 0x41`** — bit 1 (track 1) **cleared**, bits 0/6
+(other tracks) preserved, step 0 unchanged. **So: clear `#1[track][step]` +
+`0x400339d8` = the dim-lock LED goes off, cleanly, no collateral.** And `#1` is
+what the step handler reads for playback and what serialises → the fix sticks.
+
+### `0x400339d8` (the rebuild) callers
+
+`0x40029bbc`, `0x4003ebf2`, `0x40040f70`, **`0x40041744`** (right before the LIVE
+writer `0x40041784`), `0x4004c912`, `0x4005063e`, `0x40050876`, `0x40061bbc`,
+`0x40062160`, `0x4006242e`, `0x4007351c`, `0x40073806`. The erase path
+(`0x40062a4e → 0x40041bc4`) does **not** call it directly — it calls `0x40045614`
+then redraws. So the detour must call `0x400339d8` itself (or the `#1` write +
+a redraw is enough — TBD).
+
+### `0x40043c7e` = the `#1` → RAM working-copy lazy-load
+
+`lea (0x58, a0, d5:l); lea (1, a2, a0:l)` → walks `#1[step][0..31]`, copies each
+non-`0xFF` byte to **`0x46c7dfda + page*32`** (a 4th working array, distinct from
+`#2` `0x46c7ab30` / `+0x4900` / `+0x48d8`). Gated on `0x400a6904` (param
+locked?) + `a4 != 0`. So the editor lazily materialises a step's `#1` record into
+`0x46c7dfda` when you land on it.
+
+### `0x4009b2d4` = the param-address resolver (not a step decoder)
+
+Maps `(param-page, param-index)` → a byte offset across the blobs, via tables
+`0x46c7756c/759c/75bc/75ce/757c`, `0x400aba50`, `0x400eb034`, `0x400e2230`,
+`0x400e6ad8` and constants `0xd728` / `0x285f00` / `0x1ae50`. It does **not**
+carry the step — the LIVE-erase step is the **sequencer playhead position** for
+the track (still to be located; the step handler `0x4009d1e8` indexes it).
+
+### `+0x4900` stride puzzle (unresolved)
+
+`0x4004ef54` (grid) addresses `+0x4900 + param*0x8b0 + step*0x20 + 2`;
+`0x40041bc4` (LIVE) addresses `+0x4900 + track*0x8b0 + param*0x20 + {0,3,4,5}`.
+The `0x8b0` stride is on **param** for one and **track** for the other, and the
+`0x20` stride is **step** vs **param**. One reading is wrong; the LIVE one
+(`track*0x8b0`, from the caller pushing `[0x80000000]` = track as arg0) is more
+likely right. Doesn't block the detour (which targets `#1`, not `+0x4900`).
+
+### NEXT (Session 33) — the build
+
+1. Locate the **per-track playhead step** global (from `0x4009d1e8`).
+2. Pin `0x40041bc4`'s erased-**param index** (the `fp@(-2)` / `a3` local; maps to
+   `#1`'s 0–31 index).
+3. Detour design: hook `0x40041bc4` exit (detour its `jsr` at `0x40062a4e`) →
+   `param = <decoded>; step = playhead[curtrack]; if TRAC+0x00/08/10/18[step]
+   bits all clear (pure trigless) { #1[curtrack][step][param] = 0xFF; if
+   #1[curtrack][step] now all-0xFF: (nothing — rebuild handles it) } ; call
+   0x400339d8`. This does the per-param `#1` clear the firmware skips → multi-pass
+   falls out naturally.
+4. Build `tools/patch_triglock.s` + `tools/build_triglock.py` → `140C_KYOTI`,
+   cave in `0x400d7400`+, EFT round-trip, `emu_plock` regression.

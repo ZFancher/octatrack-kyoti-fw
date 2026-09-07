@@ -265,17 +265,27 @@ def cmd_trigless(rt):
         print(f"    +0x48d8 hdr @ {p48:#x}: {v48.hex(' ')}")
         print(f"    +0x4900 rec @ {p49:#x}: nz={nz49}")
 
-    rt.run(until=lambda r: r.pc == er.MAIN_SPIN)
-    rt.uc.mem_write(0x100b14d0, bytes([DISK_PAT]))
-    try:
-        rt.call_as_main(0x400339d8, args=(), budget=2_000_000)
-    except Exception as e:
-        print(f"  rebuild: {e}")
-    stored = bytes(rt.uc.mem_read(0x46c7d48c, 64))
-    print(f"\n  0x46c7d48c (stored-lock bmp) nonzero: "
-          f"{[(s, hex(stored[s])) for s in range(64) if stored[s]]}")
-    print(f"  -> step 0 = {stored[0]:#04x}   step 4 = {stored[4]:#04x}  "
+    def rebuild_and_read():
+        rt.run(until=lambda r: r.pc == er.MAIN_SPIN)
+        rt.uc.mem_write(0x100b14d0, bytes([DISK_PAT]))
+        try:
+            rt.call_as_main(0x400339d8, args=(), budget=2_000_000)
+        except Exception as e:
+            print(f"  rebuild: {e}")
+        return bytes(rt.uc.mem_read(0x46c7d48c, 64))
+
+    stored = rebuild_and_read()
+    print(f"\n  0x46c7d48c after rebuild: step 0 = {stored[0]:#04x}   step 4 = {stored[4]:#04x}  "
           f"(bit {trk} = {'SET (shows as lock)' if stored[4] & (1 << trk) else 'clear'})")
+
+    # === Session 32: the detour's core action -- clear #1[trk][4], rebuild ===
+    a = tb + PLOCK_IN_TRAC + 4 * 32
+    print(f"\n  DETOUR ACTION: write #1 t{trk} step 4 @ {a:#x} = 32x0xFF, then rebuild")
+    rt.uc.mem_write(a, b"\xff" * 32)
+    stored = rebuild_and_read()
+    print(f"  0x46c7d48c after: step 0 = {stored[0]:#04x}   step 4 = {stored[4]:#04x}  "
+          f"(bit {trk} = {'still SET' if stored[4] & (1 << trk) else 'CLEARED -> LED off'})")
+    print(f"  (step 0 unchanged = {'OK' if stored[0] == 0x13 else 'REGRESSION'})")
     return True
 
 
