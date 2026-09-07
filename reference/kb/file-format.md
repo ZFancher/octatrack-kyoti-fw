@@ -297,13 +297,27 @@ never `0x40000000`. Session 26's fresh fn addresses are all 0x400 low):
     into `+0`/`+3`/`+4`/`+5`.
   - **op 3** `0x4004f5f8(track, a2@2, a2@3, a2+8)` (from `0x40062afc`).
 
-**`+0x4900` is a transient per-track live-edit buffer** (stride `track*0x8b0`,
-step `*0x20`), not the store. `emu_plock.py --s27`: for the saved DEMO it is all
-`0xFF` while #1 holds every lock and `0x46c7d2e4` is zero. Model: live edits →
-`+0x4900` + `0x46c7d2e4` bitmap; a **serialise repacks `+0x4900` → per-track TRAC
-`+0x62` (#1)** on save / pattern-change; load goes TRAC → #2 (not `+0x4900`).
+**`+0x4900` is the per-track LIVE-REC value buffer** (stride `track*0x8b0`,
+step `*0x20`). `emu_plock.py --s27`: for the saved DEMO it is all `0xFF` while #1
+holds every lock and `0x46c7d2e4` is zero — but that is because the DEMO was
+never LIVE-edited, so its `+0x4900` **on-disk chunk** is all-`0xFF` (Session 37).
 Other `+0x4900` byte writers: `0x4004f2a4` / `f3ac` / `f4d4` / `f830` (companion
 slots), `0x400505f4` / `0x40050b98` (grid-rec), `0x4005fdc6` (release).
+
+⚠️ **`+0x4900` is NOT repacked into `#1` on save** (Session 37 — refutes the
+earlier model). The **bank-record serialiser `~0x4008a740`** (p-lock section
+`0x4008ac20`–`0x4008b0d6`; `a5` = RAM pattern base, `d3` = file handle, checksum
+`0x460fab5c`) writes, per track:
+- **loop 1 / TRAC chunk**: `#1` (`a5 + 0x91a*trk + 0x59`, `0x800`) **verbatim,
+  unconditional** + aux (`+0x859`, `0x40`) + aux2 (`+0x89b`, `0x80`)
+- **loop 2 / a separate per-track chunk**: `+0x48d0`/`+0x48d8`/`+0x48e0`/`+0x48e8`
+  /`+0x48f0` (8 B each) + `+0x48f8..+0x48ff` (bytes) + **`+0x4900`**
+  (`a5 + 0x8b0*trk + 0x4900`, `0x800`) verbatim + `+0x5100` (`0x80`)
+
+So `#1` and `+0x4900` are stored **side by side**, each read straight from RAM;
+the working-view → `#1` merge is on **LOAD** or **pattern-enter**, not save
+(Session 38 to pin which). `emu_plock.py --save` is the harness (sentinel `0x77`
+in `#1` vs `0x33` in `+0x4900`; both reach disk, in different chunks).
 
 **`0x400339d8` rebuilds the UI "step has a lock" bitmaps** — zeroes
 `0x46c7d2e4[0..63]` + `0x46c7d48c[0..63]`, then for track 0–7 × step 0–63 ×
@@ -355,21 +369,22 @@ let `0x400339d8` refresh.
 
 **Detour core action VALIDATED** (Session 32, `emu_plock.py --trigless`): on the
 trigless bank, `#1 t1 step 4 := 32×0xFF` then `0x400339d8` → `0x46c7d48c[4]` goes
-`0x43 → 0x41` (track-1 bit cleared → LED off), step 0 and other tracks
-untouched. `#1` is what the step handler reads and what serialises, so the fix
-sticks.
+`0x43 → 0x41` (track-1 bit cleared → LED off), step 0 and other tracks untouched.
 
-**The gap** (Sessions 33–34): the `+0x4900` → `#1` merge is **not on the edit
-path**. `0x40041bc4` (LIVE erase) writes only `0x46c7d344` (arm bit) +
-`0x46c7d2e4[a3]` (`a3` = a `remul` sub-index 0–23 out of `0x4009b2d4`, not a
-step); `blob+0x4900` is referenced only by the LIVE cluster; the sequencer never
-reads it. So the working-view → `#1`/disk merge must be in the **SAVE serialiser**
-(`0x400645ce` / `0x40025xxx`) or a STOP / pattern-exit commit — unlocated.
-`0x4009b290(track+8)` = `[0x80006500 + track+8]` must be 1 to reach the erase
-body; the decode `0x4009b2d4` needs `0x46c775bc[track+8]` (per-track pattern),
-`0x46c7759c[track+8]` (blob selector), `0x800064e8+trk` (param cursor),
-`0x46c775ce` (edit step) — all unset in a headless boot, so the LIVE path is not
-drivable synthetically.
+**The gap** (S33–34): `0x40041bc4` (LIVE erase) writes only `0x46c7d344` (arm
+bit) + `0x46c7d2e4[a3]`, never `#1`; and (S37) **save doesn't merge either** —
+`#1` and `+0x4900` are separate on-disk chunks (see above). So a LIVE-erase's
+clear of `+0x4900` *persists* across save/load on its own; the erased lock is
+almost certainly already gone for **playback**, and only the **LED**
+(`0x46c7d48c` ← `0x400339d8`, built purely from `#1 != 0xFF`) stays lit —
+exactly Session 13's "pure visual noise". The remaining question (S38): does
+the LOAD deserialiser / pattern-enter build the playback set (`#2`) with the
+working views masking `#1`? If yes → the fix is small: **(b) gate
+`0x400339d8`'s `0x46c7d48c` build on the step being live-present** (it already
+reads `+0x4900`). (a) hooking `0x40041bc4` to clear `#1` stays the fallback —
+`0x4009b290(track+8)` = `[0x80006500+track+8]` must be 1 to reach the erase
+body; the `0x4009b2d4` decode needs `0x46c775bc/759c[track+8]`, `0x800064e8+trk`,
+`0x46c775ce` — all unset headless.
 
 **Best path forward** = Session 13's original **Phase 0: HW export-and-diff** on
 the MKI (targeted test patterns → export → diff banks). Blocked on the MKI.

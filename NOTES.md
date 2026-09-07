@@ -5939,3 +5939,86 @@ loops never execute.
    `KEY = OFF` + `SC LISTEN` does nothing.)
 10. **No SVF instability**: hold `KFLT` at the extremes with a loud key for a
     while — no runaway / self-oscillation / DC.
+
+## Session 37 (2026-09-07, `wip/mute-mode`) — the SAVE serialiser: `+0x4900` has its OWN disk chunk, no repack into `#1`
+
+No-flash board item 1's alternative — "trace the SAVE serialiser for the
+`+0x4900` → `#1` merge". **Answer: there is no merge in save.** The bank
+serialiser writes `#1` and `+0x4900` to `bankNN.work` as *separate chunks*,
+each read verbatim from RAM.
+
+### The bank-record serialiser = `~0x4008a740` (p-lock section `0x4008ac20`–`0x4008b0d6`)
+
+Serialises one pattern record to the open bank file. Registers: `a5` = the RAM
+pattern base (`blob + bank*0x9b340 + pattern*0x8ed8`; confirmed — `+0x91a*trk +
+0x59` = `#1`, `+0x8b0*trk + 0x4900` = `+0x4900`, `+0x8e50` = pattern trailer),
+`d3` = file handle, `d2` = track loop 0–7. Two write callbacks: `0x400166b8`
+(`f(handle, src, len)`) and an `a2`/`a4` variant; a running 16-bit checksum at
+`0x460fab5c` is fed every byte.
+
+**Loop 1 (per track) — the TRAC chunk:**
+| src | len | = |
+|---|---|---|
+| `a5 + 0x91a*trk + 0x59` | `0x800` | **`#1`** — the 64×32 stored p-lock array, byte-for-byte |
+| `a5 + 0x91a*trk + 0x859` | `0x40` | aux (64×1) |
+| `a5 + 0x91a*trk + 0x89b` | `0x80` | aux2 (64×2) |
+
+**Loop 2 (per track) — a SEPARATE per-track chunk:** 4-byte tag from
+`0x400d169c`, 4 bytes from `0x460fab76`, the track byte, then
+| src | len |
+|---|---|
+| `a5 + 0x8b0*trk + 0x48d0` | 8 | param bitmap the LIVE writer *sets* |
+| `a5 + 0x8b0*trk + 0x48d8` | 8 | param bitmap the LIVE writer *clears* on erase |
+| `a5 + 0x8b0*trk + 0x48e0 / 0x48e8 / 0x48f0` | 8 each | |
+| `a5 + 0x8b0*trk + 0x48f8 … 0x48ff` | 1 each | |
+| **`a5 + 0x8b0*trk + 0x4900`** | **`0x800`** | **`+0x4900`** — the LIVE-REC value records, byte-for-byte |
+| `a5 + 0x8b0*trk + 0x5100` | `0x80` | |
+
+⇒ `#1` is written **verbatim** (`0x4008ac32`, unconditional `f(handle, #1, 0x800)`),
+never masked or filled from `+0x4900`. And `+0x4900` has its **own on-disk home**
+(`0x4008b054`). **The Session-27 / `kb/file-format.md` model that "a serialise
+repacks `+0x4900` → `#1` on save" is refuted.** (It's still consistent with
+`--s27`'s observation: the DEMO was never LIVE-edited, so its `+0x4900` *disk
+chunk* is all-`0xFF`, and the deserialiser fills `+0x4900` RAM with that.)
+
+### `tools/emu_plock.py --save` — the experiment
+
+Plants two sentinels on P11 t2 step 0 — `0x77` into `#1[0]`, `0x33`×32 into the
+`+0x4900[0]` record (+ `+0x48d8`=`0xff`, `0x46c7d2e4[0]|=1<<trk`, armed bitmap) —
+then posts SAVE PROJECT (`0x40023630(name)`, the opcode-9 poster) and lets the
+storage task run. Hooks READS+WRITES on `#1(t2)` and `+0x4900(t2)`, keyed by
+`card.writes`, and spies `card._commit_sector`.
+
+- **Serialiser SOURCE reads, all in one pass (`card.writes==1340`):**
+  `0x4008ac4c` reads `#1` (`0x800`); `0x4008b07a` reads `+0x4900` (`0x800`);
+  `0x4008adde…0x4008b044` read the `+0x48d0…+0x48ff` header bytes. → it reads
+  **both** structures, into **different** file chunks.
+- The trailing pattern-reset (`0x4009acec` fills `#1`, `0x4009add0` fills
+  `+0x4900`, `0x4009b23a` fills `#2` — all `0xFFFFFFFF`) is the LOAD-PROJECT-style
+  reset the emulator's SAVE call also triggers (the known "sys resets to bank A"
+  quirk); `#1[0] after` reads all-`0xFF` because of it, not the serialiser.
+
+### Where the merge actually is → Session 38
+
+Not in save. It must be on **LOAD** (the deserialiser `~0x4009ac00` clears then
+re-fills `#1` / `+0x4900` / `#2` — does it fill `#1` from the `+0x4900` disk
+chunk?) or at **pattern-enter** (`0x4009b84c` / `0x4009c02c` build `#2`).
+
+But the practical read: a LIVE-erase's clear of `+0x4900` **does** persist
+(own chunk), so the erased lock is (almost certainly) already gone for
+**playback**; only the **LED** — `0x46c7d48c`, rebuilt by `0x400339d8` purely
+from `#1` non-`0xFF` — stays lit. That's exactly Session 13's complaint
+("the lock stays lit … pure visual noise"). So the fix is likely the SMALL one:
+
+- **(b)** make `0x400339d8`'s `0x46c7d48c` (LED) build agree with playback —
+  it already reads `+0x4900` (→ `0x46c7d2e4`); gate `0x46c7d48c[step] |= 1<<trk`
+  on the step also being "live-present" (or never-live-touched). One function,
+  no `0x40041bc4` decode, no `#1` write.
+- (a) stays the fallback: hook `0x40041bc4` to also clear `#1[trk][step]`
+  (Session 32's validated action) — needs the hard headless decode.
+
+**NEXT (Session 38):** trace the deserialiser's `#1`/`+0x4900`/`#2` fill + the
+pattern-enter `#2` build (do the working views mask `#1`?) → decide (a) vs (b),
+then design the detour on the winner. `emu_plock.py --save` is the harness;
+add a `--load` mode that hooks the deserialiser after a bank whose `+0x4900`
+disk chunk was hand-cleared for one step.

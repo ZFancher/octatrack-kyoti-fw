@@ -387,6 +387,144 @@ def cmd_s34(rt):
     return True
 
 
+SAVE_PROJECT_POSTER = 0x40023630   # builds engine msg opcode 9 (worker 0x40023388), jsr 0x40000c3c
+LIVE_WRITE_FN = 0x40041784
+
+
+def cmd_save(rt):
+    """Session 37: does the SAVE serialiser merge the LIVE working views
+    (+0x4900 / +0x48d8) into #1 (TRAC+0x59) before writing bankNN.work?
+
+    Plant two distinguishable sentinels on P11 t2 step 0 -- 0x77 into #1, 0x33
+    into the +0x4900 record (+ the +0x48d8 bitmap / 0x46c7d2e4 / armed bits, as
+    a LIVE edit would leave them) -- then post SAVE PROJECT, run the storage
+    task, and read back both #1 and the sectors the card actually wrote.
+
+      disk step-0 byte == 0x77  -> serialiser reads #1 verbatim (no merge in save)
+      disk step-0 byte == 0x33  -> serialiser reads/merges +0x4900  (FOUND IT)
+      #1 written during save with 0x33 -> the merge, at the logged PC
+    """
+    blob = blob_base(rt)
+    pat_blk = blob + DISK_PAT * PATTERN_STRIDE
+    trk = DISK_TRK
+    tb = trac_base(rt, DISK_PAT, DISK_TRK)
+    one0 = tb + PLOCK_IN_TRAC + 0 * 32
+    p49 = pat_blk + 0x4900 + trk * 0x8b0            # +0x4900 record base for this track
+    p48 = pat_blk + 0x48d8 + trk * 0x8b0            # +0x48d8 param bitmap for this track
+    print(f"\nblob {blob:#x}  pat_blk {pat_blk:#x}  TRAC(t{trk}) {tb:#x}")
+    print(f"  #1[0]     @ {one0:#x} : {bytes(rt.uc.mem_read(one0, 32)).hex(' ')}")
+    print(f"  +0x4900   @ {p49:#x}")
+    print(f"  +0x48d8   @ {p48:#x} : {bytes(rt.uc.mem_read(p48, 16)).hex(' ')}")
+
+    # --- plant the sentinels -------------------------------------------------
+    SENT_ONE, SENT_49 = 0x77, 0x33
+    rt.uc.mem_write(one0 + 0x12, bytes([SENT_ONE]))          # #1 step0 param 0x12
+    rt.uc.mem_write(one0 + 0x00, bytes([SENT_ONE]))          # #1 step0 param 0x00 (also has a lock)
+    rt.uc.mem_write(p49 + 0 * 0x20, bytes([SENT_49]) * 0x20)  # +0x4900 step0 record, whole 32 B
+    rt.uc.mem_write(p48, b"\xff" * 8)                        # +0x48d8: every param "locked" in the view
+    d2e4 = bytearray(rt.uc.mem_read(LOCK_LIVE, 64))
+    d2e4[0] |= 1 << trk
+    rt.uc.mem_write(LOCK_LIVE, bytes(d2e4))                  # 0x46c7d2e4[step0] |= 1<<trk
+    rt.uc.mem_write(ARMED_PARAM_LO, b"\xff" * 8)             # 0x46c7d344/348 armed bitmap
+    print(f"\n  planted: #1[0]+0x00/+0x12 = {SENT_ONE:#x} ; +0x4900[0] = {SENT_49:#x}*32 ; "
+          f"+0x48d8 = ff*8 ; 0x46c7d2e4[0] |= 1<<{trk} ; armed = ff")
+
+    # --- hook READS + WRITES on #1(t2) and +0x4900(t2); the serialiser's SOURCE
+    #     is whatever it reads while building the disk buffer, BEFORE the save's
+    #     trailing pattern-reload clears #1 (the 0xFFFFFFFF fill at 0x4009acec).
+    one_lo, one_hi = tb + PLOCK_IN_TRAC, tb + PLOCK_IN_TRAC + PLOCK_LEN
+    rd, wr = [], []
+    RELOAD_MARK = [None]
+
+    def on_r(u, acc, a, size, val, x):
+        rd.append((rt.card.writes, u.reg_read(er.eb.UC_M68K_REG_PC), a))
+
+    def on_w(u, acc, a, size, val, x):
+        pc = u.reg_read(er.eb.UC_M68K_REG_PC)
+        wr.append((rt.card.writes, pc, a, size, val))
+        if pc == 0x4009acec and RELOAD_MARK[0] is None:
+            RELOAD_MARK[0] = len(rd)          # reads after this = the reload, not the serialise
+    for lo, ln in ((one_lo, one_hi - one_lo), (p49, 0x8b0)):
+        rt.uc.hook_add(er.eb.UC_HOOK_MEM_READ, on_r, begin=lo, end=lo + ln - 1)
+        rt.uc.hook_add(er.eb.UC_HOOK_MEM_WRITE, on_w, begin=lo, end=lo + ln - 1)
+    rt.uc.ctl_flush_tb()
+
+    def region(a):
+        if one_lo <= a < one_hi:
+            o = a - one_lo
+            return f"#1 step{o // 32} +{o % 32:#04x}"
+        if p49 <= a < p49 + 0x8b0:
+            return f"+0x4900 +{a - p49:#x}"
+        return hex(a)
+
+    img_before = bytes(rt.card.img)
+
+    # --- post SAVE PROJECT + let the storage task run -----------------------
+    rt.run(until=lambda r: r.pc == er.MAIN_SPIN)
+    name_ptr = 0x100f8378                              # FW_PROJECT_NAME (ec.set_names filled it)
+    nm = bytes(rt.uc.mem_read(name_ptr, 16)).split(b"\x00")[0].decode("latin1", "replace")
+    print(f"\n  SAVE PROJECT: name @ {name_ptr:#x} = {nm!r}   (card.writes now {rt.card.writes})")
+    try:
+        d0 = rt.call_as_main(SAVE_PROJECT_POSTER, args=(name_ptr,), budget=2_000_000)
+        print(f"  0x40023630(name) -> d0={d0:#x}")
+    except Exception as e:
+        print(f"  0x40023630 raised {type(e).__name__}: {e}")
+    w_at_post = rt.card.writes
+    rt.run(ms=12000)
+
+    # --- report ------------------------------------------------------------
+    print(f"\n  #1[0] after : {bytes(rt.uc.mem_read(one0, 32)).hex(' ')}")
+    print(f"  card: {rt.card.writes} sectors written (was {w_at_post} at post); "
+          f"reload-clear seen at read #{RELOAD_MARK[0]} of {len(rd)}")
+
+    cut = RELOAD_MARK[0] if RELOAD_MARK[0] is not None else len(rd)
+    print(f"\n  === RAM READS of #1(t2) / +0x4900(t2) BEFORE the reload-clear "
+          f"(the serialiser's source) ===")
+    by_pc = {}
+    for cw, pc, a in rd[:cut]:
+        e = by_pc.setdefault(pc, [0, set(), (99999, -1)])
+        e[0] += 1
+        e[1].add(region(a).split()[0] + " " + region(a).split()[1])
+        e[2] = (min(e[2][0], cw), max(e[2][1], cw))
+    for pc, (n, regs, (cwlo, cwhi)) in sorted(by_pc.items()):
+        print(f"    pc {pc:#010x}  x{n:<5} card.writes {cwlo}..{cwhi}  {sorted(regs)[:6]}")
+    if not by_pc:
+        print("    (nothing read #1 or +0x4900 before the reload)")
+    print(f"\n  === all WRITES to #1(t2)/+0x4900(t2), by PC ===")
+    wby = {}
+    for cw, pc, a, sz, val in wr:
+        e = wby.setdefault(pc, [0, set(), set()])
+        e[0] += 1
+        e[1].add(region(a).split()[0])
+        e[2].add(val & 0xffffffff)
+    for pc, (n, regs, vals) in sorted(wby.items()):
+        print(f"    pc {pc:#010x}  x{n:<5} {sorted(regs)}  vals={sorted(vals)[:6]}")
+
+    # --- locate the sentinels in the written image -----------------------
+    print(f"\n  === sentinels in card.img after save ===")
+    run33 = img_before.find(b"\x33" * 32)
+    print(f"    0x33*32 run in img BEFORE: {run33:#x}" if run33 >= 0 else
+          "    0x33*32 not in img before (good)")
+    i = rt.card.img.find(b"\x33" * 32)
+    while i >= 0:
+        ctx = bytes(rt.card.img[max(0, i - 16):i + 48])
+        hdr = b"\x10\x02\x00\xff" in bytes(rt.card.img[max(0, i - 64):i + 64])
+        print(f"    0x33*32 @ {i:#x} (sector {i // 512}){'  [p-lock chunk]' if hdr else ''}"
+              f"  ctx={ctx.hex(' ')}")
+        i = rt.card.img.find(b"\x33" * 32, i + 1)
+    # the #1 sentinel context: param header 10 02 00 ff then bytes, 0x77 at +0x00/+0x12
+    for pat in (b"\x10\x02\x00\xff",):
+        j = rt.card.img.find(pat)
+        seen = 0
+        while j >= 0 and seen < 8:
+            rec = bytes(rt.card.img[j:j + 0x40])
+            if 0x77 in rec:
+                print(f"    #1-hdr @ {j:#x} (sector {j // 512}): {rec.hex(' ')}")
+                seen += 1
+            j = rt.card.img.find(pat, j + 1)
+    return True
+
+
 def cmd_confirm(rt):
     blob = blob_base(rt)
     print(f"\nPART_PTR   : blob @ {blob:#x}")
@@ -661,9 +799,12 @@ def main():
     ap.add_argument("--s34", action="store_true",
                     help="Session 34: on the trigless bank, drive 0x40041bc4 (LIVE erase) + play "
                          "frames and watch whether a live edit ever reaches #1 (TRAC+0x59)")
+    ap.add_argument("--save", action="store_true",
+                    help="Session 37: plant #1 vs +0x4900 sentinels, post SAVE PROJECT, and see "
+                         "which one the serialiser writes to bankNN.work")
     a = ap.parse_args()
-    if not (a.confirm or a.watch or a.s27 or a.trigless or a.s34):
-        ap.error("pick --confirm, --watch, --s27, --trigless or --s34")
+    if not (a.confirm or a.watch or a.s27 or a.trigless or a.s34 or a.save):
+        ap.error("pick --confirm, --watch, --s27, --trigless, --s34 or --save")
     if not DEMO_BANK1.exists():
         sys.exit(f"missing {DEMO_BANK1} (the factory OT DEMO export)")
 
@@ -675,6 +816,8 @@ def main():
         ok = cmd_trigless(rt)
     if a.s34:
         ok = cmd_s34(rt)
+    if a.save:
+        ok = cmd_save(rt)
     if a.s27:
         ok = cmd_s27(rt)
     if a.watch:
