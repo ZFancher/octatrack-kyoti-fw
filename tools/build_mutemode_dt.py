@@ -18,8 +18,10 @@ Identical to build_mutemode.py except:
         out/OCTATRACK_OS1.40C_MUTEMODE_DT.syx   (MIDI DIN)
         out/OCTATRACK_MUTEMODE_DT.bin           (CF card, PROJECT -> OS UPGRADE)
 
-  MUTE MODE still lives in the free battery-backed PERSONALIZE word 0x800000dc.  Default 0
-  -> a freshly flashed unit is stock.  An OS upgrade resets PERSONALIZE.
+  MUTE MODE still lives in the free PERSONALIZE word 0x800000dc.  Default 0 -> a freshly
+  flashed unit is stock.  An OS upgrade resets PERSONALIZE.  Persistence is the Session-19
+  'ANDY'-shadow mechanism: patch_mutemode's setter writes 0x100fff6c and this build extends
+  the block restore pea 0x64 -> pea 0x70 at the 3 sites -- byte-identical to build_mutemode.py.
 
 Usage:   python3 tools/build_mutemode_dt.py [VERSTR]        (default VERSTR = "140C_KYOTI")
 """
@@ -140,6 +142,15 @@ def main():
         sys.exit(f"count 0x{COUNT_AT:08x} is not moveq #15: {bytes(img[o(COUNT_AT):o(COUNT_AT)+2]).hex()}")
     img[o(COUNT_AT):o(COUNT_AT) + 2] = b"\x72\x10"
     print(f"  count   0x{COUNT_AT:08x}  moveq #15 -> #16")
+
+    # --- PERSONALIZE persistence: extend the 'ANDY' block restore 0x64 -> 0x70 so
+    #     0x800000dc rides the boot restore (identical to build_mutemode.py, Session 19) ---
+    for site in (0x4001f322, 0x4001f3be, 0x4001fb24):
+        so = o(site)
+        if bytes(img[so:so + 4]) != b"\x48\x78\x00\x64":
+            sys.exit(f"restore-length pea 0x{site:08x}: {bytes(img[so:so+4]).hex()} != 48780064")
+        img[so + 3] = 0x70
+        print(f"  restore 0x{site:08x}  pea 0x64 -> pea 0x70")
 
     # --- no cave span may overlap another, nor run past the free zone ---
     spans.sort()

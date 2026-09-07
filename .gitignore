@@ -20,6 +20,7 @@ refs/*
 !refs/MANIFEST.lock
 
 # --- Local ---
+reference/KB_REFRESH.md
 .DS_Store
 .playwright-mcp/
 __pycache__/

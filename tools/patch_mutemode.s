@@ -12,8 +12,18 @@
 |                                            envelope, only new trigs are suppressed.
 |                                            Built only with --defsym DT_MODE=1.
 |
-| 0x800000dc is the same free battery-backed PERSONALIZE word patch_softmute already reads
-| as GATE, so 0 = a freshly-flashed unit behaves exactly like stock.
+| 0x800000dc is the same free PERSONALIZE word patch_softmute already reads as GATE, so
+| 0 = a freshly-flashed unit behaves exactly like stock.
+|
+| PERSISTENCE.  The 0x800000xx words are VOLATILE -- boot re-images 0x80000000.. from ROM,
+| so a raw `move.l %d0,MUTE_MODE` setting is lost on the next power cycle.  The durable
+| store is the checksummed 'ANDY' block in battery SRAM at 0x100fff00; boot restores
+| runtime 0x80000070 <- shadow 0x100fff00, memcpy length 0x64 (ends 0x800000d3 -- one byte
+| short of MUTE MODE).  build_mutemode.py patches that length 0x64 -> 0x70 at all three
+| restore sites (boot / validate / defaults), so 0x800000d4..df ride along; set_mutemode
+| writes its shadow at 0x100fff6c (= 0x100fff00 + 0x800000dc - 0x80000070) and the
+| PERSONALIZE key handler re-checksums the block for free (jmp 0x4001f23c @ 0x40069074).
+| Mechanism lifted from octamax c78ff70 (hardware-confirmed there; not yet on our MKI).
 |
 | The renderer (FUN_40068e00) calls the getter with jsr and pushes D0 as the column text;
 | D0/D1/A0/A1 are scratch.  The input handler (FUN_40068fd0) calls the setter as
@@ -22,7 +32,8 @@
 |   [RIGHT] -> (+1, wrap=0)   clamp
 |   [LEFT]  -> (-1, wrap=0)   clamp
 
-    .equ MUTE_MODE, 0x800000dc
+    .equ MUTE_MODE,    0x800000dc
+    .equ SH_MUTE_MODE, 0x100fff6c    | battery-SRAM shadow = 0x100fff00 + (MUTE_MODE - 0x80000070)
     .ifdef DT_MODE
     .equ N_MODES,   3                | OT / OT+FX / DT      (--defsym DT_MODE=1)
     .else
@@ -101,5 +112,6 @@ sm_wlo:
     bpl.b   sm_store
     moveq   #NMAX,%d0
 sm_store:
-    move.l  %d0,MUTE_MODE
+    move.l  %d0,MUTE_MODE       | volatile runtime word (read by the getter + patch_softmute)
+    move.l  %d0,SH_MUTE_MODE    | battery-SRAM shadow -- the key handler re-checksums on return
     rts

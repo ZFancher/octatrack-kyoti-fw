@@ -4653,6 +4653,237 @@ Sources: `refs/octabam/docs/{DSP,BUS,XBUS,PARAM_PAGES,CHIP,MODULES,FLASHING}.md`
 `addresses.json` @ e970dd0, `reference/kb/{dsp56300,memory-map}.md` (on `main`), our
 `COVERAGE.md` / `ARCHITECTURE.md`.
 
+## Session 18 (2026-09-06) — ems-octakit open-sourced; distilled into the KB (no firmware work)
+
+**KB ingest only. No RE of our own, no build. `main` branch.**
+
+emuyia/ems-octakit ("Octakit" — 4 Parts/Bank -> 256 Kits/Project) was closed-source
+(README + issue templates). Commit `ca3b527` ("add octakit source and build tools",
+newer than the `1817ffb` we had pinned) published the whole toolchain. Contributor
+added to `CREDITS.md`; `refs/MANIFEST.lock` bumped to `ca3b527` (ems-octakit only —
+octamax/octabam left where the last distillation pinned them).
+
+### What we took (all in `reference/kb/octakit-abi.md`, new file)
+- `runtime/abi.inc` — ~500 `.equ` symbols. `GK_STOCK_*` = named stock-firmware
+  addresses; `GK_*` = struct-offset / enum constants. Curated ~70 of them by
+  subsystem; full list stays in the gitignored `refs/` cache.
+- `runtime/firmware.json` — 598 SHA-guarded patch sites (`{offset,length,sha256,
+  writes}`) + 411 `m68k-relocate`/`stock-copy` ops. The OS SHA-256 it guards is
+  `164f3122…` — an independent 598-point confirmation of our image.
+- Toolchain: `m68k-elf-gcc 16.1.0 -mcfv4e -Os`; Rust patcher; `sparse-public-write-v3`
+  + `authenticated-stock-local-reconstruction-v1` (no stock bytes embedded).
+- **Licence: no `LICENSE` file** — same posture as octamax. Facts + small excerpts
+  only; not its `.S` / `abi.inc` in bulk.
+
+### Confirms our RE
+`GK_STOCK_BANK_POINTER 0x46c82456` = `_DAT_46c82456`; `GK_STOCK_BANK_DESERIALIZE
+0x4008ded0` = `FUN_4008ded0`; `GK_STOCK_ENGINE_PART_LOAD 0x40009094` =
+`FUN_40009094`; `GK_STOCK_PATTERN_STRIDE 0x8ed8`; `GK_PART_PAYLOAD_SIZE 0x18b2`;
+`GK_STOCK_BANK_SIZE 0x9b4d1` = the factory DEMO `bank01.work` size exactly.
+
+### New, and relevant to the Session 13 backlog
+- `.work`<->`.strd` store/restore choke points: `0x4008eda4` (banks store),
+  `0x4008f0b0` (banks restore), `0x4008ee74` / `0x4008f180` (project).
+- Per-parameter-page payload offsets into the part payload: PLAYBACK `0x1da`,
+  AMP `0x2f8`, FX1 `0x2fe`, FX2 `0x304`, twelve-byte `0x602`, slice-lock `0x2ca`.
+  -> the starting point for turning `file-format.md`'s p-lock `record[step][p]`
+  byte offsets into a parameter map.
+- `GK_STOCK_SEQUENCER_PART_STEP_OFFSET 0x1832` / `_CONDITION_OFFSET 0x1822` —
+  per-step + per-step-trig-condition data inside the part payload.
+- `GK_STOCK_PATTERN_HAS_CONTENT 0x4009a464` (is-pattern-non-empty predicate),
+  `GK_STOCK_PATTERN_CLEAR_CURRENT 0x4003a244`.
+- `GK_STOCK_APLIB_DEPACK 0x400e0aca` (from `loader.S`) -> `container-format.md`.
+- Watch: `GK_STOCK_PATTERN_PART_OFFSET 0x8e57` vs OctaLib `+0x8EE7` — different
+  framing, reconcile before any write.
+
+### Docs touched
+`reference/kb/octakit-abi.md` (new); `kb/{file-format,memory-map,container-format,
+techniques}.md`; `reference/EXTERNAL_RESEARCH.md`; `reference/UPSTREAM_INBOX.md`;
+`refs/MANIFEST.{toml,lock}`; `CREDITS.md`; `START_HERE.md` §5-6.
+
+## Session 19 (2026-09-06) — MUTE MODE now PERSISTS across power cycle (no-flash; build + emu)
+
+**`main` branch. Build + emulator only — the user is still away from the MKI. Flash-ready.**
+
+### The bug (latent in the shipped MUTEMODE build)
+`whatsnew.py` after a re-sync surfaced octamax `c78ff70`
+("PERSONALIZE toggles persist — write the battery-SRAM shadow"). It root-causes what our
+[NOTES L3263] only *inferred*: **`0x800000xx` is volatile DSP shared RAM**, re-imaged from
+ROM on every boot (`FUN_4000f938`, sole caller `0x40000512`: `0x401086f4` → `0x80000000`,
+0x3e88 B, then zero-fill to `0x80004000`). So our `move.l %d0,MUTE_MODE` setter was
+writing a word that is wiped at the next power-on — **the flashed MUTE MODE setting
+silently reverted to `OT` on every boot.** (Not noticed because the user sets it once per
+session.)
+
+### The mechanism (octamax's, verified against our image)
+The durable PERSONALIZE store is a checksummed 0x100-byte block in **battery SRAM at
+`0x100fff00`** — magic `'ANDY'` @ `+4`, version 36 @ `+0xe`, checksum over 252 B from `+4`
+(`FUN_4001f23c`; validate `FUN_4001f340`, defaults/zero-fill `FUN_4001f298`). Boot
+restores runtime ← shadow with **`memcpy(0x80000070, 0x100fff00, 0x64)`** at three sites
+(all confirmed in our `section_3_MAIN_OS.bin` as `48780064 4879 100fff00 4879 80000070
+<jsr/lea memcpy>`):
+
+| site | role |
+|---|---|
+| `0x4001f322` | boot restore |
+| `0x4001f3be` | validate-path restore |
+| `0x4001fb24` | defaults-path restore |
+
+`0x64` ends at `0x800000d3` — **one byte short of MUTE MODE at `0x800000dc`**. Stock
+setters write both copies; the PERSONALIZE key handler re-checksums after every setter
+(`jmp 0x4001f23c` at `0x40069074` — confirmed `4ef9 4001f23c 4e75` in our image).
+
+### The fix (`tools/patch_mutemode.s` + `tools/build_mutemode.py`)
+1. `build_mutemode.py`: each `pea 0x64` → `pea 0x70` at the three restore sites (asserts
+   the stock `48780064` first). Now `0x800000d4..df` ride the restore; end `0x800000df`
+   stops one short of the DSP frame selector `0x800000e0` (octamax's boundary).
+2. `patch_mutemode.s` `set_mutemode`: after `move.l %d0,MUTE_MODE`, also
+   `move.l %d0,SH_MUTE_MODE` where `SH_MUTE_MODE = 0x100fff6c` (= `0x100fff00 + 0x800000dc
+   - 0x80000070`). Checksum recompute is free via the existing key-handler `jmp`.
+   Patch grew 122 → 128 B in the `0x400d7600` cave (no overlap; well within `0x400d7c3c`).
+3. Getter and `patch_softmute`'s GATE read are unchanged — they read the runtime word,
+   which is now correctly restored at boot.
+
+Fresh unit / post-OS-upgrade: the defaults path zero-fills the whole block →
+`0x100fff6c = 0` → `MUTE MODE = OT` = stock. `get_mutemode` also clamps to `[0,1]`, so
+even a stale shadow byte can only read as a valid mode.
+
+### Verified — `tools/emu_mutemode.py` : ALL GOOD
+Added: static asserts the 3 restore sites are `pea 0x70` (and stock was `pea 0x64`) and
+that `set_mutemode` carries `move.l d0,0x100fff6c`; emu asserts the setter writes **both**
+runtime and shadow for every clamp/wrap case; and a boot-restore simulation
+(`memcpy(0x80000070, 0x100fff00, 0x70)`) shows `0x800000dc` now lands — and that a `0x64`
+copy would still miss it. Existing menu/detour/gate checks unchanged, still green.
+
+### Build
+`python3 tools/build_mutemode.py` → `out/OCTATRACK_OS1.40C_MUTEMODE.{syx,bin}` `140C_KYOTI`.
+597 bytes changed vs stock (was ~591). **NOT flashed** (no MKI access).
+
+### HW test to run when the MKI is back (adds to the Session-10 checklist)
+- PERSONALIZE → MUTE MODE → `OT+FX`; **power-cycle**; PERSONALIZE → MUTE MODE still reads
+  `OT+FX` and soft-mute behaviour is active without re-entering the menu.
+- Set back to `OT`, power-cycle, still `OT`.
+- Re-flash stock 1.40C, confirm PERSONALIZE is back to defaults.
+
+### For the `wip/mute-mode` pickup
+Same fix is needed there for **DT** (3rd mode, same word `0x800000dc`) — trivial, `build_mutemode_dt.py`
+gets the identical 3-site `pea` patch. **DIRECT JUMP uses `0x800000a8`** — see the
+Session 20 "DIRECT JUMP `0x800000a8`" note below for the check + the fix (move to `0x800000d8`).
+
+### Also seen in the re-sync (actioned in Session 20)
+octamax +114 (OCTAMAX 2.x); octabam +243 ("RTOS" fork). Re-distilled into `reference/kb/`
+in Session 20 below.
+
+## Session 20 (2026-09-06) — KB re-distillation + Session-13 p-lock groundwork (no-flash, `main`)
+
+**No firmware change. Re-synced the 6 refs (`MANIFEST.lock` bumped: octamax
+`7d9debc`, octabam `2f241e1`; others unchanged) and folded the new octamax +
+octabam research into `reference/kb/`.**
+
+### What went into the KB
+
+**`memory-map.md`:**
+- Descriptor table — corrected bounds `0x400d2e52..0x400d5f00` (31 × `0x192`),
+  full entry layout (`E+0x96` defaults / `+0xa2` mins / `+0xd2` counts / `+0x4e`
+  names / `+0x11a` fmt / `+0x176` class), **added MULTIBCOMP id `0x19` @
+  `0x400d5bdc`** (missing from the octa-bt-pt reading), master-track entry −1 @
+  `0x400d2e52`, page-class handlers `0x40032814`/`0x400328e4` gating on `0x800000a0`.
+- **Track-recorder page** — 3-tier storage (bank blob `[0x46c82456]+0x8f382+
+  part*6322+track*12` · SRAM mirror `0x100a54d0` · published `0x80000cf4+track*12+
+  [0x800000e0]*96`), part idx `0x100b14cf`. (Bryan T via octabam.)
+- **New "Kernel / RTOS"** — scheduler `0x40000550` (trap 0 + PIT0 vec 171), TCB
+  layout (`a7` at `+0x48`), current-TCB `0x800068fc`, top-prio `0x800068d8` into
+  `0x800068dc[8]`, vector install `0x40000d50`, VBR `0x40000000`, frame handler
+  `0x4000aad0` (INTC0 src 1 lvl 5), seq tick `0x400a1e0c` (src 32, INTFRC-delivered
+  while masked), 11 tasks + priorities.
+- **New "Per-step sequencer data"** — the 8 TRAC step masks, consumers
+  `0x4009d1e8` / `0x4009d382..0x4009da12`, flag word `0x46c7a6c0`.
+- **New "PERSONALIZE persistence"** — the `'ANDY'` block (from Session 19),
+  `FUN_4000f938` boot re-image, restore sites, free-word table with shadow addrs
+  and the `0x800000a8` DIRECT-JUMP caveat.
+- Cross-confirmed: `0x800065bd/be` = the sequencer's own playing bank/pattern
+  (octabam RTOS §8.3 ↔ our Session 15 DIRECT JUMP).
+
+**`file-format.md`:** rewrote the TRAC layout table with octabam's HW-confirmed
+mask map — masks `0x00..0x38` at tag-offsets `+0x09..+0x41`; **recorder trigs
+REC1/REC2/REC3 = masks `0x20/0x28/0x30` = offsets `+0x29/+0x31/+0x39`** (our old
+"delimiter @+0x49" was mis-read — it's two more per-step byte arrays). Added the
+**p-lock byte→parameter map hypothesis** (32-B record ≈ `[PLAYBACK|AMP|LFO|FX1|
+FX2]` × 6 + 2-B tail; cross-checked vs the DEMO filter-sweep: `0x12` = FX1 p0 =
+FILTER cutoff, `0x00` = PLAYBACK PITCH, `0x09` = AMP VOL — confidence **L**), a
+**Phase-0 `pattern-diff` test-pattern plan**, and the **Phase-1** handler-hunt
+plan. Confirmed disk↔RAM strides survive as `disk − header` (`0x8ed8` / `0x91a`).
+
+**`techniques.md`:** `emu_rtos.py` (the dynamic-analysis tool NOTES L413 asked
+for), `emu_check.py` (Unicorn diff-vs-stock pre-flash gate), `ot_project.py`
+(`pattern-trig`/`pattern-diff`), the menu-state-table-grow recipe (`0x400cbdac`,
+16→17, for adding a whole screen), the cave-ceiling lesson (`0x400d8000`; the OS
+`.bss` tail ~`0x40108800` is *not* free), the ANDY persistence recipe, OCTAMAX
+2.x dual-256 relocation techniques (noted, not adopted).
+
+**`dsp56300.md`:** `dsp_host` single-core caveat (cross-core bugs never repro
+off-unit); post-upgrade warm-up tag → power-cycle. **`FLASHING.md`:** added the
+"garbled audio after upgrade → power-cycle first" note + corrected the
+"battery-backed RAM" line to point at the ANDY mechanism.
+
+### Session-13 p-lock groundwork — state after this session
+
+- **Data model**: the TRAC block is now C-confident down to the mask level. The
+  p-lock array's internal parameter map is **L** (hypothesis in `file-format.md`).
+- **Still needs the MKI** — a `pattern-diff` pass over the 6 test patterns in
+  `file-format.md` "Phase 0" (30-min job; pins the trigless-lock mask bit + the
+  byte→param offsets in one go).
+- **Still needs RE** — the LIVE-REC `[NO]`+knob erase handler. Best path:
+  vendor octabam's `emu_rtos.py` and watch what a `[NO]`+knob event touches near
+  `[0x46c82456] + pat*0x18b2`. Porting `emu_rtos` is its own multi-session task
+  (brings octabam's kernel + card models) — not started.
+
+### DIRECT JUMP `0x800000a8` — collision check DONE (no brick risk anywhere)
+
+Whole-image scan of `section_3_MAIN_OS.bin` for `0x800000a8`: **zero ColdFire
+references** — no stock code reads or writes it. Also scanned the full stock
+PERSONALIZE word set (disassembled all 16 getters/setters):
+`0x8c 90 94 98 9c a0 a4 ac b0 b4 b8 bc c0 c4 c8 cc d0` — `0xa8` is not among them.
+So `0x800000a8` does **not alias** any stock setting.
+
+What "inside the restore span" actually means: the stock boot does
+`memcpy(0x80000070, 0x100fff00, 0x64)` = `0x80000070..0x800000d3`, and `0xa8` is
+in that range. DIRECT JUMP's setter writes only the runtime word `0x800000a8`,
+never the shadow `0x100fff38`, so **every boot overwrites `0x800000a8` from the
+shadow** → on a clean flash (ANDY defaults path zero-fills) that's 0 = `OFF`.
+Net effect: DIRECT JUMP's `ON` state does not persist across a power cycle
+(resets to `OFF`) — the same non-persistence bug Session 19 fixed for `0xdc`.
+**No corruption, no aliasing, no brick.**
+
+**Brick risk: none.** (1) DIRECT JUMP patches the PERSONALIZE menu arrays + 3
+sequencer hooks in `FUN_400a1eea` — it does not touch the bootloader. The
+Startup-Menu / MIDI-recovery bootloader is a separate flash sector that no OT OS
+update writes. (2) `0x800000a8` is volatile work RAM — nothing written there
+persists or can corrupt anything. (3) The ANDY block is self-healing: bad
+checksum at boot → `FUN_4001f340` → `FUN_4001f298` zero-fills it → PERSONALIZE
+resets to factory, recoverable in-menu or via EMPTY RESET. (4) DIRECT JUMP does
+not touch the checksum fn, does not extend the restore length, does not write the
+shadow region.
+
+**Fix when `wip/mute-mode` is picked up:** move `DJ_MODE` from `0x800000a8` to
+**`0x800000d8`** (also 0 refs; shadow `0x100fff68`), and give it the Session-19
+treatment — setter writes `move.l %d0,0x100fff68`, and since MUTE MODE's build
+already extends the 3 restore `pea 0x64 → 0x70`, `0xd8` rides along for free when
+the two features share a build. One-line changes to `patch_directjump.s` +
+`build_directjump.py`. Until then DIRECT JUMP just doesn't remember its toggle —
+harmless, and it has never been flashed.
+
+### Pre-flash gate recommendation (#5)
+Our per-feature `tools/emu_*.py` already cover the "does this splice compute the
+same effects as stock" question that `emu_check.py` formalises — keep them, but
+adopt its **diff-patched-vs-pristine-STOCK** structure if the count keeps growing.
+`emu_rtos.py` is the bigger prize (full task/interrupt interleaving) but is a
+port project; flagged in `techniques.md`, not scheduled.
+
+### Pushed
+`main` → `origin/main` this session (was 1 commit behind since Session 18):
+Session 18 KB commit + Session 19 persistence fix + this Session 20 re-distillation.
+
 ## Session 21 (2026-09-06, `wip/mute-mode`, RE / scoping only) — DIRECT JUMP: front-panel toggle, no menu
 
 **User re-scope: DIRECT JUMP activation must NOT live in PERSONALIZE. It should be a
@@ -4816,3 +5047,33 @@ reads the stub offsets from `out/patch_directjump.elf` via `nm` instead of hardc
   cleaner look, v2 = revive the dead `FUN_4005a0e0` + a small close-on-tick hook.
 - `[PTN]` + `[YES]` shadows the (obscure) stock "arm while a pattern is cued" — acceptable
   per the re-scope, but worth a note in the manual/README for this build.
+
+## Session 22 (2026-09-06, `wip/mute-mode`) — merge `main`, and DT/SOLO persistence
+
+**No new RE. Merge + a one-line consistency fix.**
+
+### Merged `main` → `wip/mute-mode`
+
+`wip` was 8 commits behind: the Session-18/19/20 knowledge base (kernel/RTOS map,
+step-mask map, keymap/keycodes, descriptor-table corrections, `octakit-abi.md`) and the
+**MUTE MODE `'ANDY'`-shadow persistence** (Session 19). Conflicts resolved:
+- `patch_mutemode.s` — union: the `DT_MODE` `.ifdef` (wip) + `SH_MUTE_MODE` equ + the
+  shadow write in `sm_store` (main). `set_mutemode` now writes both `0x800000dc` and
+  `0x100fff6c` in every build.
+- `NOTES.md` / `START_HERE.md` — kept both sides' session logs (14/15/17/21 from wip,
+  18/19/20 from main), wip's §6 frontier as the base.
+
+### DT + SOLO now persist too
+
+`build_mutemode_dt.py` gained the same 3-site `pea 0x64 → 0x70` restore extension as
+`build_mutemode.py`. Its "vs build_mutemode.py" divergence check now reports **0 bytes
+outside the DT delta** (was 3 — the restore-length bytes). So all three MUTE MODE builds
+on `wip` (`build_mutemode.py` OT+FX+SOLO, `build_mutemode_dt.py` +DT) carry the Session-19
+persistence, and DIRECT JUMP's `0x800000d8` rides the same extended restore.
+
+### Verified
+
+`emu_mutemode.py` / `emu_dt.py` / `emu_solo.py` / `emu_directjump.py` — **all ALL GOOD**
+post-merge. (`emu_solo.py`'s earlier 7-fail is gone — clean here.) Builds:
+`MUTEMODE` 639 B, `MUTEMODE_DT` 668 B, `DIRECTJUMP` 522 B vs stock; manual-trig fix
+byte-identical across all. Nothing flashed.

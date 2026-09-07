@@ -85,10 +85,11 @@ DIRECT JUMP pattern-change mode, and an in-progress DSP side-chain compressor.
 | **Bug 2** — MIDI LFO SETUP knobs send CC on the twin audio channel | Emulation says **likely already fixed in 1.40C**; awaiting HW confirmation. `tools/emu_lfocc.py`. |
 | **MUTE MODE** PERSONALIZE toggle (`main`) | `tools/patch_mutemode.s`, values `OT / OT+FX`. Menu surgery HW-confirmed (Session 10). |
 | ↳ **OT+FX** soft mute — dry cuts fast+clean, FX inserts ring (`main`) | `patch_softmute.s` **V6b** (V6 mechanism + the Session-10 gate/frame fixes). **Flashed on MKI, works.** `python3 tools/build_mutemode.py`. |
+| ↳ MUTE MODE **now persists across power cycle** (`main`, Session 19) | `0x800000xx` is volatile; setter now also writes the `'ANDY'` battery-SRAM shadow `0x100fff6c` and the build extends the block restore `0x64`→`0x70` at 3 sites. Emu-verified, **not yet flashed.** From octamax `c78ff70`. |
 | ↳ **OT+FX for SOLO** (non-soloed tracks keep FX tails) | `patch_softmute.s` **V7**, **`wip/mute-mode` only** — emulator-verified (`emu_solo.py`), never flashed. |
 | ↳ **DT** (Digitakt-style pure sequencer mute) | **`wip/mute-mode` only** — emulator-verified (`emu_dt.py`, `build_mutemode_dt.py`), never flashed. |
 | Maxolydian mods (branding, no BANK/PTN countdown, lazy Part transitions, arp key-scales, LED dirty indicators) | Not in the KYOTI builds. `tools/build.py` / `sysex/`; see `CREDITS.md`. |
-| **External-RE knowledge base** (`main`, Session 16) | `reference/kb/*.md` — address-keyed distillate of 6 prior-art repos (octabam DSP map, OctaLib file formats, octa-bt-pt descriptor table `0x400d2fe4`–`0x400d5e04`, the bank-file p-lock region). `python3 tools/refs/sync.py` populates the `refs/` cache; `reference/EXTERNAL_RESEARCH.md` is the index. |
+| **External-RE knowledge base** (`main`, Sessions 16 / 18 / 20 — merged into `wip`) | `reference/kb/*.md` — address-keyed distillate of the 6 prior-art repos (octabam DSP map + kernel/RTOS + step-mask map, OctaLib file formats, octa-bt-pt + octabam descriptor table, the bank-file p-lock region, ems-octakit's `abi.inc` ~500-address map → `kb/octakit-abi.md`, the keymap/keycodes). `python3 tools/refs/sync.py` populates the `refs/` cache; `reference/EXTERNAL_RESEARCH.md` is the index. |
 
 Build outputs on `main` (all `140C_KYOTI`, all carry the Bug-1 fix):
 - `build_trigscale_only.py` → `out/OCTATRACK_*PLAYSFREEFIX.*` — Bug-1 fix only, version stays `1.40C`.
@@ -99,14 +100,17 @@ Build outputs on `main` (all `140C_KYOTI`, all carry the Bug-1 fix):
 
 ## 6. Current frontier — UPDATE THIS EACH SESSION
 
-**As of 2026-09-03. You are on `wip/mute-mode`** — the active branch. `main` merged in
-(Session 16 KB infra: `refs/` + `tools/refs/` + `reference/kb/`; run `tools/refs/sync.py`
-to populate the `refs/` cache — `build_sidechain2.py` imports `refs/octabam/tools/dsp_modmap.py`).
-Everything below is here, emulator-verified, **nothing flashed**.
+**As of 2026-09-06. You are on `wip/mute-mode`** — the active branch. `main` is merged
+in through Session 20: the external-RE knowledge base (`reference/kb/*.md` — run
+`tools/refs/sync.py` to populate the `refs/` cache), the kernel/RTOS + step-mask maps,
+the keymap/keycodes, and the **MUTE MODE `'ANDY'`-shadow persistence** (Session 19; DIRECT
+JUMP already uses it, DT still needs it — see below). Everything here is emulator-verified,
+**nothing flashed**.
+
 
 | thread | state | detail |
 |---|---|---|
-| **DT** mute mode | built, `emu_dt.py` clean · `build_mutemode_dt.py` | `NOTES.md` "Session 12" |
+| **DT** mute mode | built, `emu_dt.py` clean · `build_mutemode_dt.py`. Persists across a power cycle (Session 22 folded in the `'ANDY'` shadow — byte-identical to `build_mutemode.py`). | `NOTES.md` "Session 12" |
 | **OT+FX → SOLO** (softmute V7) | built, `emu_solo.py` clean · `build_mutemode.py` on this branch | `NOTES.md` "Session 11" |
 | **4th MUTE MODE** — instant cut + FX tails + resume-at-playhead | RE'd, not built; gated on the same HW unknown as DT | `NOTES.md` "Session 14" |
 | **DIRECT JUMP** pattern-change mode | **Re-scoped + rebuilt (Session 21):** toggle is now **`[PTN]` + `[YES]`** (flashes "DIRECT JUMP ON/OFF" ~0.7 s) — no PERSONALIZE entry, so **no menu-array surgery**. `DJ_MODE` `0x800000a8`→`0x800000d8` with the Session-19 ANDY-shadow persistence. `patch_directjump.s` / `build_directjump.py` / `emu_directjump.py` updated, `emu_directjump.py` ALL GOOD (adds `test_toggle`). 522 B vs stock. **Not flashed.** | `NOTES.md` "Session 15" + "Session 21" (+ continued) |

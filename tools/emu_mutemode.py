@@ -24,6 +24,8 @@ STOCK = pathlib.Path("out/raw/section_3_MAIN_OS.bin").read_bytes()
 OLD_LBL, OLD_GET, OLD_SET = 0x400b2a34, 0x400b2a74, 0x400b2ac0
 LBL_AT, GET_AT, SET_AT = 0x400d7700, 0x400d7760, 0x400d77c0
 MUTE_MODE = 0x800000dc
+SH_MUTE_MODE = 0x100fff6c            # battery-SRAM shadow = 0x100fff00 + (MUTE_MODE - 0x80000070)
+RESTORE_SITES = (0x4001f322, 0x4001f3be, 0x4001fb24)   # boot / validate / defaults
 fail = 0
 
 
@@ -71,6 +73,20 @@ for a, old, dst in [(0x40068efe, OLD_LBL, LBL_AT), (0x40068f0a, OLD_GET, GET_AT)
     check(u32(IMG, a) == dst, f"ref 0x{a:08x} -> 0x{dst:08x} (was 0x{old:08x})")
 check(IMG[0x40068fb2 - BASE:0x40068fb2 - BASE + 2] == b"\x72\x10", "count moveq #15 -> #16")
 
+print("\n=== static: PERSONALIZE persistence (ANDY-block restore length) ===")
+for site in RESTORE_SITES:
+    o = site - BASE
+    check(IMG[o:o + 4] == b"\x48\x78\x00\x70" and STOCK[o:o + 4] == b"\x48\x78\x00\x64",
+          f"restore len 0x{site:08x}: pea 0x64 -> pea 0x70")
+check(u32(IMG, RESTORE_SITES[0] + 4) == 0x4879100f and
+      IMG[RESTORE_SITES[0] - BASE + 4:RESTORE_SITES[0] - BASE + 10] == b"\x48\x79\x10\x0f\xff\x00",
+      "restore src is pea 0x100fff00 (ANDY block)")
+check(sym["set_mutemode"] and True, "set_mutemode symbol present")
+# the .s must carry the shadow store
+sm_o = sym["set_mutemode"] - BASE
+sm_win = IMG[sm_o:sm_o + 0x60]
+check(b"\x23\xc0\x10\x0f\xff\x6c" in sm_win, "set_mutemode writes shadow (move.l d0,0x100fff6c)")
+
 print("\n=== static: detours ===")
 for site, elf, s in [(0x40004dc6, "out/patch_softmute.elf", "pre"),
                      (0x40005178, "out/patch_softmute.elf", "pre_v"),
@@ -90,6 +106,7 @@ def new_uc():
     uc = Uc(UC_ARCH_M68K, UC_MODE_BIG_ENDIAN)
     uc.mem_map(0x40000000, 0x01000000)          # code / rodata
     uc.mem_map(0x80000000, 0x00010000)          # PERSONALIZE flags + audio window (low part)
+    uc.mem_map(0x10000000, 0x01000000)          # metadata / battery SRAM (ANDY block @ 0x100fff00)
     uc.mem_map(0x00000000, 0x00010000)          # stack
     uc.mem_write(0x40000400, IMG)
     uc.reg_write(UC_M68K_REG_A7, 0x0000F000)
@@ -115,13 +132,14 @@ def call(entry, args=(), mm=None):
         pass
     d0 = uc.reg_read(UC_M68K_REG_D0)
     mode = struct.unpack(">i", uc.mem_read(MUTE_MODE, 4))[0]
-    return d0, mode, uc
+    shadow = struct.unpack(">i", uc.mem_read(SH_MUTE_MODE, 4))[0]
+    return d0, mode, shadow, uc
 
 
 print("\n=== emu: get_mutemode ===")
 g = sym["get_mutemode"]
 for mode, want in [(-1, "OT"), (0, "OT"), (1, "OT+FX"), (2, "OT+FX"), (99, "OT+FX")]:
-    d0, _, _ = call(g, mm={MUTE_MODE: mode})
+    d0, _, _, _ = call(g, mm={MUTE_MODE: mode})
     try:
         s = cstr(d0)
     except Exception:
@@ -138,8 +156,26 @@ cases = [
     (0, -1, 1, 1),                       # wrap underflow 0->1
 ]
 for start, delta, wrap, want in cases:
-    _, mode, _ = call(s_, args=(delta, wrap), mm={MUTE_MODE: start})
-    check(mode == want, f"start={start} delta={delta:+d} wrap={wrap} -> {mode}  (want {want})")
+    _, mode, shadow, _ = call(s_, args=(delta, wrap), mm={MUTE_MODE: start, SH_MUTE_MODE: 0x55})
+    check(mode == want and shadow == want,
+          f"start={start} delta={delta:+d} wrap={wrap} -> runtime {mode} / shadow {shadow}  (want {want})")
+
+print("\n=== emu: boot restore carries the shadow into the runtime word ===")
+# simulate the patched restore memcpy(0x80000070, 0x100fff00, 0x70) for the 4 bytes at
+# MUTE_MODE and confirm 0x800000dc is now inside the copied span (0x64 would not reach it).
+for stored in (0, 1):
+    uc = new_uc()
+    uc.mem_write(SH_MUTE_MODE, struct.pack(">i", stored))
+    uc.mem_write(MUTE_MODE, b"\xde\xad\xbe\xef")            # volatile: garbage after boot re-image
+    src = uc.mem_read(0x100fff00, 0x70)
+    uc.mem_write(0x80000070, bytes(src))                    # the patched-length restore
+    got = struct.unpack(">i", uc.mem_read(MUTE_MODE, 4))[0]
+    check(got == stored, f"shadow {stored} -> runtime {got} after 0x70 restore")
+    # and 0x64 would have missed it:
+    uc.mem_write(MUTE_MODE, b"\xde\xad\xbe\xef")
+    uc.mem_write(0x80000070, bytes(uc.mem_read(0x100fff00, 0x64)))
+    missed = struct.unpack(">I", uc.mem_read(MUTE_MODE, 4))[0]
+    check(missed == 0xdeadbeef, "  (0x64 restore leaves 0x800000dc untouched -- why stock does not persist)")
 
 print("\n=== emu: gated patch_softmute `pre` only engages for MUTE_MODE==1 ===")
 # `pre` displaced instr is `move.l 0x80000008,D5`; with SOLO clear + no muted tracks it

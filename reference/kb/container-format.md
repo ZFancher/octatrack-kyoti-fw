@@ -16,6 +16,7 @@ pack/unpack. `refs/elektron-firmware-tool/` is the pristine upstream for diffing
 |---|---|
 | decompressed MAIN OS | `out/raw/section_3_MAIN_OS.bin`, base `0x40000400` |
 | container / aPLib / checksum / ATA write / MIDI upgrade | `ARCHITECTURE.md`, `FUN_40001d4c` = DSP loader |
+| in-firmware aPLib depack routine | `0x400e0aca` (`GK_STOCK_APLIB_DEPACK`, from ems-octakit `runtime/loader.S` @ `ca3b527`); boot continue `0x40001e50` |
 | local patch to the tool | `tools/elektron-firmware-tool.patch` (2 changes, documented in `sysex/README.md`) |
 | build a flashable | `tools/build_*.py` → `.syx` (MIDI) + `.bin` (CF) |
 
@@ -46,3 +47,7 @@ Matches what our `vendor/elektron-firmware-tool` does — a useful cross-check i
   check for format-field or checksum fixes newer than our vendored copy
   (`whatsnew.py elektron-firmware-tool`).
 - **octabam** also rolls its own writer — third independent implementation.
+- **ems-octakit** `patcher/` (Rust) is a fourth — `sparse-public-write-v3` +
+  `authenticated-stock-local-reconstruction-v1`: it classifies every output byte
+  by origin and embeds no stock-derived blobs. See `kb/octakit-abi.md` "Build
+  recipe facts".

@@ -21,6 +21,30 @@ Confidence: **C**onfirmed (HW or real decompile) · **L**ikely (emu/inference) �
 | `0x46c8d18c` | C | MKI/MKII probe. `tstl 0x46c8d18c ; sne ; …` → `moveq #15` becomes 15 (MKI) or 16 (MKII) PERSONALIZE items. Stock 1.40C is one image for both. | NOTES §"MKI only" |
 | `FUN_40001d4c` | C | DSP **P-memory** loader — 24-bit word stream, starts `0x20000000 = 0x81`. Uploads the DSP program at startup. | NOTES L269 |
 | `0x80000037` | C | SOLO-mode flag (byte). `FUN_40004db8` branches on `tst.b 0x80000037`. | NOTES Session 11 |
+| `FUN_4000f938` | C | Boot **re-images the DSP shared-RAM window** from ROM: `0x401086f4` → `0x80000000` (`0x3e88` B) then zero-fill to `0x80004000`. Sole caller `0x40000512`. ⇒ **every `0x800000xx` word is volatile** — cleared on every power-on. | octamax `c78ff70` |
+
+## Kernel / RTOS scheduler
+
+> source: `refs/octabam/docs/RTOS_FORK.md` §2 @ `2f241e1` (2026-09-06), read byte-exact from the image. confidence: **C** for the addresses, **L/❓** for a few task rows. Our `COVERAGE.md` marks this untouched — this is the first map of it.
+
+| Addr | Conf | What |
+|---|---|---|
+| `0x40000550` | C | **Scheduler entry** — one handler for `trap #0` (vector 32) **and** PIT0 (vector 171); boot writes it into both slots at `0x400005d8/dc`. Masks interrupts, `moveml` saves regs into the current TCB, takes the head of the top ready list, clears the reschedule bit (`0xfc04c010 &= ~0x800`), re-arms PIT0 with `0xb3f`, `rte`s into the new task. |
+| `0x400005fc` | C | TCB builder. TCB: `+0x00/+0x04` next/prev · `+0x08` → list head `0x800068dc + 4·prio` · `+0x0c..+0x4b` saved `d0-d7,a0-a7` (**`a7` at `+0x48`**) · `+0x4c` ready flag. (`ARCHITECTURE.md` §4's "SP at 0x38" is wrong.) |
+| `0x800068fc` | C | current TCB pointer |
+| `0x800068d8` | C | top-priority pointer — points *into* the `0x800068dc[8]` array of per-priority list heads (higher index = higher priority) |
+| `0x40000d50(vec,fn)` | C | vector install → `[VBR + 4·vec]`; **VBR = `0x40000000`** (image's own first KB). Kernel init `0x40000db0` refills all 256 slots with the default trampoline `0x40000d74` (calls `[0x460ba970]`). |
+| `0x400008ea` | C | signal/reschedule → sets **INTFRCH bit 11 of INTC1** (`0xfc04c010`), source 43 / vector 171 = the scheduler. Make-ready `0x4000063c` does *not* force. |
+| `0x4000aad0` | C | **DSP frame handler** — INTC0 source 1, vector `0x41`, level 5. Installed `0x4001fc02`. Masks itself at entry; re-armed by state 7 of the chain it kicks. External-clock path `0x4000acbc`; countdown `0x46107570` decremented `tempo24<<4`/frame at `0x4000ad50`, forces INTC0 source 32 at `0x4000ae00`. |
+| `0x400a1e0c` | C | **Sequencer tick handler** — INTC0 source 32, vector `0x60`, installed by seq init `0x400a1050`/`0x400a109c`. The source is **left masked**; the tick is delivered by INTFRC regardless of the mask (MCF54455RM §17.2.3). ~28 ticks / 400 frames at 120 BPM internal. |
+| `0xb6` / src 54 | C | ATA interrupt → `0x40015304` (one sector per interrupt). PIT1 (storage delay) = vector `0xac` / src 44 → `0x40020d38`. |
+
+**Tasks — eleven** (octabam, measured under the real scheduler): prio 6 voice/DSP
+mailbox `0x40005540` · prio 5 storage(FAT/ATA) `0x4001ee30` · prio 4 key-repeat
+timer `0x4005593c` · prio 3 **UI** `0x40056c40` · prio 1 **engine** (46-opcode
+dispatcher) `0x4008445c` · prio 1 **sys** `0x40061a94` (serial+SPI, then spawns
+storage/UI/p3) · prio 0 **main** `0x4001f834` (init list, then idle `bras .` at
+`0x4001fc9c` — main *is* the idle task). Several prio-2/prio-1 rows still ❓.
 
 ## Sequencer clock / tick
 
@@ -31,6 +55,32 @@ Confidence: **C**onfirmed (HW or real decompile) · **L**ikely (emu/inference) �
 | `FUN_4009c550` | L | Sets tempo period from pattern data (`_DAT_46c82456 + pat*0x8ed8`) | NOTES L260 |
 | `FUN_400977cc` | L | trig → voice command mapping (seq task side) | COVERAGE, NOTES L263 |
 | `FUN_40005030` | L | trig apply path (paired with `FUN_400977cc`) | NOTES L298 |
+| `0x4009d1e8` | C | **step handler** — called per track ~3 frames ahead of the step; the frame-0 call schedules the event that fires on the step. | octabam RTOS §8.3 |
+| `0x4009b5c8` | C | `FW_START_TRACK` — indexes the bank blob by the sequencer's *own* playing bank/pattern bytes `0x800065bd`/`0x800065be` (`bank*0x9b340 + 0x400e21e0`, `pattern*0x8ed8`). Same `FUN_4009b5c8` as NOTES' "normal track start". | octabam RTOS §8.3 |
+| `0x800065bd` / `0x800065be` | C | the **sequencer's** playing bank / pattern (distinct from the pending/active/outgoing bytes at `0x800065bf..c2`). DIRECT JUMP's step-position lever `_DAT_800065b4` lives right below. | octabam RTOS §8.3 (confirms NOTES Session 15) |
+| `0x400a1030(bank,pat)` | C | wrapper over the cue-primitive `FUN_400a0570`; the LOAD PROJECT handler's last step is `0x400a1030(0x80000002, 0x80000004)` at `0x40025b16`. | octabam RTOS §8.3 |
+
+### Per-step sequencer data — the TRAC step masks
+
+> source: `refs/octabam/docs/RTOS_FORK.md` §10.6 @ `2f241e1`, hardware-confirmed via `pattern-diff` (6 Sep 2026). See [`file-format.md`](file-format.md) for the on-disk side. confidence: **C** for the recorder masks + mask 0x00, **L** for 0x08–0x38.
+
+A `TRAC` record opens with **8 step-mask fields, 8 B each (64-bit BE, bit `step-1`)**;
+RAM per-track stride `0x91a` (`mulsl #0x91a,%d7` at `0x4009d376`). Disk data starts
+9 B past the `TRAC` tag (header is tag+len+**1 pad**), i.e. our file-format offsets
+from the tag: `+0x09, +0x11, +0x19, +0x21, +0x29, +0x31, +0x39, +0x41`.
+
+| mask (RAM) | disk off | consumer | meaning |
+|---|---|---|---|
+| `0x00` | `+0x09` | `0x4009d41c` | note / sample trig (`poke_trig`'s target) |
+| `0x08` `0x10` `0x18` | `+0x11` `+0x19` `+0x21` | `0x4009d382..9a` | ORed into the "anything on this step" test — trig-type / trigless-trig layers |
+| `0x20` | `+0x29` | `0x4009d93c` → bit 12 of `0x46c7a6c0` | **recorder trig, REC1** (matches OctaLib `OFFSET_TRACK_REC_TRIGS +0x29`) |
+| `0x28` | `+0x31` | `0x4009d96e` → bit 13 | **recorder trig, REC2** (HW-confirmed: toggling REC2 off clears only this) |
+| `0x30` | `+0x39` | `0x4009d99a` → bit 14 | **recorder trig, REC3** |
+| `0x38` | `+0x41` | `0x4009d9f6` → bits 5+8 | swing / slide (read only when 12/13/14 fired) |
+
+`0x40` / `0x48` (disk `+0x49` / `+0x51`) are **not masks** — a per-step byte array
+(default `0xAA`); `0x4009d3d6` gates a per-step byte into a timing calc. Per-track
+flag word: `0x46c7a6c0`.
 
 ## Pattern change / cue / Parts  (Session 15 — DIRECT JUMP)
 
@@ -113,14 +163,87 @@ Confidence: **C**onfirmed (HW or real decompile) · **L**ikely (emu/inference) �
 > **PERSONALIZE** screen = 3 flat parallel `u32[16]` arrays at `0x400b2a34`
 > (label) / `0x400b2a74` (getter) / `0x400b2ac0` (setter). Don't conflate them.
 
-## Effect & machine parameter-descriptor table (`0x400d2fe4`–`0x400d5e04`)
+## Key input / dispatch
 
-> source: `refs/octa-bt-pt/patch_tool/addresses.json` + `tools/generate_streamlit_patch.py` @ `e970dd0` · fetched 2026-09-02 · confidence: **C** for FILTER/DELAY/NONE (disassembly), **L** for the other 12 (structural analogy)
+> sources: `refs/octabam/docs/{MAINMENU,RTOS_FORK}.md` @ `2f241e1` + our own keymap decode (Session 21). confidence: **C** for the tables + keycodes (decoded + disassembled), **L** for the `0x400d2d54` labels.
 
-Each descriptor: base `E`, then a `0x96`-byte default-parameter block at `E_0x96`
-(`E_0x96 = E + 0x96`). The effect **id byte** sits at `E + 0x3b`. Stock FX1 = FILTER,
-FX2 = DELAY; FX-default assignment via `lea` operands `0x40005680` (FX1) /
-`0x4000568a` (FX2); NONE descriptor `E = 0x400d45e0`.
+**The keymap** is 26-byte records `{u8 code, 0, press:u32, release:u32, h3:u32, aux:u32,
+0, u16 flags}` in two tables — T1 `0x400bfc10..` (58 recs) / T2 `0x400c01f4..` (63 recs,
+adds `0x1c..0x1f`); selector structs `{table_ptr, 0x400c085a}` at `0x400c090c` /
+`0x400c0920`. The dispatcher calls `press`/`release` as `handler(keycode@4, event@8)`,
+`event` 1 = press · 0 = release · 2 = hold. **Keycodes (decoded):**
+
+| key | code | handler | key | code | handler |
+|---|---|---|---|---|---|
+| trig 1–16 | `0x00–0x0f` | `0x40060ce0` | **PTN** | `0x2e` | `FUN_4005a044` |
+| track keys | `0x10–0x17` | `0x40040250` → mute `FUN_40083ab4` | **BANK** | `0x2f` | `0x4007af80` |
+| param-page | `0x22–0x26` | `FUN_4005578c` (via `0x400a7280={0,2,1,3,4}`) | **PAGE** | `0x1b` | `FUN_4004ffc4` |
+| MKII MAIN MENU | `0x1c` | `0x40064d78` → `FUN_40064c18` | **YES** | `0x31` | `0x4005e4c8` |
+| | | | **NO** | `0x32` | `0x4005e25c` |
+
+`FUN_4005a044` (**PTN**): press → `0x460d1742 = 1` ("[PTN] held"), clear `0x460d173e`;
+release → opens SELECT PATTERN (`FUN_40059f8c(0x400b484e, 0xf0, 1, 0x40043418)`) **only if
+`0x460d173e == 0` and `0x460d1ab2 != 0`**. **No other handler reads `0x460d1742`** — so
+`[PTN]` + X is a free chord, and a partner that sets `0x460d173e` suppresses the chooser.
+(DIRECT JUMP's `[PTN]`+`[YES]` toggle, NOTES Session 21, uses exactly this.)
+
+`0x4005e4c8` (**YES**): checks arranger `0x460d1aec` (→ `jmp 0x4004903c`), then `0x800000b8`
+(`DISABLE YES/NO ARM`) → `rts`, else `bra 0x4005e294` (arm). Prologue 8 B =
+`222f0004 202f0008`, resume `0x4005e4d0`.
+
+| Addr | Conf | What |
+|---|---|---|
+| `0x400d2d54` | L | keycode-indexed jump table octabam labelled physical-key (REC `0x4000a274` / PLAY `0x4000a200` / STOP `0x4000a1e0` at `[27..29]`); our disasm shows the neighbours are clock/tick stubs, so treat the "physical-key" label as unconfirmed — the 26-byte keymap above is the reliable one. |
+| `0x80000000` | C | current audio track (byte; UI mirror `0x100b14cc`). `0x80000012 != 0` = MIDI mode (page resolution adds +8). FUNC is **not** a plain keymap record — its held-flag was not located (Session 21). |
+| `_DAT_460e5cd0` | C | `!= 0` ⇒ a `FUN_4006d57c` dialog is open (that ctor bails on it at entry). Gate a new global combo on `== 0`. |
+
+### Transient overlay primitives
+
+| Fn | Shape |
+|---|---|
+| `FUN_4006d57c(title,nLines,lines,3,handler)` | **blocking** YES/NO dialog (needs a keypress); sets `0x460e5cd0` |
+| `FUN_40059f8c(text, ticks, enable, on_timeout)` | auto-dismiss window — **hardcodes `0x460d1e54 = 4` countdown boxes**, handle in `0x460d1e5c` (SELECT-BANK/PTN global, but the "in SELECT BANK" test also needs `0x460d1e60 == 0x4007b408`). Tick `FUN_40056ab8` → expiry `FUN_40056a70` → optional `on_timeout()`. **Used by DIRECT JUMP's toggle** (`ticks 0x28` ≈ 0.66 s). |
+| `FUN_4005a0e0(text)` | **bare text popup**, own handle `0x460d1e64`, small font `0x400ba862`, close cb `FUN_40056bc0`, **no timeout**. **DEAD CODE in stock 1.40C** (0 callers) — revive it + a close-on-tick hook for a box-free toast. |
+| `FUN_4005829c(x,y,w,h,?,close_cb)` | bare window ctor; `FUN_40012f30` measures text, `FUN_40057008`/`FUN_40013904` draw. |
+| `FUN_400808bc` | non-modal overlay example ("RELOADING BANK"), handle `0x460f790c`, explicit close. |
+| `FUN_4001f23c` | recompute + store the `'ANDY'` block checksum (`0x100fff00`, over `0x100fff04`+252 B, `+=514`). Self-contained, no args, `rts`. Call this after writing an ANDY shadow from **outside** the PERSONALIZE dispatcher (which does it via `jmp 0x4001f23c @ 0x40069074`). |
+
+## Effect & machine parameter-descriptor table (`0x400d2e52`–`0x400d5f00`)
+
+> sources: `refs/octa-bt-pt/patch_tool/addresses.json` + `tools/generate_streamlit_patch.py` @ `e970dd0` (2026-09-02) · **`refs/octabam/docs/PARAM_PAGES.md` @ `2f241e1`** (2026-09-06) — a full struct decode of the same table. confidence: **C** for FILTER/DELAY/NONE + the layout (two independent decodes agree), **L** for the other effects' id↔`E` pairing.
+
+**One table describes every parameter page on the machine** — not just effects:
+the 5 machine types, AMP, both LFOs, the recorder, the MIDI NOTE/ARP/CTRL pages,
+routing, and the 15 effects. octabam: **31 entries × `0x192` (402) bytes**,
+`0x400d2e52 .. 0x400d5f00`. 402 isn't a multiple of 4 → it's a **packed serialised
+blob, not a C struct**; walkers must do unaligned longword reads. There is no
+`lea`/immediate to the table base anywhere in the image (entries are reached
+individually), which is why an xref sweep never finds it.
+
+Entry layout (offsets from entry start `E`):
+
+| off | size | field |
+|---|---|---|
+| `E+0x00` | 6×u32 | per-encoder handler pointers (usually `0x40038d94`) |
+| `E+0x35` | 6 B | flags — not decoded |
+| `E+0x3b` | u8 | **effect id** (0 for non-FX pages) |
+| `E+0x3c` | 5 B | display abbreviation, NUL-term |
+| `E+0x41` | 13 B | full name, NUL-term |
+| `E+0x4e` | 12×6 B | **parameter names** (6/page, 2 pages), NUL-padded |
+| `E+0x96` | 12×u8 | **default value** per parameter |
+| `E+0xa2` | 12×u32 | **minimum value** per parameter |
+| `E+0xd2` | 12×u32 | **number of selectable values** per parameter (count, not max: `128`=0–127, `2`=on/off) |
+| `E+0x11a` | u32 | formatter / custom-display callback (0 = none) |
+| `E+0x176` | u32 | page-class handler |
+
+The shipped **arp key-scale** feature (`build.py`'s `ARP_COUNT_AT = 0x400d4096`) is
+just "parameter 11's value-count in the ARPEGGIATOR descriptor" — the struct decode
+lands on the exact two addresses `NOTES.md` found via the F-knob handler, confirming
+the layout. Widening a `E+0xd2` count is the general lever for "more options on an
+existing selector" (arp scales, LFO waveforms (19), LFO destinations (30)).
+
+Stock FX1 = FILTER, FX2 = DELAY; FX-default assignment via `lea` operands
+`0x40005680` (FX1) / `0x4000568a` (FX2); NONE descriptor `E = 0x400d45e0`.
 
 | Effect | id | `E` | Effect | id | `E` |
 |---|---|---|---|---|---|
@@ -128,40 +251,116 @@ FX2 = DELAY; FX-default assignment via `lea` operands `0x40005680` (FX1) /
 | SPATIALIZER | `0x05` | `0x400d4904` | SPRING REV | `0x15` | `0x400d5726` |
 | DELAY | `0x08` | `0x400d4a96` | DARK REV | `0x16` | `0x400d58b8` |
 | EQUALIZER | `0x0c` | `0x400d4c28` | COMPRESSOR | `0x18` | `0x400d5a4a` |
-| DJ EQ | `0x0d` | `0x400d4dba` | LOFI | `0x1c` | `0x400d5d6e` |
-| PHASER | `0x10` | `0x400d4f4c` | COMB FILTER | `0x13` | `0x400d5402` |
-| FLANGER | `0x11` | `0x400d50de` | CHORUS | `0x12` | `0x400d5270` |
+| DJ EQ | `0x0d` | `0x400d4dba` | **MULTIBCOMP** | **`0x19`** | **`0x400d5bdc`** |
+| PHASER | `0x10` | `0x400d4f4c` | LOFI | `0x1c` | `0x400d5d6e` |
+| FLANGER | `0x11` | `0x400d50de` | COMB FILTER | `0x13` | `0x400d5402` |
+| CHORUS | `0x12` | `0x400d5270` | | | |
+
+> **MULTIBCOMP (id `0x19`, `E = 0x400d5bdc`)** was missing from the octa-bt-pt
+> reading — octabam's walk found it between COMPRESSOR and LO-FI. Effect ids are
+> sparse (`04 05 08 0c 0d 10 11 12 13 14 15 16 18 19 1c`); the gaps are the place
+> to look when asking whether an effect can be *added*.
+
+**Non-FX entries** (octabam, ids all 0): 0–4 = the 5 machine types (PLAYBACK, one
+page each — 0/1 = FLEX/STATIC, 2 = THRU `INAB/INCD`, 3 = NEIGHBOR (no params),
+4 = PICKUP); 5 = LFO (audio); 6 = AMP; 7 = MIXER / main+cue routing (**bespoke
+renderer — its per-param enable bitmap lies**); 8 = **track recorder**; 9 = NOTE;
+10 = ARP; 11 = LFO (MIDI); 12/13 = CONTROL 1/2; 14 = NONE. Entry −1 at
+`0x400d2e52` (blank name) = the **master-track** page, returned by `FUN_40031da4`
+for track 7 when `DAT_80000034` is set.
+
+Two page-class handlers cover the effects, **both gate on `0x800000a0`** (a word in
+the PERSONALIZE block, see below) plus a check of `0x46c7dd26`:
+`0x40032814` (FILTER/SPAT/DELAY/EQ/PHASER/FLANGER/CHORUS/COMB; indexes
+`0x46c7d244 + idx*20`) and `0x400328e4` (DJEQ/PLATE/SPRING/DARK/COMP/MBC/LOFI +
+audio-LFO + routing).
 
 FX1-disallowed (hardware menu restriction, not addressing): DELAY + the 3 reverbs
 (FX2-exclusive; cf. `dsp56300.md` FX1 3072 words / FX2 16384).
+
+### Track-recorder parameter page (entry 8) — storage is three-tiered
+
+> source: `refs/octabam/docs/PARAM_PAGES.md` §"Entry 8" @ `2f241e1`, crediting Bryan T's hardware decode (2 Sep 2026). confidence: **C** (hardware-confirmed display values).
+
+`page1 INAB INCD RLEN TRIG SRC3 LOOP · page2 FIN FOUT AB QREC QPL CD`. The value
+travels **UI → Part storage → publication → engine**:
+
+| tier | address | note |
+|---|---|---|
+| bank blob | `[0x46c82456] + 0x8f382 + part*6322 + track*12` | the persisted "Part" copy; part index at `0x100b14cf` |
+| SRAM mirror | `0x100a54d0 + …` | |
+| per-frame published copy | `0x80000cf4 + track*12 + [0x800000e0]*96` | what the recorder's own code reads |
+
+`[0x800000e0]` is the DSP frame selector (0/1) — cf. the persistence note's warning
+that the ANDY-block restore must stop before `0x800000e0`. `RLEN` reaches the engine
+as `(raw+1)` steps → samples at `0x4006e3b2`. ⚠️ Two page defaults are overridden by
+an unlocated fixup: TRIG draws `ONE` (raw 1 = `ONE2`), SRC3 draws `MAIN` (raw 0 = `-`).
 
 **Machine** descriptors, same 12-byte-slot + `0x96` block shape:
 `FLEX = 0x400d2fe4`, `STATIC = 0x400d3176` (TSTR = slot byte index 10; `1`=AUTO
 stock, `0`=OFF). PICKUP's TSTR has min 1 (0 stalls the sequencer — OOB table idx).
 
-## Free scratch words (for new menu/feature state)
+## PERSONALIZE settings — persistence (the 'ANDY' battery-SRAM block)
 
-| Addr | Status | Used by |
+> source: `refs/octamax` `c78ff70` (2026-09-06), verified against our `section_3_MAIN_OS.bin` in Session 19. confidence: **C** (bytes + octamax HW-confirmed).
+
+**`0x800000xx` is volatile** — `FUN_4000f938` re-images `0x80000000..0x80004000`
+from ROM on every boot. A PERSONALIZE setting only survives a power cycle if it is
+also written to the checksummed **'ANDY' block in battery SRAM at `0x100fff00`**:
+
+| Addr | What |
+|---|---|
+| `0x100fff00` | block base; magic `'ANDY'` @ `+4`, version 36 @ `+0xe` |
+| `FUN_4001f23c` | checksum over 252 B from `+4`; **key handler re-runs it after every setter** via `jmp 0x4001f23c` at `0x40069074` |
+| `FUN_4001f340` | boot **validate**; on mismatch → defaults |
+| `FUN_4001f298` | **defaults** path — zero-fills the whole block (so unconfigured = 0) |
+| `0x4001f322` / `0x4001f3be` / `0x4001fb24` | the three **restore** sites: `memcpy(0x80000070, 0x100fff00, 0x64)` (boot / validate / defaults). `0x64` covers runtime `0x80000070..0x800000d3` only. |
+| stock setter pattern | writes *both* copies, e.g. `0x40068898`: `0x80000090` **and** `0x100fff20`. shadow = `0x100fff00 + (runtime − 0x80000070)`. |
+
+**Stock PERSONALIZE runtime words** — the full set, from disassembling the 16
+getters/setters (Session 20; each getter reads its word + one neighbour):
+`0x8000008c 90 94 98 9c a0 a4 ac b0 b4 b8 bc c0 c4 c8 cc d0`. `MUTE FOCUSES TRK`
+`0x90`, `QUANTIZE LIVE REC` `0xac`, `LED BRIGHTNESS` `0xd0` (behind the MKII
+`0x46c8d18c` gate), FX page-class gate `0xa0`. `0x70..0x8b` is restored too but is
+something else (not a PERSONALIZE row). Restore ends `0x800000d3`; DSP frame
+selector `0x800000e0` (35 refs — never widen the restore past `0xdf`).
+
+### Free scratch words (for new menu/feature state)
+
+Whole-image scan for each (Session 20): `0x800000a8`, `0x800000d8` — **0 ColdFire
+refs**; `0x800000d4` — 0 (its two matches are inside the appended DSP payloads,
+not code); `0x800000b4` — **5 real refs in the menu code, taken**.
+
+| Addr | shadow | Status |
 |---|---|---|
-| `0x800000a8` | **taken** | DIRECT JUMP menu state (Session 15) |
-| `0x800000d4` | free | — |
-| `0x800000d8` | free | — |
-| `0x800000dc` | free | — |
+| `0x800000a8` | `0x100fff38` | free of any stock use, **but inside the stock `0x64` restore** → its value is overwritten from the shadow every boot. DIRECT JUMP (`wip`, Session 15) uses it as menu state and does **not** write the shadow, so its `ON` setting silently resets to `OFF` on a power cycle (same bug Session 19 fixed for `0xdc`). No aliasing / corruption — just non-persistence. Fix: move it to `0x800000d8` (below) and give it the Session-19 treatment. |
+| `0x800000d4` | `0x100fff64` | free; outside the stock `0x64` restore |
+| `0x800000d8` | `0x100fff68` | free; outside the stock `0x64` restore — **the slot to give DIRECT JUMP** (rides MUTE MODE's `0x70` extension) |
+| `0x800000dc` | `0x100fff6c` | **taken** — MUTE MODE / SOFT-MUTE GATE. Session 19: build extends the restore to `0x70` + the setter writes the shadow, so it persists. |
 
-_(NOTES L811: "free words inside the block". Verify a candidate is untouched before use.)_
+A new toggle that must persist: (1) put its word in `0x800000d4..df`, (2) have
+`build_*.py` extend all three restore `pea 0x64` → `pea 0x70`, (3) have the setter
+`move.l %d0,<shadow>`. Checksum is automatic. Range `0x70` ends at `0x800000df`,
+one short of `0x800000e0` — do **not** widen further. See `tools/patch_mutemode.s`.
 
 ---
 
 ## To import next (from `refs/`)
 
-- **octabam `docs/`** — sweep done 2026-09-02 for the menu/UI cluster (above).
-  ~20 more octabam-only `FUN_40xxxxxx` remain uncatalogued (screen-record /
-  audio-editor / part-teardown: `FUN_40043728`, `FUN_40052474`, `FUN_40083bf8`,
-  `FUN_4004d948`, `FUN_400905d4`, …) — pull them when a feature touches that area.
-- **OctaLib / firmware** — the disk p-lock array (`file-format.md`, `TRAC+0x62`,
-  64×32 B) still needs its byte-offset → parameter map, and cross-checking through
-  the real deserialiser (`insp_banks.py` / `FUN_4008ded0`) into RAM.
+- **octabam `docs/`** — swept 2026-09-02 (menu/UI) + 2026-09-06 (kernel, sequencer
+  masks, descriptor table, recorder page). Still uncatalogued: the DSP-effects work
+  (bus screen, reverb, xbus — mostly out of scope) and ~20 octabam-only
+  `FUN_40xxxxxx` (screen-record / audio-editor / part-teardown).
+- **p-lock byte→parameter map** — hypothesis now in [`file-format.md`](file-format.md)
+  ("byte→parameter map"); needs the hardware `pattern-diff` pass to confirm, and
+  the LIVE-REC erase handler still to be located (start from the mask consumers
+  `0x4009d382..0x4009da12` above, or drive `emu_rtos` — see `techniques.md`).
 
 _Done: octa-bt-pt descriptor table; octabam+octa-bt-pt DSP boot map (`dsp56300.md`);
 OctaLib bank layout + our own p-lock-region RE (`file-format.md`); octabam menu
-cluster (above). ems-octakit is closed-source — nothing to import._
+cluster (above); ems-octakit's `abi.inc` / `firmware.json` address map
+(`octakit-abi.md`, open-sourced 2026-09)._
+
+_ems-octakit's ~500 `GK_STOCK_*` symbols are curated in
+[`octakit-abi.md`](octakit-abi.md) rather than merged inline here — cross-check it
+first when RE'ing a Part / Kit / Bank / scene / LFO-designer / sequencer-tick area._

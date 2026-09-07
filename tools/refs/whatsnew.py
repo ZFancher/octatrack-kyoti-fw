@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Show upstream commits newer than what we last synced, per repo.
 
-  python3 tools/refs/whatsnew.py           # all repos
-  python3 tools/refs/whatsnew.py octamax   # one
+  python3 tools/refs/whatsnew.py            # all repos, every new commit
+  python3 tools/refs/whatsnew.py octamax    # one repo
+  python3 tools/refs/whatsnew.py --limit 15 # cap each repo's list (0 = counts only)
 
 Reads the synced HEAD from refs/MANIFEST.lock and diffs it against origin/<branch>
 (after a quiet fetch). Use it at the top of a cross-repo session: anything listed
@@ -38,6 +39,15 @@ def git(*args: str, cwd: Path) -> str:
 
 
 def main(argv: list[str]) -> int:
+    limit = None
+    if "--limit" in argv:
+        i = argv.index("--limit")
+        try:
+            limit = int(argv[i + 1])
+        except (IndexError, ValueError):
+            print("--limit needs an integer", file=sys.stderr)
+            return 2
+        argv = argv[:i] + argv[i + 2:]
     wanted = set(a for a in argv if not a.startswith("-"))
     lock = locked()
     repos = load()
@@ -63,8 +73,15 @@ def main(argv: list[str]) -> int:
         )
         if log:
             any_new = True
-            print(f"\n[{name}]  {len(log.splitlines())} new commit(s) since last sync:")
-            print(log)
+            lines = log.splitlines()
+            print(f"\n[{name}]  {len(lines)} new commit(s) since last sync:")
+            if limit == 0:
+                pass
+            elif limit is not None and len(lines) > limit:
+                print("\n".join(lines[:limit]))
+                print(f"  … +{len(lines) - limit} more (drop --limit to see all)")
+            else:
+                print(log)
         else:
             print(f"[{name}] up to date")
     if any_new:

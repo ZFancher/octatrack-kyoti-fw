@@ -42,7 +42,7 @@ url    = "https://github.com/emuyia/ems-octakit.git"
 branch = "main"
 pin    = "HEAD"
 side   = "file-format"
-use    = "CLOSED-SOURCE (repo = README + issue templates only). Browser patcher, 4 Parts/Bank -> 256 Kits/Project. Only the behavioural README is usable; watch for a future open-source release or docs."
+use    = "OPEN-SOURCED 2026-09 (commit ca3b527). 4 Parts/Bank -> 256 Kits/Project. runtime/abi.inc = ~500 named stock addresses; runtime/firmware.json = 598 guarded patch sites + 411 relocate ops; 62 .S modules + Rust patcher. No LICENSE file. -> reference/kb/octakit-abi.md."
 
 [repo.octa-bt-pt]
 url    = "https://github.com/bryantysinger/octa-bt-pt.git"

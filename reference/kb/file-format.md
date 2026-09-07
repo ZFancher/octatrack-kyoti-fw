@@ -96,42 +96,117 @@ the FX1-disallowed rule (`memory-map.md`). 8 PART slots = 4 live + 4 saved
 
 ### Full TRAC block layout — p-lock region mapped
 
-> source: our RE against a real hardware export — Elektron factory **OT DEMO**
+> sources: our RE against a real hardware export — Elektron factory **OT DEMO**
 > `bank01.work` (`~/Desktop/OT Backup/KYOTI/OT DEMO/`, exported 2026-01, 636 113 B,
-> reproducible: it's the factory demo). Method: `tools/inspect_bank.py`
-> (Session 16). confidence: **L** — structure is consistent across all 16
-> patterns / 8 tracks and shows sensible per-step ramps, but not yet cross-checked
-> against the firmware deserializer or a controlled before/after export.
+> reproducible: it's the factory demo; `tools/inspect_bank.py`, Session 16) **+
+> `refs/octabam/docs/RTOS_FORK.md` §10.6 @ `2f241e1`** (2026-09-06) which measured
+> the same block against the firmware and via hardware `pattern-diff`.
+> confidence: **C** for the step-mask offsets + the recorder masks, **L** for the
+> p-lock array's internal parameter map (still needs the `pattern-diff` pass).
 
 The audio-track block (`LENGTH_TRAC = 0x922`, from the `TRAC` tag) is **fixed
-size** and lays out as:
+size**. octabam's framing: the `TRAC` chunk header is **9 bytes** (tag + length +
+1 pad); track data starts at `+9`. Our offsets below are from the `TRAC` tag, so
+they already include that (`+0x08` = the pad byte, which holds the track number;
+`+0x09` = first data byte = OctaLib's `OFFSET_TRACK_TRIGS`).
 
 | Offset | Size | Field |
 |---|---|---|
 | `+0x00` | 8 | `"TRAC\0\0\0\0"` tag |
-| `+0x08` | 1 | track number (0–7) |
-| `+0x09` | 8 | **regular trig** bitmap — 64 steps, 1 bit/step, reverse bit order |
-| `+0x11` … `+0x48` | ~56 | further per-step bitmaps: trigless / one-shot / swing / slide / **rec-trig @+0x29** (OctaLib), all 8 B each; empty in the DEMO |
-| `+0x49` | 16 | delimiter `AA×8 00×8` |
-| `+0x59` | 9 | **param header**: `[LEN] 02 00 FF 00 00 00 00 00` — `LEN` ∈ `{0x10,0x20,0x40}` = this **track's** step count **16 / 32 / 64** (varies per track *within* a pattern → it's the per-track length / "TRACK" scale mode, not the pattern master length) |
+| `+0x08` | 1 | track number (0–7) (= header pad byte) |
+| `+0x09` | 8 | **mask 0x00** — regular note/sample trig; 64 steps, bit `step-1`, byte 7 bit 0 = step 1 |
+| `+0x11` | 8 | **mask 0x08** — trig-type layer (trigless-trig / one-shot) — one of these three carries the "trigless lock" bit |
+| `+0x19` | 8 | **mask 0x10** — trig-type layer |
+| `+0x21` | 8 | **mask 0x18** — trig-type layer |
+| `+0x29` | 8 | **mask 0x20** — recorder trig **REC1** (HW-confirmed; = OctaLib `OFFSET_TRACK_REC_TRIGS`) |
+| `+0x31` | 8 | **mask 0x28** — recorder trig **REC2** (HW-confirmed) |
+| `+0x39` | 8 | **mask 0x30** — recorder trig **REC3** |
+| `+0x41` | 8 | **mask 0x38** — swing / slide (sets flag-word bits 5+8) |
+| `+0x49` | 8 | per-step byte array (not a mask), default `0xAA` — micro-timing gate (`0x4009d3d6`) |
+| `+0x51` | 8 | per-step byte array (not a mask), `0x00` in the DEMO |
+| `+0x59` | 9 | **param header**: `[LEN] 02 00 FF 00 00 00 00 00` — `LEN` ∈ `{0x10,0x20,0x40}` = this **track's** step count 16/32/64 (per-track, → the "TRACK" scale mode, not the pattern master length) |
 | `+0x62` | `0x800` | **p-lock array — 64 steps × 32 bytes.** `0xFF` = that parameter not locked on that step. `record[step][p]` = locked value of p-lockable parameter `p` |
 | `+0x862` | `0xC0` | per-step aux array — 64 × 3 B (trig conditions / micro-timing / retrig?); `0x00` = default; empty in the DEMO |
 
-`0x62 + 0x800 + 0xC0 = 0x922` exactly.
+`0x62 + 0x800 + 0xC0 = 0x922` exactly. Firmware consumers of the masks:
+`0x4009d1e8` (step handler), `0x4009d382..0x4009da12`, per-track flag word
+`0x46c7a6c0` — see [`memory-map.md`](memory-map.md) "Per-step sequencer data".
 
-**p-lock array evidence** (P11 t2, a filter-sweep pattern lock): step records at
-exactly 32-byte spacing, byte `0x12` ramping `40 → 29 → 14 → 05 → 00` across
-steps 0,2,4,6,8 and byte `0x00` climbing `4F → 5E → 68` on steps 10,12,14.
-Locked-param byte offsets seen so far: `0x00, 0x09, 0x12–0x14, 0x1F` — sparse,
-~32 slots ≈ one byte per p-lockable track parameter (SRC / pitch-start-len-rate /
-AMP / FILTER / FX1 / FX2 / LFO). Exact offset→param map is future work.
+### p-lock array — byte → parameter map (hypothesis, confidence **L**)
 
-**For the NOTES Session 13 backlog** (auto-remove an emptied trigless lock): a
-"trigless lock" = a step with entries in the `+0x62` array but its bit clear in
-the `+0x09` trig bitmap (and in the trigless-trig bitmap around `+0x11`). Erasing
-its last lock = every byte of `record[step]` back to `0xFF`; then if that step is
-also not in any trig bitmap, clear its trigless-trig bit too. Confirm the exact
-trigless-trig bitmap offset (one of `+0x11..+0x28`) before building.
+**Evidence** (DEMO P11 t2, `tools/inspect_bank.py -p 11 -t 2`; 16-step track, 8
+regular trigs, no trigless/rec trigs): records at exactly 32-byte spacing.
+Byte `0x12` ramps `40 → 29 → 14 → 05 → 00` across steps 0,2,4,6,8 (one automated
+parameter); byte `0x00` climbs `4F → 5E → 68` on steps 10,12,14 with `0x13`
+appearing on step 14. Non-`0xFF` offsets across the pattern: `0x00, 0x12, 0x13`.
+
+**Working model:** 32 bytes = **five 6-parameter page-1 groups + a 2-byte tail**,
+in the OT's parameter-page order:
+
+| record offset | page-1 group (6 params × 1 byte) |
+|---|---|
+| `0x00–0x05` | PLAYBACK (`PTCH STRT LEN RATE …`) |
+| `0x06–0x0b` | AMP (`ATK HOLD REL VOL BAL XVOL`) |
+| `0x0c–0x11` | LFO (audio) |
+| `0x12–0x17` | FX1 |
+| `0x18–0x1d` | FX2 |
+| `0x1e–0x1f` | tail — sample-slot lock / validity? |
+
+`0x12` = FX1 param 0 and `0x00` = PLAYBACK param 0 (PITCH) are the offsets seen
+automated here — *consistent* with the model but **not confirmed** (P11 t2's part
+was not resolved; most DEMO parts give track 2 an EQ, not a FILTER, on FX1, so
+the ramp at `0x12` is probably an EQ band, not a cutoff). Payload cross-ref:
+[`octakit-abi.md`](octakit-abi.md) FX1 `0x2fe` / FX2 `0x304` are 6 bytes apart
+⇒ 6 params per FX page, which is where the "6-byte group" comes from.
+
+Open: page-2 params (SLIC/LOOP/TSTR, AMP SYNC, FX SETUP), LFO-designer locks, the
+sample-slot lock, trig-condition / micro-timing (likely the `+0x862` aux array).
+The whole map is **untested** — the `pattern-diff` plan below pins it in one pass.
+
+### NOTES Session 13 backlog — auto-remove an emptied trigless lock
+
+A **trigless lock** = a step with a non-`0xFF` `record[step]` in `+0x62` but its
+bit **clear** in mask 0x00 (`+0x09`) *and* in whichever of masks 0x08/0x10/0x18
+is the "trigless trig" (retrig) layer. On the last-lock erase, `record[step]`
+goes all-`0xFF`; the feature then also clears the step's bit in the mask that
+lights the dim-red LED. **Which mask that is is the one open question** — it is
+one of `+0x11/+0x19/+0x21`, and a pure p-lock may set *none* of them (the LED
+predicate could be "row has a `+0x62` entry"). This is what the `pattern-diff`
+pass settles.
+
+#### Phase 0 test-pattern plan (uses octabam `ot_project.py pattern-diff`)
+
+octabam's `tools/ot_project.py pattern-diff <projA> <projB> <bank>` diffs every
+step-mask between two saved projects and prints the mask offset + steps that
+changed — turning "which bit" into a 30-second hardware job. Also useful:
+`pattern-trig` writes a trig on disk, `emu_rtos.py` loads a project through the
+real firmware and runs the sequencer (see `techniques.md`). Bring both into
+`tools/` (or `refs/octabam/tools/`) for the session.
+
+On the MKI, from one cleared baseline project, save a copy after **each** of:
+
+1. one **pure trigless lock** (2 p-locks: e.g. FILTER cutoff + AMP VOL) on step 4
+2. erase **one** of those p-locks live (`[NO]`+knob, LIVE REC) — lock still lit
+3. erase the **second** — lock should vanish (this is the target behaviour to observe today: it *doesn't*)
+4. a **trigless trig** with LFO retrig + 1 p-lock on step 8
+5. a **manually placed empty** trigless lock on step 12
+6. a normal **sample trig** with 2 p-locks on step 16
+
+`pattern-diff baseline↔1` pins the trigless-lock mask bit + the `record[step]`
+offsets for cutoff & VOL (confirms the byte→param map). `1↔2↔3` shows the
+multi-pass erase semantics and whether the mask bit clears on 1→0. `baseline↔4`
+separates the retrig-trig mask from the pure-lock mask. `4` vs `5` vs `1`
+separates "has retrig" from "bare lock" — the predicate must keep 4, delete 3,
+keep 5.
+
+#### Phase 1 — the LIVE-REC `[NO]`+knob erase handler (not yet located)
+
+Static RE never pinned the knob→param *writer* (NOTES L410: "scattered through
+UI"). Two ways in: (a) `emu_rtos` — drive a `[NO]`+knob event and watch what
+touches the `+0x62`-equivalent RAM region (`[0x46c82456] + pat*0x18b2`, near
+`+0x8f385`); (b) trace back from the mask consumers `0x4009d382..0x4009da12`.
+The detour goes *after* the clear: if `record[step]` is all-`0xFF` and the step
+is a bare trigless lock, clear its mask bit. Conservative — keep on any doubt.
 
 ---
 
@@ -142,26 +217,38 @@ trigless-trig bitmap offset (one of `+0x11..+0x28`) before building.
 | pattern block stride | `0x8EEC` (bank file) | `pat*0x8ed8` for tempo/settings (`FUN_4009c550`); `pat*0x18b2` for trig/param (`_DAT_46c82456`) |
 | per-track block | `LENGTH_TRAC 0x922` | `trk*0xc` within the `_DAT_46c82456` trig region (**mismatch — resolve**) |
 | pattern → Part | `PTRN +0x8EE7`, 1 byte | `FUN_40009094` applies Part by event |
-| regular trigs | `TRAC +9`, reverse-binary | `FUN_400977cc` consumes trig → voice cmd |
+| regular trigs | `TRAC +9` (mask 0x00), bit `step-1` | `FUN_400977cc` consumes trig → voice cmd |
+| per-track seq data | `LENGTH_TRAC 0x922` (disk, 9-B header) | RAM stride **`0x91a`** (`mulsl #0x91a,%d7` @ `0x4009d376`) — 9 less: chunk header stripped on load |
+| pattern seq data | `0x8EEC` (disk) | RAM `0x8ed8` — 8 less (`PTRN` header 8 B stripped) |
+| playing bank/pattern | — | `0x800065bd` / `0x800065be` (sequencer's own; step handler indexes `bank*0x9b340 + 0x400e21e0`, `pat*0x8ed8`) |
 
-⚠️ The disk per-track stride (`0x922`) and the RAM `trk*0xc` are different views —
-`0xc` is almost certainly just a per-track *header/pointer* array, not the trig
-payload. The disk block's own p-lock array is `64 × 32 B` (above); the RAM
-`pat*0x18b2` stride ÷ 8 tracks ≈ `0x375`/track, so the deserialiser clearly
-repacks — don't assume disk offsets survive into RAM. Verify with `insp_banks.py`
-(runs the real `FUN_4008ded0`) before hooking anything that reads locks in RAM.
+octabam (RTOS §10.6) measured the RAM strides directly: **pattern `0x8ed8`, track
+`0x91a`** — exactly `disk − header`. So a `TRAC`'s data *does* survive into RAM at
+the same relative offsets (mask 0x00 at RAM `+0`, etc.); the older "RAM `trk*0xc`"
+note was a different (header/pointer) view. Still verify a specific offset with
+`insp_banks.py` (runs the real `FUN_4008ded0`) or `emu_rtos` before hooking a
+RAM read of the locks.
 
 ---
 
 ## To import next
 
-- **ems-octakit** — ⚠️ **closed-source**. The repo is only a README + issue
-  templates; the patcher runs in-browser and isn't published. Value is limited to
-  the README's behavioural description (Parts→256 Kits/Project, migration to first
-  64 Kit slots, date-based version string e.g. `26512`, MKI keys FUNC+MIDI /
-  FUNC+BANK). No code or offsets to import. If the Part block needs a second
-  source, ask on their GitHub Discussions or diff a before/after image.
+- **ems-octakit** — **open-sourced 2026-09** (`ca3b527`). Distilled into
+  [`octakit-abi.md`](octakit-abi.md): its `runtime/abi.inc` confirms
+  `FUN_4008ded0` = bank deserialiser, `_DAT_46c82456` = bank pointer,
+  `GK_STOCK_BANK_SIZE 0x9b4d1` = the DEMO `bank01.work` size, `GK_PART_PAYLOAD_SIZE
+  0x18b2`, and adds the `.work`↔`.strd` store/restore choke points
+  (`0x4008eda4` / `0x4008f0b0` / `0x4008ee74` / `0x4008f180`), the per-parameter-page
+  payload offsets, and `GK_STOCK_SEQUENCER_PART_{STEP,CONDITION}_OFFSET`
+  (`0x1832` / `0x1822`). Watch: `GK_STOCK_PATTERN_PART_OFFSET 0x8e57` vs OctaLib
+  `+0x8EE7` — different framing, reconcile before a write.
 - OctaLib credits **WiliWoW** (Elektronauts) for format help — worth a thread search.
-- Best remaining lever for the p-lock model: build a tiny reader against a real
-  exported `bank01.work` (ask user to export) using OctaLib's offsets, then walk
-  outward from `TRAC+9` / `TRAC+41` to find the p-lock region.
+- **octabam `ot_project.py`** (`@ 2f241e1`) — `pattern-trig` / `pattern-diff` /
+  `set_track_slot` / `set_machine_type` / `part-name`: an on-disk bank/project
+  editor + differ. `pattern-diff` is the tool for the p-lock Phase-0 pass above.
+  `emu_rtos.py` loads a project through the real firmware (see `techniques.md`).
+  Both worth vendoring into `tools/` for the next hardware session (their licence
+  posture = octamax's: facts + small excerpts, not bulk source).
+- Best remaining lever for the p-lock model: the Phase-0 `pattern-diff` pass
+  (needs the MKI) + locating the LIVE-REC erase handler (needs `emu_rtos` or
+  Ghidra).
