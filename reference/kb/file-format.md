@@ -225,9 +225,26 @@ is a bare trigless lock, clear its mask bit. Conservative — keep on any doubt.
 octabam (RTOS §10.6) measured the RAM strides directly: **pattern `0x8ed8`, track
 `0x91a`** — exactly `disk − header`. So a `TRAC`'s data *does* survive into RAM at
 the same relative offsets (mask 0x00 at RAM `+0`, etc.); the older "RAM `trk*0xc`"
-note was a different (header/pointer) view. Still verify a specific offset with
-`insp_banks.py` (runs the real `FUN_4008ded0`) or `emu_rtos` before hooking a
-RAM read of the locks.
+note was a different (header/pointer) view.
+
+### RAM p-lock array — **CONFIRMED** (Session 24, `tools/emu_plock.py --confirm`)
+
+**`[0x46c82456] blob + pattern*0x8ed8 + track*0x91a + 0x59`, 64 steps × 32 bytes** —
+byte-for-byte identical to the disk `TRAC+0x62` array (the `+0x59` = disk `+0x62`
+minus the 9-byte chunk header). Verified by loading the factory OT DEMO through the
+real firmware in `emu_rtos` and diffing the RAM against `bank01.work` (P11 t2:
+param header `10 02 00 ff …` and every locked step/offset/value match exactly). So
+the on-disk map above **is** the RAM map — no repack. The param header
+(`[LEN] 02 00 FF …`) is at blob `+0x50`.
+
+⚠️ Separate structure: `FUN_40033e3c` / `FUN_400409f4` manage a triplet
+`0x46c7bf2c` (values, `param*128 + step`) / `0x46c7d7d8` (lock bitmap, `param*4`
+longs, bit `step%32`) / `0x46c7e0de` (per-param "any lock" flag), gated by
+`0x8000004a` bit 1. `FUN_400409f4` flushes it as **MIDI CC** via `FUN_40010bc8` and
+clears the bitmap — this is the **MIDI-track CC-lock** send layer, *not* the audio
+per-step store. The audio-p-lock writer/eraser (Session 13's target) writes the
+blob array above — `emu_plock.py --watch` + a GRID-REC hold-trig + knob-turn gesture
+will name it.
 
 ---
 

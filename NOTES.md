@@ -5124,3 +5124,49 @@ Build the Phase-1 scenario in a `tools/emu_plock.py` (wraps `emu_rtos` with the
 load → LIVE REC → `[NO]`+knob → watch sequence). Needs the encoder/knob handler pinned
 first (from the keymap: which keycode is a param encoder, and its handler) — a short
 Ghidra/disasm task on `0x4004eb24` and neighbours.
+
+## Session 24 (2026-09-06, `wip/mute-mode`) — p-lock RE: RAM address CONFIRMED via emu_rtos
+
+**No firmware change. Tooling: `tools/emu_plock.py` + KB `file-format.md`.**
+
+### `tools/emu_plock.py --confirm` — the RAM p-lock array is exactly the disk layout
+
+Boots our image in octabam's `emu_rtos`, mounts + loads the factory OT DEMO through the
+real storage stack, and diffs the RAM p-lock region against `bank01.work`:
+
+**`[0x46c82456] blob + pattern*0x8ed8 + track*0x91a + 0x59`, 64 × 32 B — byte-identical
+to the disk `TRAC+0x62` array.** (P11 t2: param header `10 02 00 ff …` and every locked
+step / record-offset / value match.) So the disk map *is* the RAM map — the deserialiser
+does **not** repack the p-locks. `file-format.md` "RAM p-lock array" upgraded L → **C**.
+
+Blob base was `0x400e21e0` (the M6b "load ends on bank A / engine reset-time select-bank-0"
+artefact — RTOS_FORK §7; the data is still correct for the read).
+
+### `FUN_40033e3c` / `FUN_400409f4` are the MIDI-CC-lock layer, not the audio store
+
+RE'd both (30 / few callers). They manage a triplet:
+- `0x46c7bf2c` — locked **values**, `[param*128 + step]`
+- `0x46c7d7d8` — locked **bitmap**, `param*4` longs, bit `step % 32`
+- `0x46c7e0de` — per-param "any lock" flag, `|= 1<<param`
+
+`FUN_40033e3c` writes them (gated on `0x8000004a` **bit 1** = "a trig is held for editing");
+`FUN_400409f4` reads each set bit, sends the value out as **MIDI CC** (`FUN_40010bc8`) and
+clears the bitmap. So this is the **MIDI-track CC p-lock** send path. The audio per-step
+p-lock writer is elsewhere — it writes the blob array above.
+
+### `0x8000004a` — the "what does a knob turn do" bitfield
+
+Read by the encoder handler `0x4004eb24` (bit 0 → write Part data) and `FUN_40033e3c`
+(bit 1 → the CC-lock path). 11 refs total. Its writer(s) set the mode when you enter
+GRID REC / hold a trig / etc.
+
+### NEXT — finish `emu_plock.py --watch`
+
+The `--watch` scaffold hooks the confirmed audio array + the CC triplet but only runs a
+plain playback (baseline: 0 writes). To name the audio-p-lock writer, inject the gesture:
+1. `press_key_live(<REC-mode toggle>, 1)` → GRID REC   (find the keycode/handler — it's
+   in the keymap; `0x2b/0x2c/0x36` → `0x40030e6c/c60/a6c` are the mute family, not this)
+2. `press_key_live(0x40060ce0, 1)` with a trig keycode `0x00..0x0f` in the arg → hold `[TRIG n]`
+3. `call_as_main(0x4004eb24, args=(<a1>, <delta>))` → turn a knob
+Then `rt.mem_writes` names the function. RE that + its `[NO]`-held erase sibling → design
+the "record[step] all-`0xFF` + bare trigless lock → clear the mask bit" detour.
