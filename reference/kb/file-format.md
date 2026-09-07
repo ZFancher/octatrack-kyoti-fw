@@ -237,14 +237,26 @@ param header `10 02 00 ff …` and every locked step/offset/value match exactly)
 the on-disk map above **is** the RAM map — no repack. The param header
 (`[LEN] 02 00 FF …`) is at blob `+0x50`.
 
-⚠️ Separate structure: `FUN_40033e3c` / `FUN_400409f4` manage a triplet
-`0x46c7bf2c` (values, `param*128 + step`) / `0x46c7d7d8` (lock bitmap, `param*4`
-longs, bit `step%32`) / `0x46c7e0de` (per-param "any lock" flag), gated by
-`0x8000004a` bit 1. `FUN_400409f4` flushes it as **MIDI CC** via `FUN_40010bc8` and
-clears the bitmap — this is the **MIDI-track CC-lock** send layer, *not* the audio
-per-step store. The audio-p-lock writer/eraser (Session 13's target) writes the
-blob array above — `emu_plock.py --watch` + a GRID-REC hold-trig + knob-turn gesture
-will name it.
+### The p-lock RAM structures — four of them (Session 24)
+
+| # | Address | Shape | Role |
+|---|---|---|---|
+| 1 | blob `TRAC+0x59` | `record[step][32]`, `0xFF`=unlocked | the pattern's **stored** p-locks (= disk, persisted on save) |
+| 2 | `0x46c7ab30` / `0x46c76ac0` / `0x46c75fa0` | `[track*32 + param]` values (×2) + `[track*4]` bitmap | the sequencer's **live per-track working set** — the step handler `0x4009d1e8` + per-frame apply `0x4000bad4` read these; the engine applies them |
+| 3 | `0x46c7aa24` / `0x46c77c32` / `0x46c7a874` | same `[track*32]` shape | **scene** p-lock storage (step handler uses these for the `d2 == -1` master/scene case) |
+| 4 | `0x46c7bf2c` / `0x46c7d7d8` / `0x46c7e0de` | values `param*128+step` / bitmap / per-param flag | **MIDI-track CC-lock** send queue — `FUN_40033e3c` writes (gated `0x8000004a` bit 1), `FUN_400409f4` sends each set bit as MIDI CC (`FUN_40010bc8` = the serial/MIDI TX ring) then clears the bit |
+
+Flow: **load** → `FUN_4009b220` fills #2 with `0xFF` (from boot `0x4001f95c` / project load
+`0x400238a8`), then the deserialiser populates #1; **pattern-enter** → copy loops at
+`0x4009b84c` / `0x4009c02c` splice #1/#3 → #2; **step** → step handler refreshes #2 from
+#1 for the current step; **edit** (hold `[TRIG]` + knob) → writes **#1** at
+`+0x59 + step*0x20 + param` — *this writer is Session 13's target*; **save** → #1 → disk.
+
+`0x8000004a` is the "what does a knob turn do" bitfield: bit 0 → write the Part-data
+value (encoder `0x4004eb24`); bit 1 → the CC-lock path.
+
+`emu_plock.py --watch --rec --trig N --knob D` drives the GRID-REC hold-trig + knob
+gesture and reports which PC wrote #1 (or #2/#4) — run it to name the writer/eraser.
 
 ---
 

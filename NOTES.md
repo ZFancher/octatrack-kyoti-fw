@@ -5170,3 +5170,41 @@ plain playback (baseline: 0 writes). To name the audio-p-lock writer, inject the
 3. `call_as_main(0x4004eb24, args=(<a1>, <delta>))` → turn a knob
 Then `rt.mem_writes` names the function. RE that + its `[NO]`-held erase sibling → design
 the "record[step] all-`0xFF` + bare trigless lock → clear the mask bit" detour.
+
+### Session 24 continued — the p-lock RAM structures mapped (4 of them)
+
+Static RE + `emu_plock.py` runs pinned the structures. The **auto-remove feature's
+target is #1** (the blob TRAC record); #2–#4 are downstream copies.
+
+| # | Addr | Shape | Role |
+|---|---|---|---|
+| 1 | blob `TRAC+0x59` (`[0x46c82456]blob + pat*0x8ed8 + trk*0x91a + 0x59`) | `record[step][32]`, `0xFF` = unlocked | **stored** p-locks. RAM == disk `TRAC+0x62` (`--confirm`). Persisted on save. |
+| 2 | `0x46c7ab30` / `0x46c76ac0` / `0x46c75fa0` | `[track*32 + param]` values ×2 + `[track*4]` bitmap | sequencer's **live per-track working set** — engine + step handler `0x4009d1e8` read it; per-frame apply `0x4000bad4` copies it into the DSP compute buffer. |
+| 3 | `0x46c7aa24` / `0x46c77c32` / `0x46c7a874` | same `[track*32]` shape | **scene** p-lock storage (step handler's `d2 == -1` case). |
+| 4 | `0x46c7bf2c` / `0x46c7d7d8` / `0x46c7e0de` | values `param*128+step` / bitmap / flag | **MIDI-track CC-lock** SEND queue — `FUN_40033e3c` writes (gate `0x8000004a` bit 1), `FUN_400409f4` sends each set bit as MIDI CC (`FUN_40010bc8`) then clears it. |
+
+- `FUN_4009b220` fills #2 with `0xFF` (reset) — from boot `0x4001f95c` + project load `0x400238a8`.
+- `0x4009b84c` / `0x4009c02c` — 32-byte copy loops splicing #3/pattern → #2 on pattern-enter.
+- step handler `0x4009d1e8`: `blob = 0x400e21e0 + bank*0x9b340`, pattern `*0x8ed8`, track `*0x91a`.
+- `0x8000004a` = "knob turn does what": bit 0 → Part-data value (encoder `0x4004eb24`); bit 1 → CC-lock.
+
+### `emu_plock.py --watch` — status
+
+Gesture steps run (`--rec` REC press · `--trig N` hold trig · `--knob D --param P` encoder)
+and per-PC p-lock writes are captured. **Not settled:** the first `--trig` run watched
+oversized windows and reported noise (neighbouring LED buffers at `0x46c7cxxx`); windows
+narrowed to `0x400`. The encoder call (`0x4004eb24(param_idx, delta)`) hung with a bad
+arg — the a1 convention is a small param index 0–5 via `FUN_4003249c(idx, delta)`, not a
+pointer; a knob turn also needs a **staged parameter page** (`0x46c7d244 + idx*20`).
+
+### NEXT (Session 25)
+
+1. `--watch --trig N` with the narrowed windows → confirm trig-hold populates #2 for the
+   held step (baseline).
+2. Get the encoder call working: stage a page first (or drive the page-select key), then
+   `0x4004eb24(3, 5)`; watch #1 (`blob TRAC+0x59 + step*0x20 + param`) for the write →
+   names the audio-p-lock **writer**.
+3. `--no` (add a `[NO]` press before the knob, keycode `0x32` handler `0x4005e25c`) →
+   watch #1 for `0xFF` stores → names the **eraser**.
+4. RE the writer + eraser; design the "record[step] all-`0xFF` + bare trigless lock →
+   clear the trigless-lock mask bit" detour.

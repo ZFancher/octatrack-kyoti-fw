@@ -6,25 +6,29 @@ Session-13 Phase 1: locate the p-lock *write* / *erase* handler by driving the
 firmware in octabam's full-firmware emulator (`refs/octabam/tools/emu_rtos.py`,
 via our `tools/emu_rtos.py` wrapper).
 
-Step 1 (this file, `--confirm`): boot, mount the factory OT DEMO, and check that
-the p-lock array *in RAM* is where octabam's bank-blob model + our disk RE say it
-is — `PART_PTR blob + pattern*0x8ed8 + track*0x91a + 0x59` (the disk `TRAC+0x62`
-array, minus the 9-byte chunk header). Cross-check against `inspect_bank.py`.
+`--confirm`  — **DONE (Session 24)**: boots our image in `emu_rtos`, mounts the
+factory OT DEMO, and proves the RAM p-lock array is byte-identical to disk at
+`PART_PTR blob + pattern*0x8ed8 + track*0x91a + 0x59`.
 
-Step 2 (`--watch`): `watch_mem` that region and drive gestures (`[NO]` press +
-an encoder delta; a `[TRIG]` hold + an encoder delta) to see which firmware
-function writes it.
+`--watch`  — **in progress**: `watch_mem` the p-lock structures and drive a GRID-REC
+hold-trig + knob gesture to name the writer. Working: the gesture steps run and
+their p-lock writes are captured per-PC. Not yet solid: the encoder-handler
+invocation (`0x4004eb24(param_idx, delta)` — arg convention still being pinned) and
+the exact byte-sizes of the `0x46c7ab30` / `0x46c7bf2c` structures.
 
     python3 tools/emu_plock.py --confirm
-    python3 tools/emu_plock.py --watch --ms 4000
+    python3 tools/emu_plock.py --watch --rec --trig 4 --knob 5 --param 3
 
 Needs `python3 tools/refs/sync.py` (the octabam cache) + `unicorn>=2.1`.
+Each run is ~2-3 min wall (the emulated LOAD PROJECT dominates).
 """
 import argparse
 import os
 import pathlib
 import struct
 import sys
+
+sys.stdout.reconfigure(line_buffering=True)
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 OCTABAM = ROOT / "refs" / "octabam"
@@ -112,9 +116,20 @@ def cmd_confirm(rt):
     return same or ds == rs
 
 
-# the MIDI-track CC-lock triplet FUN_40033e3c / FUN_400409f4 manage (RE Session 24) --
-# probably NOT the audio per-step storage, watched here to prove/disprove that.
+# --- the p-lock RAM structures (RE Session 24) --------------------------------
+# The one that matters for the auto-remove feature is #1: the blob TRAC record's
+# +0x59 array (--confirm proved RAM == disk). The others are downstream copies.
+#
+#   #2 the sequencer's LIVE per-track working set:
+SEQ_VALUES  = 0x46c7ab30      # [track*32 + param] locked value
+SEQ_SECOND  = 0x46c76ac0      # [track*32 + param] companion byte-array
+SEQ_BITMAP  = 0x46c75fa0      # [track*4] locked-bitmap longs
+#   #3 the MIDI-track CC-lock SEND queue (FUN_40033e3c writes, FUN_400409f4 -> MIDI CC):
 CC_VALUES, CC_BITMAP, CC_PARAMFLAG = 0x46c7bf2c, 0x46c7d7d8, 0x46c7e0de
+#
+# ⚠️ the exact byte-sizes of #2/#3 are not pinned; watch NARROW windows so the
+# hook doesn't catch neighbouring structures (LED buffers at 0x46c7cxxx etc).
+SEQ_SPAN, CC_SPAN = 0x400, 0x400
 
 
 def _hookall(rt, spans):
@@ -129,47 +144,107 @@ def _hookall(rt, spans):
     rt.uc.ctl_flush_tb()
 
 
-def cmd_watch(rt, ms):
+KEY_REC = 0x4000a274
+TRIG_HANDLER = 0x40060ce0                 # keymap codes 0x00..0x0f
+ENCODER_HANDLER = 0x4004eb24              # struct @ 0x400c08e0 -> (a1, delta)
+MODE_04A = 0x8000004a                     # "what does a knob turn do" bitfield
+
+
+def cmd_watch(rt, ms, do_rec, trig, knob, param, play):
     tb = trac_base(rt, DISK_PAT, DISK_TRK)
     blob_lo = tb + PLOCK_IN_TRAC
-    spans = [(blob_lo, PLOCK_LEN),          # the CONFIRMED audio p-lock array (blob copy)
-             (CC_VALUES, 0x1000), (CC_BITMAP, 0x200), (CC_PARAMFLAG, 4)]
-    print(f"\nwatch-mem  : audio array [{blob_lo:#x}+{PLOCK_LEN:#x}]  +  the "
-          f"0x46c7bf2c/d7d8/e0de triplet")
+    # NARROW: just the p-lock structures themselves + the mode byte (a wide hook makes
+    # every gesture step unusably slow).
+    spans = [(blob_lo, PLOCK_LEN),                    # THE target: the blob p-lock array
+             (SEQ_VALUES, SEQ_SPAN), (SEQ_SECOND, SEQ_SPAN), (SEQ_BITMAP, 0x40),
+             (CC_VALUES, CC_SPAN), (CC_BITMAP, 0x40), (CC_PARAMFLAG, 4),
+             (MODE_04A, 1)]
+    print(f"\nwatch      : blob TRAC [{tb:#x}]  +  seq working copy (0x46c7ab30/75fa0)  "
+          f"+  cc triplet  +  0x8000004a")
     _hookall(rt, spans)
 
-    # TODO(Session 24 NEXT): drive the real gesture --
-    #   1. press_key_live(<REC-mode toggle handler>, 1)   -> GRID REC
-    #   2. press_key_live(0x40060ce0, 1)  with keycode 0..15 in a1/d1  -> hold [TRIG n]
-    #   3. call_as_main(<encoder handler>, args=(<a1>, <delta>))       -> turn a knob
-    # For now: just run the sequencer so a plain playback shows ZERO writes (baseline).
     seq_bank, seq_pat = rt.seq_select_live(rt.uc.mem_read(er.CUR_BANK, 1)[0], DISK_PAT)
     print(f"seq select : bank {seq_bank} pattern {seq_pat}")
-    rt.frame = True
-    rt.next_frame = rt.sample + er.FRAME_PERIOD
-    rt.exact_clock()
-    rt.internal_clock()
-    rt.press_play_live()
-    rt.run(ms=ms)
 
-    writes = getattr(rt, "mem_writes", [])
-    print(f"\n{len(writes)} write(s) into the watched regions:")
-    seen = {}
-    for sample, task, pc, addr, size, val in writes:
-        region = ("audio-array" if blob_lo <= addr < blob_lo + PLOCK_LEN else
-                  "cc-values" if CC_VALUES <= addr < CC_VALUES + 0x1000 else
-                  "cc-bitmap" if CC_BITMAP <= addr < CC_BITMAP + 0x200 else "cc-paramflag")
-        seen.setdefault((pc, region), 0)
-        seen[(pc, region)] += 1
-    for (pc, region), n in sorted(seen.items()):
-        print(f"  pc {pc:#010x}  {region:<12} x{n}")
+    import time as _t
+
+    def spin(cap=300_000):
+        n = 0
+        while rt.pc != er.MAIN_SPIN and n < cap:
+            rt.step(); n += 1
+
+    def drive(name, addr, args, budget=250_000):
+        spin()
+        n0 = len(rt.mem_writes)
+        t0 = _t.time()
+        tag = f"{name}"
+        try:
+            d0 = rt.call_as_main(addr, args=args, budget=budget)
+            print(f"{name:11}: {addr:#x}{args} -> d0={d0:#x}  (+{len(rt.mem_writes)-n0} writes, {_t.time()-t0:.0f}s)")
+        except Exception as e:
+            print(f"{name:11}: {addr:#x}{args} raised {type(e).__name__}: {e}  ({_t.time()-t0:.0f}s)")
+        for w in rt.mem_writes[n0:]:
+            writes_by_pc.setdefault((tag, w[2]), [0, set(), set()])
+            e = writes_by_pc[(tag, w[2])]
+            e[0] += 1; e[1].add(w[3]); e[2].add(w[5])
+
+    writes_by_pc = {}
+
+    print(f"mode       : 0x8000004a = {rt.uc.mem_read(MODE_04A, 1)[0]:#04x}  "
+          f"0x46c7dd26 = {struct.unpack('>I', rt.uc.mem_read(0x46c7dd26, 4))[0]:#x}")
+    if do_rec:
+        drive("grid rec", KEY_REC, (0,))
+        print(f"             -> mode {rt.uc.mem_read(MODE_04A, 1)[0]:#04x}  "
+              f"rec-arm 0x800066a0={rt.uc.mem_read(0x800066a0, 1)[0]}")
+    if trig is not None:
+        drive("trig hold", TRIG_HANDLER, (trig, 1))
+        print(f"             -> mode {rt.uc.mem_read(MODE_04A, 1)[0]:#04x}")
+    if play:
+        rt.frame = True
+        rt.next_frame = rt.sample + er.FRAME_PERIOD
+        rt.exact_clock(); rt.internal_clock(); rt.press_play_live()
+        rt.run(ms=ms)
+    if knob:
+        drive(f"knob p{param}", ENCODER_HANDLER, (param, knob), budget=400_000)
+
+    def which(addr):
+        off = addr - blob_lo
+        if 0 <= off < PLOCK_LEN:
+            return f"blob-PLOCK  step{off//32} rec+{off%32:#04x}"
+        if tb <= addr < tb + TRAC_STRIDE:
+            return f"blob-TRAC+{addr-tb:#x}"
+        if addr == MODE_04A:
+            return "mode 0x8000004a"
+        for base, ln, nm in ((SEQ_VALUES, SEQ_SPAN, "SEQ_VALUES 0x46c7ab30"),
+                             (SEQ_SECOND, SEQ_SPAN, "SEQ_SECOND 0x46c76ac0"),
+                             (SEQ_BITMAP, 0x40, "SEQ_BITMAP 0x46c75fa0"),
+                             (CC_VALUES, CC_SPAN, "CC_VALUES 0x46c7bf2c"),
+                             (CC_BITMAP, 0x40, "CC_BITMAP 0x46c7d7d8"),
+                             (CC_PARAMFLAG, 4, "CC_PARAMFLAG")):
+            if base <= addr < base + ln:
+                return f"{nm}+{addr-base:#x}"
+        return f"?{addr:#x}"
+
+    print(f"\n=== writes into the p-lock structures, by gesture + PC ===")
+    for (tag, pc), (n, addrs, vals) in sorted(writes_by_pc.items()):
+        regions = sorted({which(a).split()[0] for a in addrs})
+        detail = sorted({which(a) for a in addrs})[:4]
+        print(f"  [{tag:9}] pc {pc:#010x}  x{n:<4} {','.join(regions):<26} "
+              f"vals={sorted(v for v in vals)[:6]}")
+        for d in detail:
+            print(f"                {d}")
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--confirm", action="store_true", help="check the RAM p-lock address vs disk")
-    ap.add_argument("--watch", action="store_true", help="watch_mem the p-lock array during play")
-    ap.add_argument("--ms", type=int, default=3000)
+    ap.add_argument("--watch", action="store_true", help="watch the p-lock band while driving a gesture")
+    ap.add_argument("--ms", type=int, default=1500)
+    ap.add_argument("--rec", action="store_true", help="press [REC] (GRID REC) before the knob")
+    ap.add_argument("--trig", type=int, default=None, help="hold [TRIG n] (0-15) before the knob")
+    ap.add_argument("--knob", type=int, default=0, help="encoder delta to apply (e.g. 5 or -5)")
+    ap.add_argument("--param", type=int, default=0, help="which encoder (0-5) the --knob turns")
+    ap.add_argument("--play", action="store_true", help="start the transport before the knob")
     a = ap.parse_args()
     if not (a.confirm or a.watch):
         ap.error("pick --confirm or --watch")
@@ -181,7 +256,7 @@ def main():
     if a.confirm:
         ok = cmd_confirm(rt)
     if a.watch:
-        cmd_watch(rt, a.ms)
+        cmd_watch(rt, a.ms, a.rec, a.trig, a.knob, a.param, a.play)
     sys.exit(0 if ok else 1)
 
 
