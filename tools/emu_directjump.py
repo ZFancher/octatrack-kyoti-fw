@@ -28,6 +28,9 @@ LOAD = 0x400d7400
 _nm = subprocess.run(["m68k-elf-nm", str(ROOT / "out/patch_directjump.elf")],
                      capture_output=True, text=True).stdout
 SYM = {p[2]: int(p[0], 16) for p in (l.split() for l in _nm.splitlines()) if len(p) == 3}
+if "dj_tick2" in SYM:
+    sys.exit("out/patch_directjump.elf is a DJ_V2 build -- run `python3 tools/build_directjump.py` "
+             "to restore v1, or use `python3 tools/emu_directjump_v2.py` for the v2 stubs.")
 DJ_A, DJ_B, DJ_C, DJ_TOGGLE = SYM["dj_a"], SYM["dj_b"], SYM["dj_c"], SYM["dj_toggle"]
 PC_SEND = 0x4009e884
 CKSUM = 0x4001f23c            # FUN_4001f23c -- ANDY-block re-checksum

@@ -5043,10 +5043,66 @@ reads the stub offsets from `out/patch_directjump.elf` via `nm` instead of hardc
 
 ### Still open / v2
 
-- The 4 countdown boxes under the text read as a SELECT-window; if the user wants a
-  cleaner look, v2 = revive the dead `FUN_4005a0e0` + a small close-on-tick hook.
+- ~~The 4 countdown boxes under the text read as a SELECT-window~~ → **BUILT, Session 35**
+  (`build_directjump_v2.py`).
 - `[PTN]` + `[YES]` shadows the (obscure) stock "arm while a pattern is cued" — acceptable
   per the re-scope, but worth a note in the manual/README for this build.
+
+## Session 35 (2026-09-07, `wip/mute-mode`) — DIRECT JUMP v2 (box-free toast), its own build
+
+**BUILT + emu-clean, NOT flashed.** v1 and v2 are two separate binaries from the same
+`patch_directjump.s` (`.ifdef DJ_V2`).
+
+### The overlay difference
+
+| | v1 `FUN_40059f8c(text, 0x28, 1, 0)` | v2 `FUN_4005a0e0(text)` |
+|---|---|---|
+| look | titled window, h=30px, **+ 4 draining countdown boxes** (the SELECT-BANK/PTN window's own look) | bare 18px text box, **no boxes** |
+| handle | `0x460d1e5c` (the SELECT-window global — other code, incl. our bankpage detect, keys off it) for <1 s | `0x460d1e64`, private, dead-code in stock (0 callers) |
+| dismiss | boxes drain via `FUN_40056ab8` (~0.66 s) | **`dj_tick2`** frame countdown |
+
+### `dj_tick2` — the auto-dismiss
+
+`FUN_4005a0e0` has no timeout, so v2 adds a countdown. Hooked at **`0x400522ca`**
+(displaces `lea 0x46c7dfba,%a2`, 6 B) inside the engine per-control-frame handler
+(fn `@0x40052200`, called from `0x40061e8e`; the one that decrements the SOFT MUTE
+release watchdog `0x46c7dfba` — so it ticks every frame, playing or stopped).
+`dj_tick2`: `G_TOAST` (`0x80006a44`, 4 B, volatile) counts down from `TOAST_FRAMES`
+(`--defsym`, default `0xc0`); at 0 → `jsr FUN_40056bc0` closes `0x460d1e64`; then the
+displaced `lea` + `rts`. D0 dead here (=119 from the `bge`); D0-D1/A0-A1 saved around
+the close (kernel post clobbers them); D2-D7/A2..A6 untouched.
+
+⚠️ `FUN_40056ab8` (the SELECT-window tick, "confirmed on HW" per the Session-2 countdown
+note) and `FUN_40052200` both have **0 locatable callers** in a byte scan —
+`FUN_40052200` is reached by fallthrough inside its enclosing fn (real caller
+`0x40061e8e`); `FUN_40056ab8` is genuinely 0-ref (registered somewhere the scan
+misses). v2 uses `FUN_40052200` because its enclosing fn is provably live.
+
+### `djt_show` (v2 branch)
+
+`move.l %a0,-(%sp); jsr FUN_4005a0e0; addq #4,%sp; move.l #TOAST_FRAMES,G_TOAST`
+(replaces v1's 4-arg `FUN_40059f8c` call). Everything else in `dj_toggle` — the
+`DJ_MODE`/shadow/re-checksum, PTN-chooser suppression, YES swallow — is shared.
+
+### Build + verify
+
+- `tools/build_directjump_v2.py` — same PATCHES as `build_directjump.py` + the
+  `0x400522ca` detour + `--defsym DJ_V2=1,TOAST_FRAMES=0x..`. Cave: `patch_directjump`
+  546 B @ `0x400d7400` (was 498; +48 for `dj_tick2` + the `djt_show` swap). Divergence
+  check: v2 touches only what v1 touches + `0x400522ca` (the dj_a/b/c stubs shift, so
+  their detour target words move — expected). → `out/OCTATRACK_OS1.40C_DIRECTJUMP_V2.{syx,bin}`
+  `140C_KYOTI`, 572 B vs stock. It also drops `out/patch_directjump_v2.{bin,elf}`.
+- `tools/emu_directjump_v2.py` — `dj_tick2` (0/5/1/negative `G_TOAST`, close-clobber
+  reg preservation, displaced `lea`) + the v2 `dj_toggle` path (`FUN_4005a0e0` not
+  `FUN_40059f8c`, `G_TOAST := 0xc0`). **ALL GOOD.** `emu_directjump.py` now refuses a
+  DJ_V2 stub (run `build_directjump.py` to restore v1). v1 emu still ALL GOOD.
+
+### HW test (in addition to Session 21's list — do BOTH binaries)
+
+- v2: `[PTN]`+`[YES]` → plain "DIRECT JUMP ON" box, **no boxes**, gone in ~0.6 s.
+  If it lingers / vanishes too fast: rebuild `build_directjump_v2.py 140C_KYOTI 0xNN`
+  (the `0x40052200` frame rate is unmeasured).
+- Compare the two looks; keep whichever the user prefers as the primary.
 
 ## Session 22 (2026-09-06, `wip/mute-mode`) — merge `main`, and DT/SOLO persistence
 
@@ -5277,13 +5333,15 @@ Working model: the knob edits **#2** (`0x46c7ab30`) for the held step; a
    patterns, export, diff banks) — blocked on the MKI being back. Alt: trace
    `0x400645ce` (SAVE) + `0x40025xxx` for the merge (~2–3 emu sessions). NOTES
    "Session 34".
-2. **DIRECT JUMP v2** — box-free overlay: revive the dead-code `FUN_4005a0e0` + a
-   close-on-tick hook instead of the 4-box `FUN_40059f8c`. Small; maybe wait for v1 HW.
+2. ~~**DIRECT JUMP v2**~~ — **BUILT (Session 35)**, `build_directjump_v2.py` →
+   `out/OCTATRACK_OS1.40C_DIRECTJUMP_V2.{syx,bin}`, emu-clean, NOT flashed. Box-free
+   `FUN_4005a0e0` toast + `dj_tick2` countdown @ `0x400522ca`. HW-test both DJ binaries
+   and tune `TOAST_FRAMES` if needed (NOTES "Session 35").
 3. **Side-chain step 3 DSP** — "Session 17 continued (8)" open items: disasm payload B's
    `func_0004a7`-equivalent injection point + the 2 instrs to displace; the `dsp_host`
    step-2 harness.
-4. **(blocked on MKI)** flash sequence DT → SIDECHAIN2 → step-3 DSP → DIRECTJUMP; the
-   p-lock Phase-0 `pattern-diff` pass; Bug 2 HW confirm.
+4. **(blocked on MKI)** flash sequence DT → SIDECHAIN2 → step-3 DSP → DIRECTJUMP (v1 or
+   v2); the p-lock Phase-0 `pattern-diff` pass; Bug 2 HW confirm.
 
 Housekeeping: `emu_rtos` / `emu_plock` need the EMAC-patched Unicorn — run once per
 machine: `( cd refs/octabam && PY=$(command -v python3) bash scripts/build_unicorn.sh )`.

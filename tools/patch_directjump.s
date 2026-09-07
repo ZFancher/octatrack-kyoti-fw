@@ -6,6 +6,14 @@
 |   [PTN] + [YES]   toggles DIRECT JUMP  0 <-> 1, flashing "DIRECT JUMP ON" / "DIRECT
 |                   JUMP OFF" for ~0.7 s.  No PERSONALIZE entry (Session 21 re-scope).
 |
+|   Overlay -- two builds:
+|     v1 (build_directjump.py)     FUN_40059f8c: text + 4 draining countdown boxes,
+|                                  styled as the SELECT-BANK/PTN window, borrows its
+|                                  handle 0x460d1e5c for < 1 s.
+|     v2 (build_directjump_v2.py, --defsym DJ_V2=1)   FUN_4005a0e0: bare 18px text box,
+|                                  NO boxes, private handle 0x460d1e64; auto-dismiss via
+|                                  dj_tick2 spliced into the engine per-frame handler.
+|
 |   DIRECT JUMP  0 = "OFF"  -> stock: a cued pattern switches at the CHAIN AFTER point
 |                              (PLEN by default), restarting at step 1.
 |                1 = "ON"   -> a manually cued pattern switches on the NEXT step tick
@@ -63,6 +71,20 @@
     .equ POPUP,     0x460e5cd0          | !=0 = a modal popup is up (skip our combo then)
     .equ SHOW_MSG,  0x40059f8c          | FUN_40059f8c(text, ticks, enable, on_timeout)
     .equ YES_RESUME,0x4005e4d0          | back into the stock YES handler after the 2 moves
+
+|   ---- v2 overlay (build_directjump_v2.py: --defsym DJ_V2=1) ----
+|   v1 uses SHOW_MSG = the SELECT-BANK/PTN timed window -> text PLUS 4 draining boxes,
+|   styled as that window, borrowing its handle 0x460d1e5c for < 1 s.  v2 uses the
+|   dead-code bare-text popup FUN_4005a0e0 (own handle 0x460d1e64, small 18px box, NO
+|   boxes) and its own frame countdown: dj_tick2, spliced into the engine per-control-
+|   frame handler (fn @ 0x40052200, the one that decrements the SOFT MUTE release
+|   watchdog 0x46c7dfba), closes the popup via FUN_40056bc0 when G_TOAST hits 0.
+    .equ POPUP2,    0x4005a0e0          | FUN_4005a0e0(text) -- bare text popup, no timeout
+    .equ CLOSE_CB,  0x40056bc0          | FUN_40056bc0 -- close the 0x460d1e64 popup
+    .ifndef TOAST_FRAMES
+    .equ TOAST_FRAMES, 0xc0             | ~0.6 s @ the 0x40052200 frame rate (HW-tunable)
+    .endif
+    .equ G_TOAST,   0x80006a44          | v2 frame countdown for the toast (4 B, volatile)
 
 |   free battery-backed scratch (this build has no lazypart/scene stubs to collide with)
     .equ G_ARMED,   0x80006a40          | 0 = idle, !=0 = a direct jump is armed
@@ -122,12 +144,20 @@ dj_toggle:
     beq.b   djt_show
     lea     dj_msg_on,%a0
 djt_show:
+    .ifdef DJ_V2
+    move.l  %a0,-(%sp)                 | text
+    jsr     POPUP2                     | FUN_4005a0e0(text) -- box-free popup @ 0x460d1e64
+    addq.l  #4,%sp
+    move.l  #TOAST_FRAMES,%d0
+    move.l  %d0,G_TOAST                | arm dj_tick2's frame countdown
+    .else
     clr.l   -(%sp)                     | on_timeout = 0
     pea     1                          | enable = 1
     pea     0x28                       | ticks (~0.66 s -> 4 boxes drain fast)
     move.l  %a0,-(%sp)                 | text
     jsr     SHOW_MSG
     lea     16(%sp),%sp
+    .endif
 
     moveq   #1,%d0
     move.l  %d0,PTN_USED               | so [PTN] release does NOT open the chooser
@@ -144,6 +174,30 @@ dj_msg_on:
 dj_msg_off:
     .asciz "DIRECT JUMP OFF"
     .align 2
+
+    .ifdef DJ_V2
+| ================= v2 toast countdown -- Hook @ 0x400522ca =================
+| Detour replaces `lea 0x46c7dfba,%a2` (6 B) inside the engine per-control-frame
+| handler (fn @ 0x40052200, called from 0x40061e8e; decrements the SOFT MUTE release
+| watchdog immediately after this).  On the path here D0 = 119 (from the bge) and is
+| dead (reloaded at 0x400522de); D2/A2..A4 are loaded fresh below.  FUN_40056bc0 goes
+| through kernel post (0x40000c3c) which clobbers D0-D1/A0-A1, so save those around it.
+    .global dj_tick2
+dj_tick2:
+    move.l  G_TOAST,%d0
+    ble.b   dtk_done                   | 0 (or stale-negative) -> no toast up
+    subq.l  #1,%d0
+    move.l  %d0,G_TOAST
+    bne.b   dtk_done
+    lea     -16(%sp),%sp
+    movem.l %d0-%d1/%a0-%a1,(%sp)
+    jsr     CLOSE_CB                    | G_TOAST hit 0 -> close the popup (0x460d1e64)
+    movem.l (%sp),%d0-%d1/%a0-%a1
+    lea     16(%sp),%sp
+dtk_done:
+    lea     0x46c7dfba,%a2             | displaced original
+    rts
+    .endif
 
 | ================= Hook A @ 0x400a4006 =================
 | detour replaces `tst.b (0x8000667e).l` (6 B).  Runs every step tick.  The step engine
