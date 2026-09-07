@@ -5263,3 +5263,23 @@ Working model: the knob edits **#2** (`0x46c7ab30`) for the held step; a
 `emu_plock.py` — grid-rec, hold trig, poke a value into #2 by hand, **release the trig**
 (`TRIG_HANDLER(kc, 0)`), watch #1. The PC that copies #2→#1 is the writer; find its
 `[NO]`-held / erase sibling; then design the auto-remove detour.
+
+### No-flash to-do board (Session 25 → onward)
+
+1. **[NEXT] p-lock writer/eraser hunt (Session 26).** Model: knob edits the live working
+   set #2 (`0x46c7ab30`) for the held step; a commit-on-trig-**release** copies #2 →
+   blob #1 (`TRAC+0x59 + step*0x20`). `emu_plock.py` — grid-rec, hold trig, poke #2,
+   `TRIG_HANDLER(kc, 0)` (release), watch #1 → the copy PC is the **writer**. `[NO]`
+   (`0x4005e25c`)-held variant → the **eraser**. Then the auto-remove detour. (Session 25
+   settled: `FUN_40033e3c` is the MIDI-CC path, not this.)
+2. **DIRECT JUMP v2** — box-free overlay: revive the dead-code `FUN_4005a0e0` + a
+   close-on-tick hook instead of the 4-box `FUN_40059f8c`. Small; maybe wait for v1 HW.
+3. **Side-chain step 3 DSP** — "Session 17 continued (8)" open items: disasm payload B's
+   `func_0004a7`-equivalent injection point + the 2 instrs to displace; the `dsp_host`
+   step-2 harness.
+4. **(blocked on MKI)** flash sequence DT → SIDECHAIN2 → step-3 DSP → DIRECTJUMP; the
+   p-lock Phase-0 `pattern-diff` pass; Bug 2 HW confirm.
+
+Housekeeping: `emu_rtos` / `emu_plock` need the EMAC-patched Unicorn — run once per
+machine: `( cd refs/octabam && PY=$(command -v python3) bash scripts/build_unicorn.sh )`.
+wip→main KB sync recipe: `git checkout main -- reference/ tools/emu_*.py refs/MANIFEST.lock`.
