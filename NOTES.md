@@ -5266,12 +5266,14 @@ Working model: the knob edits **#2** (`0x46c7ab30`) for the held step; a
 
 ### No-flash to-do board (Session 25 → onward)
 
-1. **[NEXT] p-lock writer/eraser hunt (Session 26).** Model: knob edits the live working
-   set #2 (`0x46c7ab30`) for the held step; a commit-on-trig-**release** copies #2 →
-   blob #1 (`TRAC+0x59 + step*0x20`). `emu_plock.py` — grid-rec, hold trig, poke #2,
-   `TRIG_HANDLER(kc, 0)` (release), watch #1 → the copy PC is the **writer**. `[NO]`
-   (`0x4005e25c`)-held variant → the **eraser**. Then the auto-remove detour. (Session 25
-   settled: `FUN_40033e3c` is the MIDI-CC path, not this.)
+1. **[NEXT] p-lock writer/eraser hunt (Session 27).** Session 26 falsified the naive
+   commit-on-release model *as driven* and found the tooling was calling the wrong
+   handler (jump-table `0x40060ce0` / `0x4000a274`, not the real grid-rec cluster
+   `0x4005f260..0x4006071a`). Gate state now mapped (`0x460d172e` armed /
+   `0x460d174a` held-step bitmap / `0x460d174c` base / `0x460d1746` step-record ptr).
+   NEXT: decode the real trig-key handler from the 26-byte keymap, drive it so the
+   gates arm, watch the whole pattern block through a knob turn. Full plan +
+   the `+0x4900` vs `TRAC+0x59` contradiction in NOTES "Session 26".
 2. **DIRECT JUMP v2** — box-free overlay: revive the dead-code `FUN_4005a0e0` + a
    close-on-tick hook instead of the 4-box `FUN_40059f8c`. Small; maybe wait for v1 HW.
 3. **Side-chain step 3 DSP** — "Session 17 continued (8)" open items: disasm payload B's
@@ -5283,3 +5285,96 @@ Working model: the knob edits **#2** (`0x46c7ab30`) for the held step; a
 Housekeeping: `emu_rtos` / `emu_plock` need the EMAC-patched Unicorn — run once per
 machine: `( cd refs/octabam && PY=$(command -v python3) bash scripts/build_unicorn.sh )`.
 wip→main KB sync recipe: `git checkout main -- reference/ tools/emu_*.py refs/MANIFEST.lock`.
+
+## Session 26 (2026-09-06, `wip/mute-mode`) — p-lock writer hunt: synthetic calls blocked; static RE of the real clusters
+
+`m68k-elf-objdump` (`/opt/homebrew/bin/`, `-b binary -m m68k:5407 --adjust-vma=0x40000000`)
+is on this machine — use it for quick disasm without spinning Ghidra.
+
+### The emulation attempts, and why they didn't name the writer
+
+`emu_plock.py` gained `--release` and `--applyknob PARAM VALUE` (both under `--watch`).
+
+1. **`--release`** (grid-rec → hold trig 4 → poke sentinel `0x2a` into #2
+   `0x46c7ab30[1*32+3]` + its companion + bitmap → `TRIG_HANDLER(4,0)` release →
+   watch #1): **zero writes** anywhere, blob step 4 unchanged. The
+   commit-on-trig-release model is **not reproduced** by this path.
+
+2. **Root cause found**: `emu_plock.py`'s `TRIG_HANDLER = 0x40060ce0` and
+   `KEY_REC = 0x4000a274` are from the **unreliable `0x400d2d54` jump table**
+   (KB already flagged the "physical-key" labels as unconfirmed). Disasm:
+   - `0x4000a274`: `bras 0x4000a2ca` → builds a 3-byte MIDI message, `jmp 0x40010bc8`
+     (serial TX). It is a **MIDI-note/CC out helper**, not grid-rec.
+   - `call_as_main(0x40060ce0,(4,1))` returns `d0=0x11`, sets `[0x8000003f+1]=1`
+     and a held-list byte at `0x46c76de0+4`, but leaves the p-lock editor gates
+     `0x460d172e` / `0x460d174a` / `0x460d174c` **all 0**, and `(4,0)` release does
+     **not** clear the held state. Wrong / incomplete handler.
+
+3. **`--applyknob 3 90`** — poked the gates by hand (`0x460d172e=1`,
+   `0x460d174a=1<<4`, `0x460d174c=0`, `0x800000cc=1`) then
+   `call_as_main(0x4004eb54, (3, -1, 90))`: **runs away in the scheduler**
+   (`pc 0x40000560`, ~111k writes to the TCB save area) without reaching its
+   store. The sub's guard chain (`jsr 0x4002ea84` → `0x4002ea2c` does MIDI /
+   `0x4007e81c` work) or its redraw tail can't complete in borrowed-main context
+   (same class as Session 25's "the full `0x4004eb24` hangs — it redraws").
+
+### What the static RE established (confidence C, disassembled)
+
+**`0x100b14d0` = current PATTERN byte** (`mvzb` → `0x0a` = DISK_PAT). `0x100b14cc`
+= current track (octakit `GK_STOCK_CURRENT_*_PRIMARY` = `0x100b14cc`=track,
+`…cf`=?, `…d0`=pattern).
+
+**p-lock editor gate state** (all in the `0x460d17xx` UI-scratch page):
+| addr | role |
+|---|---|
+| `0x460d172e` | **armed** flag (`!= 0` ⇒ a p-lock edit is in progress). Reader `0x40033970` (returns it in d0). |
+| `0x460d174a` | **16-bit held-step bitmap** (bit p ⇒ step = `0x460d174c + p`). |
+| `0x460d174c` | held-step **base** (long; cleared when `0x460d174a` goes to 0). |
+| `0x460d1746` | pointer/offset for the currently-held step's record, **stride 0x10 per step** (`a5 = step<<4 + base`, set at `0x40050bd0`). |
+| `0x46c7d2e4` | per-step `|= 1<<param` **locked bitmap** the knob sub maintains. |
+
+**The real grid-rec trig handler = the cluster `0x4005f260 .. 0x4006071a`.**
+- press path `0x40050bac`: `0x460d174a |= 1<<d3` (d3 = trig index), sets
+  `0x460d1746`, then at `0x40050c0c` / `0x4005127a` sets `0x460d172e = 1`
+  (`0x80000012` = MIDI-mode split: audio path vs MIDI path).
+- release path near `0x4005f7a0`: `0x460d174a &= ~(1<<d7)`; if it hits 0,
+  `clr.l 0x460d174c`; then `0x4005f7f2` / `0x4005fd96` `clr.l 0x460d172e`.
+- both paths touch the blob (`0x46c82456`) via a **PART-payload / working view**
+  at pattern offsets `0x2470` (16-bit mask array, `track*0x458`),
+  `0x2880` (`+[0x460d1746]`), stride `0x476c` (18284) per pattern — **NOT** the
+  `pat*0x8ed8` pattern-record view that holds #1.
+
+**The knob → p-lock writer family = `0x4004d??? .. 0x4004f4??`** (reads
+`0x460d174a`, writes the blob). `0x4004eb54` = "apply value to every held step":
+`[0x46c82456] + pattern*0x8ed8 + 0x4900 + step*0x20 + param*0x8b0` (bytes `+2`,`+3`),
+gated on `0x800000cc` (EXT LEN GRID-REC PERSONALIZE) **and** slot currently `0xFF`,
+maintains `0x46c7d2e4[step] |= 1<<param`. Siblings at `0x4004ed24`, `0x4004f2xx`
+read `+0x4900`/`+0x4903`/`+0x4904` (multi-byte per slot).
+
+**Key open contradiction**: `0x4900 + step*0x20 + param*0x8b0` is **pattern-global
+and param-major**; #1 (proved `== disk` by `--confirm`) is **per-track**
+(`trk*0x91a + 0x59`, 32 B/step). They do not alias. So either (a) `0x4004eb54` is
+the MIDI-track knob path (MIDI tracks don't have TRAC p-locks the same way), or
+(b) there is a param-major working cache at `+0x4900` that a commit/serialise step
+repacks into the per-track TRAC arrays. `--confirm` only proves #1's *final*
+state matches disk — it doesn't prove #1 is what the editor writes live.
+
+### NEXT (Session 27)
+
+1. **Fix the handler addresses.** Decode the grid-rec REC-key + trig-key entries
+   from the **26-byte keymap** (T1 `0x400bfc10`, T2 `0x400c01f4`; `{u8 code,0,
+   press:u32, release:u32, h3:u32, aux:u32, 0, u16 flags}`) — trig code `0x00-0x0f`
+   should point into `0x4005f260..`. Also find the byte that means "GRID REC mode
+   active" (not `0x800066a0` — that's audio-recorder arm).
+2. Then in `emu_plock.py`: drive the **real** grid-rec trig press
+   (`call_as_main(<real trig handler>, (kc, 1))`), confirm `0x460d172e` /
+   `0x460d174a` arm, `watch_mem` the **whole pattern block** + `0x46c7d2e4`, turn
+   the knob via the smallest inner write sub, and read off the writer PC + offset.
+   Compare the offset to #1 (`trk*0x91a + 0x59 + step*0x20`).
+3. `[NO]`-held erase sibling: same family, params `0x34-0x36`
+   (`0x4005e164/e1a8/e1d2`) per Session 25 — but that was the MIDI-CC path; the
+   audio erase is likely in `0x4004f2xx` or the `0x4005f2xx` cluster's
+   `andl`-with-mask stores (e.g. `0x4005fd58` `movew %d3,%a0@(…)` with d3 masked).
+4. If `+0x4900` turns out to be a working cache, find the repack (serialise) step
+   — likely in the `SAVE` / `CHANGE PATTERN` flow (`0x400a0???` sequencer, or the
+   `0x40025???` project serialiser that already shows `pat*0x8ed8` + `trk*0x91a`).
