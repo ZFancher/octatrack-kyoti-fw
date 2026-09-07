@@ -5266,16 +5266,18 @@ Working model: the knob edits **#2** (`0x46c7ab30`) for the held step; a
 
 ### No-flash to-do board (Session 25 → onward)
 
-1. **[NEXT] p-lock serialise + eraser + detour (Session 30).** Mapped: knob →
-   **writer** `0x4004ef54(track, matchval, value)` → `blob + pat*0x8ed8 +
-   track*0x8b0 + step*0x20 + 0x4900 + 2`; **eraser** `0x4004f124(track, b2, b3)`
-   (`st`→0xFF); dispatcher `~0x40062a00` gated on `0x460d172e`. **`0x400339d8` =
-   the lock-bitmap rebuild** (`0x46c7d48c[step]` = stored-lock track bitmap,
-   `0x46c7d2e4[step]` = live; Session 29 reconciled — reads #1 at `TRAC+0x59`) =
-   the **detour anchor**. NEXT: `watch_reads` `+0x4900` during SAVE for the
-   serialise; drive the eraser; then hook `0x400339d8` / eraser-exit to clear the
-   trigless-lock trig-mask when a step's lock bit clears and it has no note trig.
-   Need a test pattern with a trigless lock (DEMO has none). NOTES "Session 29".
+1. **[NEXT] trigless-lock feature — trig-type flag + detour (Session 31).**
+   Gesture (Session 13) = **LIVE REC `[NO]`+knob**; handler =
+   **`0x40041bc4(track, a2@2, a2@3, a2@4)`** (`0x460d172a`-gated LIVE write/erase).
+   It updates ≥3 parallel views (`+0x48d8` param bitmap, `+0x4900` value records,
+   `+0x2880` PART-payload) but **never checks "count→0" or touches a trig mask**.
+   NEXT: find the trig-type flag (disasm `0x400587d4` = grid-rec hold branch / the
+   "place trigless lock" path + the LED painter's read of it); build a real
+   trigless-lock test pattern; then the detour on `0x40041bc4`'s exit. ⚠️ p-lock
+   data has ≥5 parallel live views (`#1` TRAC+0x59, TRAC+0x0a bitmap, +0x48d8
+   bitmap, +0x4900 values, +0x2880 PART-view, +0x2470 16-bit) — the serialise
+   graph is unmapped; the "predicate is the whole ballgame" risk is real. NOTES
+   "Session 30".
 2. **DIRECT JUMP v2** — box-free overlay: revive the dead-code `FUN_4005a0e0` + a
    close-on-tick hook instead of the 4-box `FUN_40059f8c`. Small; maybe wait for v1 HW.
 3. **Side-chain step 3 DSP** — "Session 17 continued (8)" open items: disasm payload B's
@@ -5527,13 +5529,63 @@ locked steps. (`--s27` now does this re-assert.)
 `0x46c7d48c[0] = 0x13` (tracks 0,1,4), `[4] = 0x43` (0,1,6). **This is the detour
 anchor** for the trigless-lock auto-remove.
 
-### Open / NEXT (Session 30)
+## Session 30 (2026-09-06, `wip/mute-mode`) — the LIVE-REC gesture handler, and the multi-view p-lock reality
 
-1. **The serialise** `+0x4900` → TRAC: `watch_reads` `+0x4900` during SAVE /
-   CHANGE PATTERN → the reader PC.
-2. **Drive the eraser** `0x4004f124(track, b2, b3)` — trace what the `[NO]`+knob
-   gesture posts as the `a2` event (opcode + `a2@2`).
-3. **The detour**: hook `0x400339d8` / eraser-exit — when a step's `0x46c7d48c`
-   bit `track` clears AND the step has no note trig (`TRAC+0x00`), clear the
-   trigless-lock trig-mask bit. (Need which `TRAC` mask `+0x08/+0x10/+0x18` = the
-   lock-trig; build a test pattern with a trigless lock — the DEMO has none.)
+Re-read Session 13's brief: the feature's gesture is **LIVE REC `[NO]`+knob**
+(the "clear as the playhead passes" live erase), NOT grid rec. That path is the
+`0x460d172a != 0` (LIVE-REC edit active) branch of the `~0x40062a00` dispatcher:
+`0x40041784(track,a2@2,a2@4,a2@8)` = LIVE write, **`0x40041bc4(track,a2@2,a2@3,
+a2@4)` = LIVE write/erase** (grid-rec's `0x4004ef54`/`0x4004f124` are the
+`0x460d172e`-armed siblings).
+
+### `0x40041bc4` — the LIVE-REC p-lock write/erase (the feature's hook target)
+
+`linkw fp,#-64`. Gate `0x460d172a != 0` && `0x460d1a90 == 0`. Decodes
+(track,param,…) via `0x4009b290` / `0x4009b2d4` → `d6`=bank `d5`=pattern
+`d4`=param-ish. It updates p-lock state across **several parallel views**, all
+keyed `blob(0x400e21e0) + bank*0x9b340 + pattern*0x8ed8 + track*{stride} + off`:
+
+| view | off | track stride | shape |
+|---|---|---|---|
+| `+0x48d8` param bitmap | `0x48d8` / `0x48e0` | `0x8b0` | 2×u32 "which params locked" + `0x1001aa26`/`aa2e` mirrors |
+| `+0x4900` value records | `0x4900` | `0x8b0` | bytes `+0/+1/+3/+4/+5` `st`'d to `0xFF` on erase, written on write; `0x1001aa4e` mirror |
+| `+0x2880` PART-payload | `0x2880` | `0x458` (pat `0x476c`, bank `0x4d9a0`) | `& 0x1f` / `& 0x80` byte pair + a 6-bit field at bits 7-12 of a u16 + `0x1001614e` mirror |
+| `0x46c7d2e4[step]` | — | — | `\|= 1<<track` (marks the step live-touched) |
+
+Plus dirty flags `[0x4017d512+…] = 1` and `[0x100f8598] = 1`.
+
+**It does NOT check "lock count → 0" and does NOT touch any trig-type / trig mask.**
+So the emptied trigless lock persists — exactly Session 13's complaint. The
+detour must add that check + the trig-type clear.
+
+### The step handler reads `TRAC + 0x0a`, not just #1
+
+`0x4009d740`+ (per-param loop `0x4009d7dc`, 32×): consults a 64-bit param bitmap
+at `blob + pat*0x8ed8 + track*0x91a + 0x0a` (`a3@(10,d0)` + `@(0x0e)`) AND the
+`#1` value records at `TRAC + 0x59` (`sp@(92)`/`sp@(96)` ptrs). So `TRAC + 0x0a`
+(8 bytes, param-indexed) = "which params are locked" for playback; `#1` = the
+values.
+
+### Reality check — this is bigger than the Session 13 estimate
+
+p-lock data now has **≥5 live representations** (`#1` TRAC+0x59 values ·
+TRAC+0x0a param bitmap · +0x48d8 param bitmap · +0x4900 value records ·
++0x2880 PART-payload · +0x2470 16-bit view · the #2/#3/#4 working sets) and the
+serialize/deserialize graph between them is not mapped. The **trig-type flag**
+Session 13 needs is still not located — `0x40041bc4` doesn't write it, so a
+separate "place trigless lock" path sets it. **The "predicate is the whole
+ballgame" risk is real.**
+
+### NEXT (Session 31)
+
+1. Find the **trig-type flag**: disasm the "place a trigless lock" path
+   (`[FUNC]+[TRIG]` on an empty step, or `0x400587d4` = the grid-rec *hold*
+   branch) — it sets whatever bit makes a step a dim lock. Cross-check: the
+   16-step LED painter's read of that bit.
+2. Build a test pattern with a real trigless lock — either drive
+   `0x40041784`/`0x400587d4` in the emu on an empty step, or hand-patch a DEMO
+   bank (set a `#1[step]` value on a step with the `TRAC+0x00` note bit clear)
+   and load it to see how the firmware renders / stores it.
+3. Once the flag + the "lock count == 0" predicate are pinned: the detour hooks
+   `0x40041bc4`'s exit — `if erase && all-lock-views-now-empty-for-(track,step)
+   && trig_type == pure-trigless-lock: clear the trig-type flag`.

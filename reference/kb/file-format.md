@@ -319,11 +319,27 @@ drifts that to 0 after a run-to-spin, re-assert before calling.
 `objdump` prints a brief-format `lea (d8,An,Xn)` disp as raw hex with no `0x`
 (so `lea %a0@(58,%d3:l)` = `0x58`), unlike a `(d16,An)` disp (signed decimal).
 
-*Open (Session 30)*: the `0x800000cc` gate on the `+2` write; the serialise
-(`watch_reads` `+0x4900` during SAVE); drive the eraser `0x4004f124`; then the
-detour — clear the trigless-lock trig-mask bit when a step's `0x46c7d48c` bit
-clears and it has no note trig (`TRAC+0x00`). Need a test pattern with a trigless
-lock (the DEMO has none).
+**The LIVE-REC gesture (`[NO]`+knob live-erase — the trigless-lock feature's
+path)** is the `0x460d172a != 0` branch of `~0x40062a00`:
+`0x40041bc4(track, a2@2, a2@3, a2@4)` = LIVE write/erase (grid-rec's
+`0x4004ef54`/`0x4004f124` are the `0x460d172e`-armed siblings). `0x40041bc4`
+updates p-lock state across parallel views keyed
+`blob + bank*0x9b340 + pattern*0x8ed8 + track*{stride}`:
+`+0x48d8`/`+0x48e0` (2×u32 param bitmap, track stride `0x8b0`, `0x1001aa26`
+mirror) · `+0x4900` value records (bytes `+0/+1/+3/+4/+5` `st`'d `0xFF` on erase) ·
+`+0x2880` PART-payload (`0x458` track / `0x476c` pat / `0x4d9a0` bank, a 6-bit
+field at bits 7-12 of a u16) · `0x46c7d2e4[step] |= 1<<track` · dirty flags
+`[0x4017d512]`, `[0x100f8598]`. **It never checks "lock count → 0" and never
+touches a trig-type mask** — so the emptied trigless lock persists (Session 13's
+complaint). The step handler (`0x4009d740`+, per-param loop `0x4009d7dc`)
+consults a 64-bit param bitmap at **`TRAC + 0x0a`** + the `#1` values at
+`TRAC + 0x59`.
+
+*Open (Session 31)*: the **trig-type flag** (Session 13's predicate) is still not
+located — `0x40041bc4` doesn't set it; disasm the "place trigless lock" path
+(`0x400587d4` = grid-rec *hold* branch, or `[FUNC]+[TRIG]`). Then a test pattern
+with a real trigless lock, then the detour on `0x40041bc4`'s exit. ⚠️ p-lock data
+has ≥5 parallel live views; the serialise graph is unmapped.
 
 `0x8000004a` is the "what does a knob turn do" bitfield: bit 0 → write the Part-data
 value (encoder `0x4004eb24`); bit 1 → the CC-lock path.
