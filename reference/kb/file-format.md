@@ -73,11 +73,16 @@ PART block addresses (1..8 — **OctaLib notes "two sets of parts, why?"**, like
 
 ### Machine types
 
-Stored as consecutive bytes with the part definition. `00` = STATIC (default);
-FLEX has its own code. Machine-type→code table still open at the byte level, but
-firmware `FUN_40097168` dispatches `0-4 = FLEX/STATIC/THRU/NEIGHBOR/PICKUP`, and
-the FLEX/STATIC parameter descriptors are located: `0x400d2fe4` / `0x400d3176`
-(see `memory-map.md` "Effect & machine descriptor table").
+Machine-type byte values (octabam RTOS §10.13, by code + data — corrects the
+earlier "0/1 = FLEX/STATIC" guess): **`0` = STATIC · `1` = FLEX · `4` = PICKUP**;
+THRU / NEIGHBOR have no slot. FLEX/STATIC descriptors `0x400d2fe4` / `0x400d3176`
+(`memory-map.md`).
+
+**Per-track slot record — 5 bytes**, at part-record `+0x2d3 + 5*track + type`
+(RAM `blob + part*0x18b2 + track*5 + type + 0x8f04a`): byte `+0` = STATIC slot,
+`+1` = FLEX slot, `+4` = PICKUP buffer. Slot bytes are 0-based (`0` = slot 1,
+`128` = recording buffer R1 — the file's `SLOT=129`). PICKUP's setter forces
+`128+track` (its own recorder). `ot_project.py track-slot` writes these.
 
 ### Effect types → id  (from octa-bt-pt)
 
@@ -225,9 +230,43 @@ is a bare trigless lock, clear its mask bit. Conservative — keep on any doubt.
 octabam (RTOS §10.6) measured the RAM strides directly: **pattern `0x8ed8`, track
 `0x91a`** — exactly `disk − header`. So a `TRAC`'s data *does* survive into RAM at
 the same relative offsets (mask 0x00 at RAM `+0`, etc.); the older "RAM `trk*0xc`"
-note was a different (header/pointer) view. Still verify a specific offset with
-`insp_banks.py` (runs the real `FUN_4008ded0`) or `emu_rtos` before hooking a
-RAM read of the locks.
+note was a different (header/pointer) view.
+
+### RAM p-lock array — **CONFIRMED** (Session 24, `tools/emu_plock.py --confirm`)
+
+**`[0x46c82456] blob + pattern*0x8ed8 + track*0x91a + 0x59`, 64 steps × 32 bytes** —
+byte-for-byte identical to the disk `TRAC+0x62` array (the `+0x59` = disk `+0x62`
+minus the 9-byte chunk header). Verified by loading the factory OT DEMO through the
+real firmware in `emu_rtos` and diffing the RAM against `bank01.work` (P11 t2:
+param header `10 02 00 ff …` and every locked step/offset/value match exactly). So
+the on-disk map above **is** the RAM map — no repack. The param header
+(`[LEN] 02 00 FF …`) is at blob `+0x50`.
+
+### The p-lock RAM structures — four of them (Session 24)
+
+| # | Address | Shape | Role |
+|---|---|---|---|
+| 1 | blob `TRAC+0x59` | `record[step][32]`, `0xFF`=unlocked | the pattern's **stored** p-locks (= disk, persisted on save) |
+| 2 | `0x46c7ab30` / `0x46c76ac0` / `0x46c75fa0` | `[track*32 + param]` values (×2) + `[track*4]` bitmap | the sequencer's **live per-track working set** — the step handler `0x4009d1e8` + per-frame apply `0x4000bad4` read these; the engine applies them |
+| 3 | `0x46c7aa24` / `0x46c77c32` / `0x46c7a874` | same `[track*32]` shape | **scene** p-lock storage (step handler uses these for the `d2 == -1` master/scene case) |
+| 4 | `0x46c7bf2c` / `0x46c7d7d8` / `0x46c7e0de` | value `[param + heldStep*128]` / bitmap / per-param flag | **MIDI-track CC-lock** send queue — `FUN_40033e3c(track, param, value)` writes it (guard: `[0x8000003f + track]` must equal a held trig; `[0x46c76de0]` = the held list), `FUN_400409f4` sends each set bit as MIDI CC (`FUN_40010bc8` = serial TX ring) then clears it. **`emu_plock.py --call3e3c` (Session 25): `FUN_40033e3c` writes ONLY #4 — so it is NOT the audio p-lock writer.** The `[NO]`+knob path calls it with params `0x34–0x36` (`0x4005e164/e1a8/e1d2`). |
+
+Flow: **load** → `FUN_4009b220` fills #2 with `0xFF` (from boot `0x4001f95c` / project load
+`0x400238a8`), then the deserialiser populates #1; **pattern-enter** → copy loops at
+`0x4009b84c` / `0x4009c02c` splice #1/#3 → #2; **step** → step handler refreshes #2 from
+#1 for the current step; **save** → #1 → disk.
+
+**The `[TRIG]`-hold + knob → #1 writer is still not located (Session 25).** Ruled out:
+the encoder handler `0x4004eb24` (bit 0 writes the *Part* value `[0x46c82456]+part*6322+…`,
+bit 1 → `FUN_40033e3c` = the MIDI CC path #4). Neither touches #1/#2/#3 (`emu_plock.py`).
+Likely model: knob edits **#2** for the held step, and a commit-on-trig-release or
+commit-on-step copies #2 → #1[step]. Next: `emu_plock.py` with a trig-*release* + watch #1/#2.
+
+`0x8000004a` is the "what does a knob turn do" bitfield: bit 0 → write the Part-data
+value (encoder `0x4004eb24`); bit 1 → the CC-lock path.
+
+`emu_plock.py --watch --rec --trig N --knob D` drives the GRID-REC hold-trig + knob
+gesture and reports which PC wrote #1 (or #2/#4) — run it to name the writer/eraser.
 
 ---
 

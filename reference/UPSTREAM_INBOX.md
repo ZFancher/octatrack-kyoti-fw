@@ -21,6 +21,13 @@ agent that fetches the refs and appends new commits here.
 
 ## Distilled
 
+- 2026-09-07  octabam@47f6cc5  RTOS 10.16 — stock Unicorn halves the ColdFire fractional
+              EMAC; unicorn_emac_fractional.patch + build_unicorn.sh; MAC/MSAC ext-bit-8
+              [ kb/techniques.md ; patched Unicorn built into refs/octabam/.venv/ ]
+- 2026-09-07  octabam@47f6cc5  RTOS 10.13 — machine types 0=STATIC/1=FLEX/4=PICKUP;
+              5-byte per-track slot record (+0x2d3+5*track+type); 0x80004f1c recorder
+              state record (16x84B, double-buffered); block-table reciprocals 0x80003c20
+              [ kb/memory-map.md, kb/file-format.md ]
 - 2026-09-02  OctaLib@6e2438e  bank/pattern/part file offsets            [ kb/file-format.md ]
 - 2026-09-02  (our RE, DEMO bank01.work)  full TRAC layout + p-lock array (64x32B @+0x62)
               + PART FX-id bytes; tools/inspect_bank.py                   [ kb/file-format.md ]

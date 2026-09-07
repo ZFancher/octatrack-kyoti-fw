@@ -3785,3 +3785,54 @@ port project; flagged in `techniques.md`, not scheduled.
 ### Pushed
 `main` → `origin/main` this session (was 1 commit behind since Session 18):
 Session 18 KB commit + Session 19 persistence fix + this Session 20 re-distillation.
+
+## Sessions 21–25 (2026-09-06/07) — KB + emulator tooling, synced from `wip/mute-mode`
+
+**The DT / SOLO / DIRECT-JUMP / side-chain *feature* code stays on `wip/mute-mode`
+(emu-verified, never flashed). Only the branch-agnostic research assets are on `main`:
+`reference/kb/*`, `reference/{EXTERNAL_RESEARCH,UPSTREAM_INBOX}.md`, `tools/emu_rtos.py`,
+`tools/emu_plock.py`, `refs/MANIFEST.lock`.** Full blow-by-blow is in `wip`'s `NOTES.md`
+Sessions 21–25.
+
+### `tools/emu_rtos.py` (Session 23) — octabam's full-firmware emulator, wrapped
+
+Thin wrapper (no vendoring): runs `refs/octabam/tools/emu_rtos.py` in place with `--image`
+= our `section_3_MAIN_OS.bin`, `--project` defaulting to the factory OT DEMO. Runs the
+real scheduler / 11 tasks / interrupts / CF mount / LOAD PROJECT / sequencer. M6a + M6b
+verified on our image. `press_key_live(handler, edge)` drives any key handler.
+
+⚠️ **Needs the EMAC-patched Unicorn** (Session 25 / octabam RTOS §10.16): stock
+`unicorn 2.1.4`'s ColdFire *fractional* `macl` is half of hardware's (unsigned `>>32` vs
+signed `<<1` then `>>31`); octabam's `emu_rtos` refuses route A on it. Build once (`cmake`):
+`( cd refs/octabam && PY=$(command -v python3) bash scripts/build_unicorn.sh )` → parks
+`libunicorn.2.dylib` in `refs/octabam/.venv/lib/unicorn-emac/` (gitignored, auto-detected).
+`emu_rtos.py` / `emu_plock.py` check for the dir and print the command.
+
+### `tools/emu_plock.py` (Sessions 24–25) — the p-lock RE harness
+
+`--confirm` **proved** the RAM audio p-lock array is byte-identical to disk at
+`[0x46c82456] blob + pattern*0x8ed8 + track*0x91a + 0x59` (64 × 32 B, `0xFF` = unlocked).
+`file-format.md` "RAM p-lock array" is now **C**.
+
+Four p-lock RAM structures mapped (see `kb/{file-format,memory-map}.md`): #1 blob
+`TRAC+0x59` (stored, = disk, the auto-remove target), #2 `0x46c7ab30`/`76ac0`/`75fa0`
+(sequencer live per-track working set), #3 `0x46c7aa24`/`77c32`/`a874` (scene),
+#4 `0x46c7bf2c`/`d7d8`/`e0de` (MIDI-track CC-lock send queue).
+
+`--call3e3c` **ruled out `FUN_40033e3c`** as the audio p-lock writer — it writes only #4
+(MIDI CC), flushed by `FUN_400409f4`. The `[TRIG]`-hold + knob → #1 writer is still not
+located; working model = knob edits #2, commit-on-trig-release copies #2 → #1[step].
+Next: `emu_plock.py` with a trig-*release* + watch #1.
+
+### KB corrections folded in from octabam RTOS 10.13–10.16
+
+- machine-type byte values are **0 = STATIC · 1 = FLEX · 4 = PICKUP** (corrects the
+  earlier FLEX/STATIC guess) — `kb/{file-format,memory-map}.md`.
+- 5-byte per-track slot record (`part-record +0x2d3 + 5*track + type`).
+- `0x80004f1c` = the per-track recorder state record (16 × 84 B, double-buffered).
+
+### For a `main` reader picking up no-flash work
+
+The active thread is on **`wip/mute-mode`**: the p-lock writer/eraser hunt (Session 26 in
+`wip`'s NOTES), then the Session-13 auto-remove feature. `main`'s job here is just to keep
+the KB canonical; do feature work on `wip`.

@@ -100,6 +100,14 @@ Build outputs on `main` (all `140C_KYOTI`, all carry the Bug-1 fix):
 
 ## 6. Current frontier — UPDATE THIS EACH SESSION
 
+**As of 2026-09-07.** Sessions 21–25 (all on `wip/mute-mode`) synced their **KB +
+emulator tooling** back to `main` — see `NOTES.md` "Sessions 21–25". In brief:
+`tools/emu_rtos.py` wraps octabam's full-firmware emulator (needs the EMAC-patched
+Unicorn — `( cd refs/octabam && PY=$(command -v python3) bash scripts/build_unicorn.sh )`);
+`tools/emu_plock.py` **confirmed** the RAM p-lock array == disk and mapped the 4 p-lock
+RAM structures; the `[TRIG]`-hold + knob → blob writer is still being hunted (`wip`
+Session 26). Feature code (DT / solo / DIRECT JUMP / side-chain) stays on `wip`.
+
 **As of 2026-09-06 (Session 19).**
 
 **On `main`:** the hardware-tested line (Bug 1 fix + MUTE MODE `OT`/`OT+FX` V6b) plus,
@@ -147,12 +155,13 @@ waits on one hardware session: flash DT first (settles the shared-envelope unkno
 the 4th mode both rest on) → then SIDECHAIN2 → then the rest.
 
 **Backlog on `main`:** the Session-13 "auto-remove an emptied trigless lock" feature.
-Groundwork done (Session 20): the TRAC block is mapped to the step-mask level (C), the
-p-lock byte→parameter map is a hypothesis (L) — both in `kb/file-format.md`, which also
-carries the exact **Phase-0 `pattern-diff` test-pattern plan** (a ~30-min MKI job that
-pins the trigless-lock mask bit + the byte→param offsets at once) and the **Phase-1**
-handler-hunt plan (vendor octabam's `emu_rtos.py`, or Ghidra from the mask consumers).
-`NOTES.md` "Session 13" + "Session 20".
+Groundwork (Sessions 20–25): TRAC block mapped to the step-mask level (C); the **RAM
+p-lock array is confirmed == disk** at `[0x46c82456]blob + pat*0x8ed8 + trk*0x91a + 0x59`
+(C, `emu_plock.py --confirm`); the 4 p-lock RAM structures are mapped (`kb/file-format.md`
++ `kb/memory-map.md`). Still open: the `[TRIG]`-hold + knob → blob **writer** (hunt is on
+`wip` — `emu_plock.py` with a trig-*release*), then the `[NO]` **eraser**, then the
+detour. `kb/file-format.md` also has the Phase-0 `pattern-diff` MKI plan (~30 min) that
+confirms the byte→param map. `NOTES.md` "Session 13" + "Sessions 21–25".
 
 **Picking up:** mute modes / DIRECT JUMP / compressor → `wip/mute-mode`. Knowledge base,
 p-locks, or a fresh bug → `main`. Then the named `NOTES.md` Session section.

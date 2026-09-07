@@ -117,7 +117,9 @@ flag word: `0x46c7a6c0`.
 |---|---|---|---|
 | `0x800049d8` | C | Per-track voice state. Stride `0xA8`, 8 tracks. `byte[0]` = active. | NOTES L192 |
 | `FUN_40005178` | C | Queues per-track voice commands into mailboxes `0x46c7e9fa` / `0x800018be` / `0x800018de`, indexed `[t*4]`. | NOTES L196 |
-| `FUN_40097168` | L | Machine-type dispatch → 0–4 = FLEX / STATIC / THRU / NEIGHBOR / PICKUP | COVERAGE |
+| `FUN_40097168` | L | Machine-type page dispatch (5 PLAYBACK descriptor entries). ⚠️ the **stored machine-type byte** values are **0 = STATIC · 1 = FLEX · 4 = PICKUP** (octabam RTOS §10.13, by code + data — the trig-side slot lookup `0x400050b8` routes type 0 → STATIC arena `0x100d5b30+id*1096`, types 1/4 → FLEX arena `0x100b14f0+id*1096`). THRU/NEIGHBOR have no slot. | COVERAGE · octabam `47f6cc5` |
+| `0x80004f1c` | C | **per-track RECORDER state record** — 16 × 84 B (2 banks × 8 tracks, double-buffered; bank bit per track in `0x80004f18`). Arm caller fills the *other* bank (header `0x00000101`, `+2` = 1 pending); per-frame track fn `0x400068e4` promotes 1 → 2 and flips the bank. Not a sample-slot record. | octabam RTOS §10.13 |
+| `0x80003c20 + 16*type` | C | recorder **block-table reciprocal** = `2^31 / block_size` (type 0: 2048 / 3 B/sample · 1: 1024 / 6 · 2: 3072 / 2 · 3: 1536 / 4). `macl pos,recip` (fractional) = `pos / block`. | octabam RTOS §10.16 |
 | `FUN_40008f84(track)` | C | Start a graceful voice release — sets `DAT_8000184a \|= 1<<t` (release *state*). | NOTES L2703 |
 | `FUN_40008fe4(track)` | C | Wraps `FUN_40008f84`; also sets `DAT_8000184c = 0xff`. `FUN_40008fe4(0xffffffff)` = all. | NOTES L2709 |
 | `DAT_8000184a` | C | voice-release state bitfield (`1<<t`) | NOTES Session 9 |
@@ -139,8 +141,21 @@ flag word: `0x46c7a6c0`.
 
 | Addr | Conf | What | Source |
 |---|---|---|---|
-| `_DAT_46c82456` | C | **Per-track pattern data base.** Trigs/params at `_DAT_46c82456 + pat*0x18b2 + trk*0xc` (+`0x8f385`). Tempo/pattern-settings stride `pat*0x8ed8`. This is the anchor for the unmapped p-lock model. | NOTES L197, L260 |
+| `_DAT_46c82456` | C | **Bank-blob pointer** (the deserialised bank). Blob base seen `0x400e21e0` after a load; the step handler `0x4009d1e8` indexes it `bank*0x9b340 + 0x400e21e0`, pattern `*0x8ed8`, track `*0x91a`. (Distinct from `pat*0x18b2` = the PART-payload view.) | NOTES L197 · octakit-abi · Session 24 |
 | `_DAT_46c82xxx` | ? | FAT-layer vtable region (storage driver) | COVERAGE |
+
+### p-lock RAM structures (Session 24 — `tools/emu_plock.py`)
+
+| Addr | Conf | What |
+|---|---|---|
+| blob `TRAC + 0x59` | **C** | the pattern's **stored** p-locks, `record[step][32]`, `0xFF` = unlocked. RAM = disk `TRAC+0x62` byte-for-byte (`emu_plock.py --confirm`). Persisted on save. Param header at `+0x50`. |
+| `0x46c7ab30` / `0x46c76ac0` | C | the sequencer's **live per-track** p-lock values, `[track*32 + param]` (32 params/track). The engine + step handler read these. |
+| `0x46c75fa0` | C | live per-track lock **bitmap**, `[track*4]` longs. |
+| `0x46c7aa24` / `0x46c77c32` / `0x46c7a874` | C | **scene** p-lock storage, same `[track*32]` / bitmap shape. |
+| `0x46c7bf2c` / `0x46c7d7d8` / `0x46c7e0de` | C | **MIDI-track CC-lock** send queue — `FUN_40033e3c` writes (gated `0x8000004a` bit 1), `FUN_400409f4` sends each set bit as MIDI CC (`FUN_40010bc8`) then clears it. Not the audio store. |
+| `FUN_4009b220` | C | fills `0x46c7ab30`+companions with `0xFF` (p-lock reset). Called from boot `0x4001f95c` + project load `0x400238a8`. |
+| `0x4009b84c` / `0x4009c02c` | C | 32-byte copy loops: splice scene/pattern p-locks (`0x46c7aa24` …) → the live set (`0x46c7ab30` …) on pattern-enter. |
+| `0x8000004a` | C | "what a knob turn does" bitfield: bit 0 = write Part-data value (encoder `0x4004eb24`); bit 1 = MIDI CC-lock path. |
 
 ## UI / menu
 
