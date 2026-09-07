@@ -152,10 +152,17 @@ session, in order:
 2. **Flash `SIDECHAIN2`** — HW test plan in `NOTES.md` "Session 17 continued (8)".
 3. If (2) good → **side-chain step 3 DSP** (`KEY FLT` filter + `KEY GAIN` + `SC LISTEN`;
    ~224 dead SPATIALIZER words of P-space headroom).
-4. **Flash `DIRECTJUMP`** — 5 HW unknowns in `NOTES.md` "Session 15 continued".
+4. **Flash `DIRECTJUMP`** — the `[PTN]`+`[YES]` toggle + the 5 sequencer-hook unknowns.
+   HW test lists: `NOTES.md` "Session 15 continued" + "Session 21 continued".
 5. Then: build the 4th mute mode; OT+FX-solo checklist (`NOTES.md` "Session 11 → NEXT").
 
-**Backlog (scoped, not started):** auto-remove a trigless lock once a LIVE-REC `[NO]`+knob
-erase clears its last p-lock. Needs the per-step trig/p-lock data model — `main`'s
-Session-16 bank p-lock region map (`tools/inspect_bank.py`) is the starting point. Full
-brief: `NOTES.md` "Session 13 — SCOPING ONLY".
+**Also no-flash:** all three MUTE MODE builds + DIRECT JUMP now carry the `'ANDY'`-shadow
+persistence (Session 22). **`tools/emu_rtos.py`** wraps octabam's full-firmware emulator
+(runs the real scheduler/tasks/CF/LOAD-PROJECT against our image — M6a/M6b verified,
+Session 23) — the tool for the p-lock backlog below.
+
+**Backlog (scoped, Phase 1 tooling next):** auto-remove a trigless lock once a LIVE-REC
+`[NO]`+knob erase clears its last p-lock. Data model is mapped to the step-mask level
+(`kb/file-format.md`); the remaining RE is locating the erase handler — drive it in
+`emu_rtos` and `--watch-mem` the sequenced-data RAM. Full brief: `NOTES.md` "Session 13"
++ "Session 20" + "Session 23".

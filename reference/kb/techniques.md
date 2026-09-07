@@ -51,11 +51,25 @@ engine → DSP task, recorder-arm stage-then-promote. What it does **not** do: a
 (DSP stays in `dsp_host`).
 
 **This is the tool NOTES L413 asked for** ("locate the knob→param editor … via
-dynamic analysis … the emulator we have is for the DSP, no use here"). For the
-Session-13 p-lock work: drive a `[NO]`+knob event in LIVE REC and watch what
-touches `[0x46c82456] + pat*0x18b2`. Kernel/task/interrupt map is in
-`memory-map.md` "Kernel / RTOS". Not yet vendored — porting it is its own task
-(brings octabam's kernel + card models); until then it's a reference.
+dynamic analysis"). Kernel/task/interrupt map is in `memory-map.md` "Kernel / RTOS".
+
+**Wired up (Session 23): `tools/emu_rtos.py`** — a thin wrapper (no vendoring: it
+runs `refs/octabam/tools/emu_rtos.py` in place with `--image` pointed at our
+`section_3_MAIN_OS.bin`, same call as `build_sidechain2.py` ↔ `dsp_modmap.py`).
+Plain `unicorn>=2.1` decodes the CFV4E ops fine. Verified on our image:
+- **M6a** (`--ms 800 --until-gate`) — 11 tasks created, scheduler running. **PASS.**
+- **M6b** (`--load-project`) — reads the DEMO's `bank01.work` PART FX ids through
+  the real storage stack. **PASS.**
+- **M6c** (`--sequencer --via-key`) — starts the transport, steps the bank *(slow:
+  ~10 s wall / 200 emulated ms; a 400-frame run is minutes)*.
+
+Key injection: **`press_key_live(handler_addr, edge)`** calls any key handler as
+`action(edge)` via `call_as_main` — parameterised, not just PLAY/REC/STOP. So the
+Session-13 Phase-1 plan is: `--load-project` a bank with a p-locked step → into
+LIVE REC running → `press_key_live(0x4005e25c, 1)` (`[NO]`) then the encoder
+handler with a delta → `--watch-mem` the sequenced-data RAM (`[0x46c82456] +
+pat*0x18b2`, near `+0x8f385`) to name the function that writes `0xFF` into the
+p-lock record. Then RE that one function statically.
 
 ### octabam `ot_project.py` — on-disk bank/project editor + differ
 

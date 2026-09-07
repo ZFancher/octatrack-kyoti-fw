@@ -5077,3 +5077,50 @@ persistence, and DIRECT JUMP's `0x800000d8` rides the same extended restore.
 post-merge. (`emu_solo.py`'s earlier 7-fail is gone — clean here.) Builds:
 `MUTEMODE` 639 B, `MUTEMODE_DT` 668 B, `DIRECTJUMP` 522 B vs stock; manual-trig fix
 byte-identical across all. Nothing flashed.
+
+## Session 23 (2026-09-06, `wip/mute-mode`) — wire up octabam's full-firmware emulator
+
+**No firmware change. Tooling: `tools/emu_rtos.py`.**
+
+### What
+
+octabam's route-A emulator (`refs/octabam/tools/emu_rtos.py` + `emu_bringup.py` +
+`emu_card.py`, ~3700 lines) runs the OS's own scheduler / tasks / interrupts / CF card /
+LOAD PROJECT / sequencer. Rather than vendor it (licence posture: `refs/` is a disposable
+cache, and it's ~3700 lines), `tools/emu_rtos.py` is a **thin wrapper** — same pattern as
+`build_sidechain2.py` loading `dsp_modmap.py` from `refs/`. It runs octabam's script in
+place with `--image` pointed at our `out/raw/section_3_MAIN_OS.bin` and `--project`
+defaulted to the factory OT DEMO export.
+
+### Verified on our image (SHA `164f3122…`, identical to octabam's pin)
+
+- Plain `unicorn 2.1.4` decodes the CFV4E ops — no special build; octabam's `emu` extra
+  is just `unicorn>=2.1`.
+- **M6a** `--ms 800 --until-gate` → M6a gate **PASS** (11 tasks created, scheduler runs).
+  ⚠️ needs `--ms 800`, not 200 — `main`'s init `memclr` eats the first ~500 ms of budget.
+- **M6b** `--load-project` → **PASS** — reads the DEMO `bank01.work` PART FX ids through
+  the real storage stack (`PART_PTR=0x400e21e0`, matches `inspect_bank.py --parts`).
+- **M6c** `--sequencer --via-key` → starts the transport, steps the bank. **Slow**:
+  ~10 s wall per 200 emulated ms; a 400-frame run is minutes.
+
+### The lever for Session 13 Phase 1
+
+`press_key_live(handler_addr, edge)` (M6d) calls **any** key handler as `action(edge)`
+via `call_as_main` — parameterised, not hardcoded to PLAY/REC/STOP. So:
+
+1. `--load-project` a bank with a p-locked step (DEMO P11 t2 has filter-sweep locks on
+   *regular* trigs — good enough to find the writer even though they're not trigless).
+2. Drive into LIVE REC + running (`press_rec_live` / `press_play_live` + `--sequencer`).
+3. `press_key_live(0x4005e25c, 1)` — the `[NO]` handler — then call the encoder handler
+   (`0x4004eb24` writes the Part-data byte; the p-lock path is a sibling) with a delta.
+4. `--watch-mem` the sequenced-data RAM near `[0x46c82456] + pat*0x18b2 + 0x8f385` →
+   the function that writes `0xFF` into the p-lock record is named.
+5. RE **that one function** statically; design the "if record[step] all-`0xFF` and the
+   step is a bare trigless lock, clear its mask bit" detour.
+
+### NEXT
+
+Build the Phase-1 scenario in a `tools/emu_plock.py` (wraps `emu_rtos` with the
+load → LIVE REC → `[NO]`+knob → watch sequence). Needs the encoder/knob handler pinned
+first (from the keymap: which keycode is a param encoder, and its handler) — a short
+Ghidra/disasm task on `0x4004eb24` and neighbours.
