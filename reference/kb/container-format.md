@@ -20,26 +20,24 @@ pack/unpack. `refs/elektron-firmware-tool/` is the pristine upstream for diffing
 | local patch to the tool | `tools/elektron-firmware-tool.patch` (2 changes, documented in `sysex/README.md`) |
 | build a flashable | `tools/build_*.py` → `.syx` (MIDI) + `.bin` (CF) |
 
-## `.bin` (ELUP) transport — octa-bt-pt's independent implementation
+## `.bin` (ELUP) transport
 
-> source: `refs/octa-bt-pt/tools/make_bin.py` @ `e970dd0` · fetched 2026-09-02 · confidence: **C** (produces a byte-identical round trip of the official 1.40C image)
+`.bin` = ELUP container: `word[0]` magic `0x454C5550` ("ELUP"), then a
+4-byte big-endian length and the ELEK container. The body scrambling is a
+per-word XOR-with-feedback keyed off the running word.
 
-`.bin` = ELUP container. `word[0]` magic `0x454C5550` ("ELUP"). Body is
-**XOR-with-feedback**; per-word the variant is picked by bit `0x800000` of the
-key. Constants (little-endian words):
+We do **not** re-implement or restate the scramble here. Two existing
+implementations cover it and this repo consumes one of them:
 
-```
-MAGIC        0x454C5550
-XOR_A/XOR_B  0x9E3B16A2 / 0x764E28CA
-C3/C7        0x360FA955 / 0xEF4A9AB6
-DEFAULT_SEED 0x2F1349D2      # the seed the official 1.40C image uses
-```
+- `vendor/elektron-firmware-tool` (mischa85, fetched by `setup.sh`) — our
+  `build_*.py` calls it; it is the reference.
+- `refs/octa-bt-pt/tools/make_bin.py` (Bryan T, `@ e970dd0`) — an independent
+  Python version; byte-identical round trip on the official 1.40C image. Read it
+  there if a `build_*.py` `.bin` round trip ever fails and you need to diff the
+  transform step by step.
 
-`enc(k,p)`: `x = k ^ (C3 if k&0x800000==0 else C7) ^ p`; then
-`rot16(x) ^ XOR_A` if `k&0x800000==0` else `bswap(x) ^ XOR_B`.
-
-Matches what our `vendor/elektron-firmware-tool` does — a useful cross-check if a
-`build_*.py` round trip ever fails.
+`refs/` is a gitignored local cache, not redistributed. Keep it that way for
+this file's subject in particular.
 
 ## ELEK header — version field layout (efw-tool `d407436`, 2026-09-08)
 
