@@ -115,7 +115,8 @@ flag word: `0x46c7a6c0`.
 
 | Addr | Conf | What | Source |
 |---|---|---|---|
-| `0x800049d8` | C | Per-track voice state. Stride `0xA8`, 8 tracks. `byte[0]` = active. | NOTES L192 |
+| `0x800049d8` | C | Per-track voice state. Stride `0xA8` (168), 8 tracks; voice index ≡ track for sample machines. Safe resolver `FUN_40000e50(voice) → 0x800049d8 + voice*168`. Field map (octamax `DESIGN_SLICEVIEW.md` @ `7d9debc`): `+0` (b) active `0xFF`/`0` · `+8` (l) SETTINGS ptr (slot-resolved) · `+23` (b) loop mode 0 one-shot / 1 loop / 2 ping-pong · `+32` (b, signed) **current slice index**, `−1` none (re-bound every audio frame → tracks p-locks/scenes) · `+36` (w, signed) rate `0x4000`=1.0×, `<0` reverse · `+48/+52` (l) active window start/end · `+68` (l) **live play position** (`0x40008898` fwd / `0x40008e6e` rev). Torn on loop-wrap (`0x400088dc..902` rewrites 6 longs) — clamp, don't mask. Playback-position engine (bounds/wrap/ping-pong) = `FUN_40007960`, ColdFire not DSP. | NOTES L192 · octamax `7d9debc` |
+| slice table | C | via `SETTINGS = voice@8`: entry `n` at `SETTINGS + 312 + n*12 = {start,end,loop}` (loop `0xFFFFFFFF` = no loop point); count at `SETTINGS + 1092`; firmware indexes `+300 + (slice+1)*12` (entry −1 = whole-sample trim). Stock SLICES view renderer = view-3 arm of `0x40044920` (`0x40044cda..f06`): grid bitmap `0x400beafa` at (61,10), count read at `0x40044e28`. | octamax `DESIGN_SLICEVIEW.md` @ `7d9debc` |
 | `FUN_40005178` | C | Queues per-track voice commands into mailboxes `0x46c7e9fa` / `0x800018be` / `0x800018de`, indexed `[t*4]`. | NOTES L196 |
 | `FUN_40097168` | L | Machine-type page dispatch (5 PLAYBACK descriptor entries). ⚠️ the **stored machine-type byte** values are **0 = STATIC · 1 = FLEX · 4 = PICKUP** (octabam RTOS §10.13, by code + data — the trig-side slot lookup `0x400050b8` routes type 0 → STATIC arena `0x100d5b30+id*1096`, types 1/4 → FLEX arena `0x100b14f0+id*1096`). THRU/NEIGHBOR have no slot. | COVERAGE · octabam `47f6cc5` |
 | `0x80004f1c` | C | **per-track RECORDER state record** — 16 × 84 B (2 banks × 8 tracks, double-buffered; bank bit per track in `0x80004f18`). Arm caller fills the *other* bank (header `0x00000101`, `+2` = 1 pending); per-frame track fn `0x400068e4` promotes 1 → 2 and flips the bank. Not a sample-slot record. | octabam RTOS §10.13 |
@@ -222,6 +223,36 @@ release → opens SELECT PATTERN (`FUN_40059f8c(0x400b484e, 0xf0, 1, 0x40043418)
 | `FUN_4005829c(x,y,w,h,?,close_cb)` | bare window ctor; `FUN_40012f30` measures text, `FUN_40057008`/`FUN_40013904` draw. |
 | `FUN_400808bc` | non-modal overlay example ("RELOADING BANK"), handle `0x460f790c`, explicit close. |
 | `FUN_4001f23c` | recompute + store the `'ANDY'` block checksum (`0x100fff00`, over `0x100fff04`+252 B, `+=514`). Self-contained, no args, `rts`. Call this after writing an ANDY shadow from **outside** the PERSONALIZE dispatcher (which does it via `jmp 0x4001f23c @ 0x40069074`). |
+
+### Screen drawing primitives & the periodic-repaint hole
+
+> source: octamax `DESIGN_SLICEVIEW.md` @ `7d9debc` (2026-09). confidence: **C**
+> (disassembled + emulator-green in octamax; feature itself not in any Kyoti build).
+
+Surface descriptor `0x400bf10a` = 128×64, column-major, 32 px/longword. All
+primitives cdecl; `mode` 1 = set / 0 = clear / −1 = XOR. Dirty flag (request a
+flush): `move.l #1, 0x46c7c72c`. Fonts: `0x400ba876` (6 px) · `0x400ba89e`
+(12 px). ⚠️ `0x460d1a54 == 2` suppresses flushes — set dirty, never call the
+compositor directly.
+
+| fn | signature |
+|---|---|
+| `0x40012254` | `fillrect(surf, x0, y0, x1, y1, mode)` |
+| `0x40012bd8` | `drawtext(font, surf, x, y, mode, str)` |
+| `0x40013904` | `drawfmt(font, surf, x, y, align, mode, measureStr, fmt, …)` |
+| `0x40011b94` | `vline(surf, x, y0, y1, mode)` · `0x400128a8` `blit(bitmapDesc, surf, x, y)` |
+| `0x40012f30` | measure text (used by the bare-window ctor) |
+
+**The UI loop is event-driven** — it blocks on the message queue and flushes
+(`jsr 0x40013abc @ 0x40062d46`) only when `0x46c7c72c` is set, so nothing paints
+between events. octamax's fix for a live display: the timer task `0x40056c40`
+runs the countdown tick `FUN_40056ab8` for every type-1 timer message, and the
+6-byte `tstl 0x46104ca8` right after that call (**`0x40056c92`**) is a clean
+detour hole that fires **even with no TIMER enabled**. Post UI event 78 (handler
+`0x40062d04` → `jsr 0x4004581c` = view header+content redraw) to the UI queue,
+throttled to one outstanding message. Blink phase = a patch-owned counter in
+free RAM (`0x80006c66+`), toggled by the same tick. (NO TIMER / LAZY already
+detour `FUN_40056ab8` — a proven periodic-UI-tick site.)
 
 ## Effect & machine parameter-descriptor table (`0x400d2e52`–`0x400d5f00`)
 

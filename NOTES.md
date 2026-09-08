@@ -5380,3 +5380,39 @@ implied — a running-transport `emu_plock` that `--start`s, does a LIVE edit,
 then STOPs and watches `#1` is now buildable. Doesn't change the S39
 recommendation (Phase 0 HW diff is still fastest once the MKI is back), but it's
 a real alternative if HW stays out of reach.
+
+### Follow-up (same session) — three questions answered
+
+**Bryan T (`octa-bt-pt`).** Repo is static — 4 commits, last 2026-08-22. His
+*live* RE (Echo-Freeze delay, recorder architecture, timestretch, EMAC/MACSR,
+the clickless-loop primer + spreadsheet) is shared on **Discord** and reaches us
+only as it's folded into octabam's `docs/EXTERNAL.md` (§1, §6–§8) — which the
+`04b8512` sync brought current. All of it is recorder / delay / timestretch —
+none touches our threads; the relevant bits (EMAC fix, recorder-page 3-tier
+storage, machine-type values) were already in `kb/`. So: nothing new to ingest
+from Bryan for now, and `whatsnew.py octa-bt-pt` will stay quiet — watch octabam.
+
+**Slice number display (octamax SLICE PLAYHEAD).** octamax is at tip, so the
+material was already in the `refs/` cache — but only "noted, not adopted". Now
+**distilled the reusable RE** from `DESIGN_SLICEVIEW.md` into
+`kb/memory-map.md`: the `0x800049d8` voice-struct field map (+8 SETTINGS ptr,
++23 loop mode, +32 slice index, +36 rate, +48/+52 window, +68 play position),
+`FUN_40007960` (the ColdFire-side playback-position engine), the slice table
+(`SETTINGS + 312 + n*12`, count `+1092`), the screen primitives + surface
+`0x400bf10a`, and **the `0x40056c92` periodic-repaint hole** (post UI event 78 →
+`0x40062d04` redraw; fires even with no TIMER). The octamax-specific parts (its
+menu-array relocation `0x400d6a00`, its cave budget) stay in the cache. The
+feature itself is octamax's, not ported.
+
+**Why p-lock KEY (or any new page-2 param)?** It was never a feature goal —
+it's a **parity check**. The Session-17 checklists say "confirm a new page-2
+slot renders + p-locks *like RMS does*": RMS is the stock page-2 slot on the
+COMPRESSOR, page-2 FX params are p-lockable on the OT as a platform fact, and a
+slot added to the descriptor inherits that machinery. The check is "did adding
+our slot break the stock p-lock path, or does it behave like its neighbour" —
+not "we want per-step key-source automation" (which would be an odd thing to
+want). octabam's §7 finding sharpens *how* to check: since page-2 has no DSP
+post and the slew-marker packer is page-1-only, page-2 p-lock plumbing differs
+from page-1 — so if **RMS itself** turns out not to p-lock cleanly to the DSP
+under the copier lane, KEY won't either, and that's stock parity, not a Kyoti
+regression. Item 3 on the to-do board is really "match RMS", nothing more.

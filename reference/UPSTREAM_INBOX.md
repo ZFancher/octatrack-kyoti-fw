@@ -13,8 +13,8 @@ agent that fetches the refs and appends new commits here.
 
 ## Pending
 
-- 2026-09-06  octamax@7d9debc  OCTAMAX 2.x — slice-playhead view, dual-256 static-pool
-              reclaim (DDR relocation), OCTAMAX_2 combined release. Techniques noted in
+- 2026-09-06  octamax@7d9debc  OCTAMAX 2.x — dual-256 static-pool reclaim (DDR
+              relocation), OCTAMAX_2 combined release. Techniques noted in
               kb/techniques.md; not adopted.                          [ noted, not adopted ]
 - 2026-09-08  octabam@04b8512  the DSP-effect-addition work (one-aux bus, reverb/delay
               engines, xbus per-core rotation) — out of scope per COVERAGE.md.  [ out of scope ]
@@ -23,6 +23,12 @@ agent that fetches the refs and appends new commits here.
 
 ## Distilled
 
+- 2026-09-08  octamax@7d9debc  DESIGN_SLICEVIEW.md — SLICE PLAYHEAD RE (octamax's own
+              feature, not ported): voice-struct field map @0x800049d8 (+8/+23/+32/+36/
+              +48/+52/+68), FUN_40007960 position engine, slice table SETTINGS+312+n*12
+              / count +1092, screen primitives + surface 0x400bf10a, the 0x40056c92
+              periodic-repaint hole (event 78 → 0x40062d04)
+              [ kb/memory-map.md "Voices" + "Screen drawing primitives" ]
 - 2026-09-08  octabam@04b8512  midi_re_cc.md §7 (HW, 12 flashes) — page-2 param → engine
               publish path: P2EDIT 0x4003a474, store DB+part*6322+0x8ef5a+track*30+page*6+slot2
               (page=0 for FX2), bookkeeping flags mandatory, live lane 0x80000830+track*72+slot2,
