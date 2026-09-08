@@ -1,9 +1,13 @@
-# Elektron Octatrack firmware architecture (MKII, OS 1.40C)
+# Elektron Octatrack firmware architecture (OS 1.40C)
 
 Architecture document consolidated from the educational reverse engineering of the
 firmware. It brings together everything that has been verified: hardware, OS format, kernel,
 storage, audio engine, sequencer, and the memory map. It complements `NOTES.md` (chronological
 log) and the scripts in `tools/`.
+
+Elektron ships **one OS 1.40C image for the Octatrack MKI and MKII**; a boot-time
+probe (`0x46c8d18c`) adapts the few unit-specific details. All hardware testing in
+this repository is on a MKI.
 
 > **Scope and honesty**: everything marked ✓ is verified (checksum from the firmware itself,
 > byte-exact decompilation, or direct disassembly). Anything marked ~ is a strong inference but
@@ -60,6 +64,11 @@ SHA256 `164f3122…`, ColdFire code).
 **OS validation on update** (`FUN_4007f748`), with its error codes:
 `-1` IO · `-2` not a valid OS · `-3` length · `-4` checksum · `-5` MK1 not allowed (`<"0156"`)
 · `-6` cannot downgrade version (`<"0178"`).
+
+The `-5` check is a *version-string floor* (`<"0156"`), not a live unit-model
+gate: a 1.40C-derived image keeps the stock internal code `"0178"` (the `-V`
+version field is a separate display string) and passes. The Bug-1 build has been
+flashed to a MKI and runs — see `NOTES.md` "Session 7".
 
 **UI → write flow** (all decompiled):
 ```

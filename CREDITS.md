@@ -8,13 +8,16 @@ Nothing here would exist without the projects below.
 
 - **[octamax](https://github.com/mxldyn/octamax)** — Maxolydian.
   The workspace this fork is built on: the container/update-chain analysis, the
-  reproducible patch/build pipeline (`sysex/apply_patch.py`, `tools/build.py`),
-  the code-cave detour method, the PERSONALIZE-menu mapping, and the first round
-  of behaviour mods (lazy Part transitions, no BANK/PTN countdown, arp key
-  scales, boot branding, LED dirty indicators). GitHub shows the fork link.
-  octamax ships no `LICENSE` file; this fork exists under GitHub's Terms of
-  Service and keeps octamax's stance — educational use only, no binaries
-  redistributed.
+  reproducible guarded-patch/build pipeline, the code-cave detour method, the
+  PERSONALIZE-menu mapping, and the first round of behaviour mods (lazy Part
+  transitions, no BANK/PTN countdown, arp key scales, boot branding, LED dirty
+  indicators). Those mod patch sources and the bundle builder (`build.py`) are
+  kept in [`tools/attic/`](tools/attic/) for reverse-engineering
+  cross-reference — they are not part of any OT Kyoti FW build — and the design
+  notes are in [`reference/upstream-notes.md`](reference/upstream-notes.md).
+  GitHub shows the fork link. octamax ships no `LICENSE` file; this fork exists
+  under GitHub's Terms of Service and keeps octamax's stance — educational use
+  only, no binaries redistributed.
 
 ## Tools this project builds on
 

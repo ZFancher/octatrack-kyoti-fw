@@ -1,3 +1,7 @@
+| SPDX-License-Identifier: NONE  (inherited from mxldyn/octamax, author: Maxolydian)
+| Octatrack behaviour-mod source, kept under tools/attic/ for RE cross-reference only.
+| Not part of any OT Kyoti FW build. See tools/attic/README.md and CREDITS.md.
+|
 | enc_* — moving an encoder on a track that is still in transition makes that track adopt
 | the destination Part immediately (spec point (c): you hear the jump at that moment).
 |

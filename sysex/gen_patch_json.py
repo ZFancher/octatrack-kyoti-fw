@@ -8,13 +8,14 @@ between the stock MAIN OS and the patched one). This script derives all of that 
 diffing:
 
     stock  = <section 3 decompressed from the stock .syx>
-    built  = out/mainos.bin   (tools/build.py output)
+    built  = out/mainos_trigscale_only.bin   (tools/build_trigscale_only.py output)
 
 then repacks with elektron-firmware-tool so it can record result_syx_sha256.
 
     python3 sysex/gen_patch_json.py \
         -i downloads/extracted/OCTATRACK_OS1.40C.syx \
-        --built out/mainos.bin --version r13 -o sysex/patches/maxolydian-r13.json
+        --built out/mainos_trigscale_only.bin --trigscale-only \
+        --version r1 -o sysex/patches/playsfreefix-r1.json
 
 Hunk grouping: bytes are contiguous if <= GAP unchanged bytes lie between them
 (GAP=0 -> exact runs). A small gap keeps the hunk count sane when a detour leaves
@@ -75,9 +76,9 @@ def main():
     ap.add_argument("--built", default=str(ROOT / "out/mainos.bin"))
     ap.add_argument("--section", type=int, default=3)
     ap.add_argument("--version", required=True, help="patch rev, e.g. r13")
-    ap.add_argument("--display-version", default="MAXOLYDIAN",
+    ap.add_argument("--display-version", default="keep",
                     help='ELEK version string to set; "" or "keep" -> leave the stock field untouched')
-    ap.add_argument("--name", default="maxolydian", help="patch name (e.g. playsfreefix)")
+    ap.add_argument("--name", default="playsfreefix", help="patch name")
     ap.add_argument("--trigscale-only", action="store_true",
                     help="only the MIDI manual-trig fix is applied (stock + fix)")
     ap.add_argument("-o", "--output", required=True)
@@ -113,30 +114,13 @@ def main():
                 "Per Track no longer stalls after step 1 when manually triggered. "
                 "FUN_4009b5c8 was seeding the per-track scale index with the audio "
                 "stride for MIDI tracks. Always on (bug fix, no PERSONALIZE gate)."}
-    full_changes = [
-        trigscale_change,
-        {"id": "arp-key-scales", "source": "tools/patch_arp.s",
-         "desc": "ARP F-knob key-scale: 12 roots x 12 qualities (Greek modes + blues + "
-                 "phrygian-dominant / melodic / octatonic / hirajoshi). Always on."},
-        {"id": "no-bank-ptn-countdown", "source": "tools/patch_notimer.s",
-         "desc": "SELECT BANK / SELECT PATTERN windows stop expiring. Off by default."},
-        {"id": "lazy-transitions",
-         "source": "tools/patch.s + patch_enc.s + patch_led.s + patch_scene2.s",
-         "desc": "On a pattern change to a different Part, sounding tracks keep the "
-                 "previous Part's sound until re-trigged; dim track LED marks them. "
-                 "Also keeps A/B scene pointers across the Part change. Off by default."},
-        {"id": "personalize-options", "source": "tools/patch_notimer.s",
-         "desc": "Adds NO BANK/PTN TIMER and LAZY TRANSITIONS to PERSONALIZE, both "
-                 "unchecked by default."},
-        {"id": "boot-branding", "source": "ELEK header (-V flag)",
-         "desc": "Boot splash and SYSTEM STATUS show MAXOLYDIAN instead of 1.40C."},
-    ]
+    full_changes = [trigscale_change]
 
     doc = {
         "name": a.name,
         "version": a.version,
         "target": {
-            "device": "Elektron Octatrack MKII",
+            "device": "Elektron Octatrack (one 1.40C image for MKI and MKII)",
             "os": "1.40C",
             "stock_syx_sha256": sha(syx.read_bytes()),
             "section": a.section,

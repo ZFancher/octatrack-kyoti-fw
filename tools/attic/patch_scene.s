@@ -1,3 +1,7 @@
+| SPDX-License-Identifier: NONE  (inherited from mxldyn/octamax, author: Maxolydian)
+| Octatrack behaviour-mod source, kept under tools/attic/ for RE cross-reference only.
+| Not part of any OT Kyoti FW build. See tools/attic/README.md and CREDITS.md.
+|
 | scene_stub — "sticky global" scene A/B selection across Part/pattern changes.
 | Inserted into the existing detour chain at FUN_40009094 (part-apply):
 |   0x40009094 -> scene_stub -> save_stub(0x400d64e0) -> ... -> jmp 0x4000909c

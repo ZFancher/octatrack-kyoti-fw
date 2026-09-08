@@ -25,7 +25,8 @@ build is byte-for-byte reproducible from the stock file.
 | `python3 tools/build_mutemode_dt.py` | `140C_KYOTI` | as above **+ a third mode `DT`** — pure sequencer mute (a sounding voice rides its own AMP envelope; only new trigs are suppressed) |
 | *(a fourth mode `OTFX` — instant cut + FX tails + **playhead-resume** unmute — is reverse-engineered but **not built**; NOTES "Session 14")* | — | — |
 | `python3 tools/build_softmute.py` | `140C_KYOTI` | Bug 1 fix + the same soft mute **always on**, no menu entry |
-| `python3 tools/build_directjump.py` | `140C_KYOTI` | Bug 1 fix + a **DIRECT JUMP** `OFF`/`ON` PERSONALIZE toggle: a manually cued pattern switches on the next step tick, keeps the playhead position, loads the new Part at once (arranger/chain untouched) |
+| `python3 tools/build_directjump.py` | `140C_KYOTI` | Bug 1 fix + a **DIRECT JUMP** toggle (`[PTN]` + `[YES]`, transient overlay): a manually cued pattern switches on the next step tick, keeps the playhead position, loads the new Part at once (arranger/chain untouched) |
+| `python3 tools/build_directjump_v2.py` | `140C_KYOTI` | the same DIRECT JUMP feature with a box-free toast overlay (its own binary) |
 | `python3 tools/build_sidechain.py` | `140C_KYOTI` | Bug 1 fix + a `KEY` parameter on the COMPRESSOR page — **menu only, DSP untouched** (does nothing audible; proves the control surface) |
 | `python3 tools/build_sidechain2.py` | `140C_KYOTI` | + the DSP hooks: same-DSP-core side-chain — a compressor keys off a chosen track (even muted). **SPATIALIZER is donated** for the code space and removed from the FX menu |
 | `python3 tools/build_sidechain3.py` | `140C_KYOTI` | Bug 1 fix + the full side-chain **menu scaffolding** (`KEY` `KFLT` `KGAIN` `MON`), **no DSP** |
@@ -34,9 +35,11 @@ All mods are **OFF by default** (`MUTE MODE = OT`; `KEY = OFF`, stored per Part)
 A freshly flashed unit is indistinguishable from stock until you opt in. An OS
 upgrade resets PERSONALIZE.
 
-These builds carry **no** Maxolydian mods (no arp key-scales, lazy transitions,
-BANK/PTN countdown removal, LED indicators, or `MAXOLYDIAN` branding). For those,
-use `tools/build.py` / `sysex/apply_patch.py` instead — see [`sysex/README.md`](sysex/README.md).
+These are the Bug-1 fix + the Kyoti mods only. Maxolydian's octamax behaviour
+mods (arp key-scales, lazy Part transitions, BANK/PTN countdown removal, LED
+"dirty" indicators, `MAXOLYDIAN` branding) are **not** built here — their patch
+sources are kept in [`tools/attic/`](tools/attic/) for reverse-engineering
+cross-reference. See [`CREDITS.md`](CREDITS.md).
 
 ### Hardware-test status
 
@@ -112,11 +115,11 @@ Pass a custom version string as the first argument if you want
 
 ## The reproducible patch (no assembler needed)
 
-`sysex/` carries the older MAXOLYDIAN patch set captured hunk-by-hunk as JSON
-(load address + expected original bytes + replacement bytes) and applies it with
+`sysex/` carries the **Bug-1 fix** captured hunk-by-hunk as JSON (load address +
+expected original bytes + replacement bytes) and applies it with
 `sysex/apply_patch.py` — no cross-assembler required. See
-[`sysex/README.md`](sysex/README.md). The MUTE MODE and side-chain work is
-build-from-source only.
+[`sysex/README.md`](sysex/README.md). The MUTE MODE, DIRECT JUMP and side-chain
+work is build-from-source only.
 
 ## Flashing
 

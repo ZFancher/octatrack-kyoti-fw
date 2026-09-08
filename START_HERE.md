@@ -36,12 +36,13 @@ of `mxldyn/octamax`. Remotes: `origin` = your fork, `upstream` = mxldyn (fetch o
 | `NOTES.md` | the full chronological RE log; every finding, every session, every dead end |
 | `reference/kb/*.md` | **distilled knowledge base** — address map + file format + DSP + container + techniques, ours merged with external RE. Read the relevant one before a new patch |
 | `reference/EXTERNAL_RESEARCH.md` | index of the 6 external OT-RE repos + the sync/distill workflow (`tools/refs/`) |
-| `README.md` | project intent, repo layout, and the **build/flash recipe** (§"Building a `.syx` or `.bin`") |
+| `README.md` | what the firmware is, the feature list + per-feature HW status, repo layout, lineage |
+| `BUILD_KYOTI.md` | roll-your-own build guide (every `build_*.py`, prerequisites, the reproducible patch) |
 | `COVERAGE.md` | what firmware subsystems are mapped vs untouched; the DSP-is-a-separate-blob caveat |
 | `ARCHITECTURE.md` | memory map, container format, boot/upgrade chain |
 | `FLASHING.md` | step-by-step flashing (MIDI + CF card) and the per-feature hardware test procedures |
-| `DESIGN_BANKPAGE.md` | design notes for the (shelved) live bank-paging feature |
-| `HANDOFF.md` | the shipped LED / encoder "dirty indicator" patches — a *separate* line of work (self-marked historical; `NOTES.md` is the current reference) |
+| `reference/upstream-notes.md` | inherited octamax mod-design notes (scenes, LED, lazy transitions, arp, bank paging) — kept for reference, **not** part of OT Kyoti FW |
+| `tools/attic/` | the octamax mod patch sources + `build.py` — RE cross-reference, not built here |
 
 ## 3. Hard constraints (do not relearn these the hard way)
 
@@ -88,7 +89,7 @@ DIRECT JUMP pattern-change mode, and an in-progress DSP side-chain compressor.
 | ↳ MUTE MODE **now persists across power cycle** (`main`, Session 19) | `0x800000xx` is volatile; setter now also writes the `'ANDY'` battery-SRAM shadow `0x100fff6c` and the build extends the block restore `0x64`→`0x70` at 3 sites. Emu-verified, **not yet flashed.** From octamax `c78ff70`. |
 | ↳ **OT+FX for SOLO** (non-soloed tracks keep FX tails) | `patch_softmute.s` **V7**, **`wip/mute-mode` only** — emulator-verified (`emu_solo.py`), never flashed. |
 | ↳ **DT** (Digitakt-style pure sequencer mute) | **`wip/mute-mode` only** — emulator-verified (`emu_dt.py`, `build_mutemode_dt.py`), never flashed. |
-| Maxolydian mods (branding, no BANK/PTN countdown, lazy Part transitions, arp key-scales, LED dirty indicators) | Not in the KYOTI builds. `tools/build.py` / `sysex/`; see `CREDITS.md`. |
+| Maxolydian's octamax behaviour mods (branding, no BANK/PTN countdown, lazy Part transitions, arp key-scales, LED dirty indicators) | **Not in any OT Kyoti FW build.** Patch sources kept for RE cross-reference in `tools/attic/`; design notes in `reference/upstream-notes.md`; credit in `CREDITS.md`. |
 | **External-RE knowledge base** (`main`, Sessions 16 / 18 / 20 — merged into `wip`) | `reference/kb/*.md` — address-keyed distillate of the 6 prior-art repos (octabam DSP map + kernel/RTOS + step-mask map, OctaLib file formats, octa-bt-pt + octabam descriptor table, the bank-file p-lock region, ems-octakit's `abi.inc` ~500-address map → `kb/octakit-abi.md`, the keymap/keycodes). `python3 tools/refs/sync.py` populates the `refs/` cache; `reference/EXTERNAL_RESEARCH.md` is the index. |
 
 Build outputs on `main` (all `140C_KYOTI`, all carry the Bug-1 fix):
