@@ -1659,7 +1659,7 @@ Notes:
 
 # Session 8 (2026-08-28) — NEW BUG: MIDI-track LFO SETUP knobs transmit CC on the wrong channel
 
-## The bug (Elektronauts thread 87588, reported by the user in 2019 on MKI OS 1.30B)
+## The bug (Elektronauts thread 87588, reported 2019 on MKI OS 1.30B)
 
 Editing **SPD / DEP on a MIDI track's LFO SETUP page** makes the Octatrack transmit the
 6 LFO CCs (**CC 28–33** = LFO Speed 1-3 / Depth 1-3) on the MIDI channel assigned to the

@@ -67,8 +67,8 @@ no binary" approach — worth reading alongside this repo:
 - **Elektronauts threads** that seeded specific findings here:
   - Octatrack CPU chip model — https://www.elektronauts.com/t/octatrack-cpu-chip-model/93304
   - Modifying Elektron firmware — https://www.elektronauts.com/t/modifying-elektron-firmware/36228
-  - Plays-Free MIDI manual-trig stall (Bug 1), thread 87588 — reported by the
-    author in 2019 on MKI OS 1.30B.
+  - Plays-Free MIDI manual-trig stall (Bug 1) — documented on Elektronauts
+    (thread 87588), 2019, MKI OS 1.30B.
 
 ## Legal reference
 
