@@ -7,7 +7,7 @@
 # OT Kyoti FW
 
 **A custom firmware for the Elektron Octatrack (OS 1.40C) — a hardware-confirmed
-MIDI bug fix and a reversible mute-behaviour change, built from a
+MIDI bug fix and a mute-behaviour feature modification, built from a
 reverse-engineering study of the stock OS.**
 
 Everything here is **educational**. You bring your own copy of the official OS;
