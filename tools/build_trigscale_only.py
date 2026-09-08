@@ -5,7 +5,7 @@
 Build the MIDI manual-trig fix on TOP OF STOCK 1.40C ONLY -- none of the MAXOLYDIAN mods.
 
 This is the same detour + code cave as tools/patch_trigscale.s / the R13 build, but applied
-to a clean stock MAIN OS instead of tools/build.py's fully-patched image. Output:
+to a clean stock MAIN OS (this is the Bug-1 fix on its own). Output:
 
     out/mainos_trigscale_only.bin      patched stock MAIN OS (2 hunks vs stock)
 

@@ -25,8 +25,9 @@ what's worth adopting.
 
 ### Shared lineage — octabam ⇄ octamax ⇄ this repo
 
-`DESIGN_BANKPAGE.md` exists in all three; octabam's `docs/history/{NOTES,COVERAGE}.md`
-read like ancestors of ours. **octabam's ColdFire function names are directly
+octabam's `docs/history/{NOTES,COVERAGE}.md` read like ancestors of ours (a
+shelved live-bank-paging design lives on in all three lineages — ours is in
+`reference/upstream-notes.md`). **octabam's ColdFire function names are directly
 comparable to ours** — when RE'ing a new ColdFire area, grep `refs/octabam/docs/`
 for the `FUN_4000xxxx` first, it may already be named and explained.
 
@@ -105,9 +106,10 @@ tail.
 
 ## octamax (upstream) — the pipeline we inherited
 
-`sysex/apply_patch.py`, `tools/build.py`, the code-cave detour method, the
-PERSONALIZE-menu mapping. Track `whatsnew.py octamax` for new mods / newly named
-functions to fold back.
+`sysex/apply_patch.py`, the guarded code-cave detour method, the
+PERSONALIZE-menu mapping (the octamax bundle builder `build.py` and its mod patch
+sources are kept under `tools/attic/`). Track `whatsnew.py octamax` for new mods /
+newly named functions to fold back.
 
 ### `emu_check.py` — Unicorn pre-flash gate (octamax `ec510e1`)
 

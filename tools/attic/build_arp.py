@@ -7,7 +7,7 @@ hirajoshi to the arpeggiator F-knob key scale. Everything else is stock; the
 extra scales only appear if you scroll the F knob past OFF/MAJ/MIN, so default
 behaviour is unchanged.
 
-    python3 tools/build_arp.py   # -> out/mainos_arp.bin
+    python3 tools/attic/build_arp.py   # -> out/mainos_arp.bin
 """
 import pathlib, subprocess, sys
 
@@ -15,6 +15,7 @@ BASE = 0x40000400
 ARP_AT = 0x400d7000                      # inside the proven-free R10 cave run, clear of R10's stubs
 STOCK = pathlib.Path("out/raw/section_3_MAIN_OS.bin")
 OUT = pathlib.Path("out/mainos_arp.bin")
+_HERE = pathlib.Path(__file__).resolve().parent
 
 
 def off(a):
@@ -26,7 +27,7 @@ def jmp(t):
 
 
 def assemble(name, at):
-    subprocess.run(["m68k-elf-as", "-mcpu=5407", "-o", f"out/{name}.o", f"tools/{name}.s"], check=True)
+    subprocess.run(["m68k-elf-as", "-mcpu=5407", "-o", f"out/{name}.o", str(_HERE / f"{name}.s")], check=True)
     subprocess.run(["m68k-elf-ld", f"-Ttext=0x{at:x}", "-o", f"out/{name}.elf", f"out/{name}.o"],
                    capture_output=True)
     subprocess.run(["m68k-elf-objcopy", "-O", "binary", f"out/{name}.elf", f"out/{name}.bin"], check=True)

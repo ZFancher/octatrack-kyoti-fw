@@ -14,13 +14,23 @@ Features (all OFF by default, switched on from PERSONALIZE):
                                  Also keeps the A/B scene pointers pointing at the
                                  same slots across the Part change.
 
-    python3 tools/build.py        # -> out/mainos.bin
+    python3 tools/attic/build.py        # -> out/mainos.bin
 """
 import pathlib, subprocess, sys
 
 BASE = 0x40000400
 STOCK = pathlib.Path("out/raw/section_3_MAIN_OS.bin")
 OUT = pathlib.Path("out/mainos.bin")
+
+# This is an inherited octamax bundle builder kept under tools/attic/ for
+# reference (see tools/attic/README.md). Its own patch sources sit beside it
+# here; patch_trigscale.s is a Kyoti file and stays in tools/.
+_HERE = pathlib.Path(__file__).resolve().parent
+
+
+def _src(name):
+    local = _HERE / f"{name}.s"
+    return str(local if local.exists() else _HERE.parent / f"{name}.s")
 
 # source -> load address in the free code cave (0x400d64da..0x400d7c3b)
 STUBS = [("patch",         0x400d64e0),   # lazy part: save/restore + destination snapshot
@@ -88,7 +98,7 @@ def jmp(t):
 
 def assemble(name, at):
     subprocess.run(["m68k-elf-as", "-mcpu=5407", "-o", f"out/{name}.o",
-                    f"tools/{name}.s"], check=True)
+                    _src(name)], check=True)
     subprocess.run(["m68k-elf-ld", f"-Ttext=0x{at:x}", "-o", f"out/{name}.elf",
                     f"out/{name}.o"], capture_output=True)
     subprocess.run(["m68k-elf-objcopy", "-O", "binary", f"out/{name}.elf",

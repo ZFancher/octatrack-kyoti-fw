@@ -2,7 +2,7 @@
  "name": "playsfreefix",
  "version": "r1",
  "target": {
-  "device": "Elektron Octatrack MKII",
+  "device": "Elektron Octatrack (one 1.40C image for MKI and MKII)",
   "os": "1.40C",
   "stock_syx_sha256": "0a8d2d2b35c2cc78fa338576adc1af0cbc094cef973255103165c73edd87f2b6",
   "section": 3,

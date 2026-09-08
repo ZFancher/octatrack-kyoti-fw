@@ -1,3 +1,7 @@
+| SPDX-License-Identifier: NONE  (inherited from mxldyn/octamax, author: Maxolydian)
+| Octatrack behaviour-mod source, kept under tools/attic/ for RE cross-reference only.
+| Not part of any OT Kyoti FW build. See tools/attic/README.md and CREDITS.md.
+|
     .cpu 5407
     .text
 | =====================================================================

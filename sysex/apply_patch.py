@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-Build a patched Octatrack MKII firmware .syx from YOUR OWN copy of the official OS.
+Build a patched Octatrack firmware .syx from YOUR OWN copy of the official OS.
+(Elektron ships one 1.40C image for the Octatrack MKI and MKII alike.)
 
 No Elektron binary is distributed with this repository. You supply the stock .syx
 (downloaded from elektron.se); this script applies the patch hunks — which are the
 only part authored here — and repacks the result.
 
-    python3 sysex/apply_patch.py -i OCTATRACK_OS1.40C.syx -o OCTATRACK_MAXOLYDIAN.syx
+    python3 sysex/apply_patch.py -i OCTATRACK_OS1.40C.syx -o OCTATRACK_PLAYSFREEFIX.syx
 
 Every step is verified: the stock file's checksum, the original bytes under each
 hunk, and the checksum of the produced .syx. Any mismatch aborts before writing.
@@ -16,7 +17,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
-DEFAULT_PATCH = HERE / "patches" / "maxolydian-r13.json"
+DEFAULT_PATCH = HERE / "patches" / "playsfreefix-r1.json"
 TOOL_CANDIDATES = [
     ROOT / "vendor/elektron-firmware-tool/elektron-firmware-tool",
     Path("elektron-firmware-tool"),
