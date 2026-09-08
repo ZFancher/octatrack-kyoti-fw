@@ -1,6 +1,6 @@
 # START HERE — onboarding for a new session
 
-Octatrack (OS 1.40C) firmware reverse-engineering + small optional behaviour patches.
+Octatrack (OS 1.40C) firmware reverse-engineering + custom behaviour patches.
 This file is the stable entry point. Read it, then the pointers it names. Keep it short;
 update the **Current frontier** section at the end of each session.
 

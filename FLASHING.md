@@ -2,9 +2,9 @@
 
 How to flash an OT Kyoti FW image onto your Octatrack, with a full safety net.
 
-> **Everything is OFF by default.** Straight after flashing, the unit behaves
-> exactly like stock firmware — except for the one always-on bug fix below. The
-> optional change (MUTE MODE) is switched on from PERSONALIZE.
+> **The behaviour change is OFF by default.** Straight after flashing, the unit
+> behaves like stock firmware apart from the one always-on bug fix below. MUTE
+> MODE is switched on from PERSONALIZE.
 
 > **Octatrack MKI or MKII.** Elektron ships one OS 1.40C image for both units and
 > the reverse engineering / builds here apply to both; the boot `0x46c8d18c`
@@ -123,8 +123,8 @@ container.
 
 ## 4. Verify the flash and test each feature
 
-An OS upgrade **resets PERSONALIZE**, so every optional feature is off after a
-flash until you re-enable it.
+An OS upgrade **resets PERSONALIZE**, so MUTE MODE is back to `OT` after a flash
+until you re-enable it. The Bug-1 fix is always on.
 
 ### 4.0  Boot check
 The startup screen and **SYSTEM → SYSTEM STATUS → OS VERSION** read `140C_KYOTI`

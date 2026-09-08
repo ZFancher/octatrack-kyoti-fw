@@ -1,14 +1,14 @@
 ```
    ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
   ▐░░  O T   K Y O T I   F W  ·  custom Octatrack firmware  ░░▌
-  ▐░░  small · optional · reversible · educational          ░░▌
+  ▐░░  reversible · educational                             ░░▌
    ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
 ```
 
 # OT Kyoti FW
 
 **A custom firmware for the Elektron Octatrack (OS 1.40C) — a hardware-confirmed
-MIDI bug fix and a small, optional, reversible mute-behaviour change, built from a
+MIDI bug fix and a reversible mute-behaviour change, built from a
 reverse-engineering study of the stock OS.**
 
 Everything here is **educational**. You bring your own copy of the official OS;
