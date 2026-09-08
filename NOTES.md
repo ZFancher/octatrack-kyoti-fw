@@ -4490,6 +4490,13 @@ Working model: the knob edits **#2** (`0x46c7ab30`) for the held step; a
    (`sctail`), `tools/{sc_tables,build_sidechain3,emu_sc_dsp3}.py` →
    `out/OCTATRACK_OS1.40C_SIDECHAIN3.{syx,bin}`. `emu_sc_dsp3.py` (isolation +
    `--patched` end-to-end) ALL GOOD, NOT flashed. NOTES "Session 36".
+   **⚠️ Session 40:** KEY/KEY FLT/KEY GAIN/SC LISTEN are page-2 params; octabam's
+   HW-verified §7 (`kb/memory-map.md` "Parameter value → the engine") shows page 2
+   has NO DSP post — it rides only the per-frame copier lane. `emu_sc_dsp3` pokes
+   `r6` so it can't see this. First HW check on SIDECHAIN2/3: **turning KEY must
+   move `x:(r6+$d)`** (verify the copier forwards our new page-2 slots as it does
+   RMS). Also: adding page-2 slots to COMPRESSOR risks the "older slot layout →
+   sequencer stalls" trap for existing projects — flash notes need a default guard.
 4. **(blocked on MKI)** flash sequence DT → SIDECHAIN2 → SIDECHAIN3 → DIRECTJUMP
    (v1 or v2); the p-lock Phase-0 `pattern-diff` pass; Bug 2 HW confirm.
    Nothing no-flash remains on this board except item 1's alt (trace SAVE for the
@@ -5300,3 +5307,76 @@ chasing the commit. All the RE is banked in `kb/file-format.md`. The detour
 core action (`clear #1[t][step] + 0x400339d8` → LED off) is already validated
 (S32) and will slot straight in once Phase 0 names the hook point.
 
+
+## Session 40 (2026-09-08, `wip/mute-mode`) — KB ingest: octabam ColdFire port + page-2 publish path + efw-tool (no firmware work)
+
+`whatsnew.py`: octamax up to date; **efw-tool +5**, **octabam +126** (ColdFire
+port O1–O12, one-aux bus, RTOS 10.17–10.18). Synced both to tip
+(`refs/MANIFEST.lock`: efw-tool `065d18f`→`a5bce9a`, octabam `47f6cc5`→`04b8512`;
+octamax left at its last-distil pin). Distilled the parts that touch our two
+active threads; the bus/reverb/xbus/recorder-seam work stays out of scope
+(`UPSTREAM_INBOX.md` Pending).
+
+### What went into `kb/`
+
+- **`memory-map.md` "Parameter value → the engine"** (NEW) — the full page-1 vs
+  page-2 publish path, hardware-verified by octabam over 12 flashes
+  (`midi_re_cc.md` §7). Generic writer `FUN_40054cd8(track, flat, value)`;
+  page-2 editor `P2EDIT 0x4003a474`; page-2 Part store
+  `DB + part*6322 + 0x8ef5a + track*30 + page*6 + slot2` (`page = 0` for FX2);
+  **mandatory bookkeeping flags** (`DB+0x95048|=1<<part`, `0x100b145e|=1<<part`,
+  `DB+0x9b332=1`, `0x100f8598=1`) or the store is inert; live lane
+  `0x80000830 + track*72 + slot2`; **page 2 has NO DSP post** — it rides only the
+  per-frame copier `0x4000cae8` (twin `0x40003d14`); page 1 *does* post a
+  kind-0x0f record to DSP queue `0x460d17ee` (consumed `0x4009204c`). Dial reads
+  `0x8f084 + track*30 + slot`. **Supersedes** NOTES S17's "page-2 r6 offsets less
+  certain — verify".
+- **`memory-map.md` "Per-voice DSP record"** (NEW) — `0x80000110/0x310` (core 1) /
+  `0x210/0x410` (core 0), 32 halfwords/track: `+0..5` AMP, `+6..11` FX1 pg1,
+  `+12..17` FX2 pg1 (`value<<8`; page-2 select in the low byte), `+27/+28` ids.
+  Copier `0x4000cae8` from pre-image `0x80000a50 + track*64`. FILTER coeff block
+  `X:0x2c0` = FX2 instance / `X:0x3a0` = FX1 (`r6` base `X:0x2c3 / 0x3a3`).
+- **`techniques.md` "the ColdFire PORT"** — octabam's `tools/ot_emu`: headless C++
+  ColdFire V4e + both DSP cores + ESAI audio + CF load (O1–O12); O11 found a real
+  HW bug (dispatcher bumps `r7` ×3/track, third unconditional after FX2). Traps:
+  "load part ≠ play part", "dsp_host pokes r6 → a slot can publish nothing",
+  "part saved under an older slot layout → sequencer stalls on first play".
+- **`container-format.md`** — efw-tool: ELEK version field is a **fixed 10-byte
+  right-justified field at `0x08`** (was `0x0D`); aPLib offset-bias underflow is
+  deliberate; `--emit-container`. Our `140C_KYOTI` tag is exactly 10 chars → fine.
+- **`file-format.md` p-lock Phase 1** — octabam names **`0x4000c42c–0x4000c5a0`
+  "the p-lock applier"** (trig-run coverage diff; armed-bitmask check
+  `0x4000bd14`); `emu_rtos.py` now runs the full transport/sequencer with a
+  unit-saved card + `--start --poke-trig --internal-clock`; transport
+  `FW_TRANSPORT 0x4009b964` start case `0x4009c458`.
+
+### Relevance to WIP — the headline
+
+**Side-chain (Sessions 17/36).** KEY / KEY FLT / KEY GAIN / SC LISTEN are all
+**page-2** params on the COMPRESSOR descriptor, and our DSP hooks read them from
+`x:(r6+$d/$e)`. octabam's HW-verified §7 says page 2 has **no DSP post** — it
+reaches the engine *only* via the per-frame copier's `+0x20` lane
+(`0x80000830 + track*72 + slot2`). So:
+  1. our `emu_sc_dsp3.py` passing is **not** evidence the KEY bytes arrive at
+     `r6` on hardware — `dsp_host` pokes `r6` directly ("a slot can publish
+     nothing"). The stock **RMS** page-2 slot (`r6+$c`) proves the mechanism
+     *exists* for COMPRESSOR, but our added slots need the same lane path.
+  2. **when SIDECHAIN2/3 is flashed, the first HW check must be "does turning KEY
+     actually change `r6+$d`":** confirm the copier forwards our new page-2 slots
+     (it forwards RMS; slots are positional so it very likely does, but verify).
+  3. p-locking KEY: the `0x80000db4` slew-marker packer covers **page-1 bytes
+     0..31 only** — page-2 params p-lock via a different path; check before
+     promising KEY as p-lockable.
+  4. adding page-2 slots to COMPRESSOR hits the "**older slot layout → sequencer
+     stalls on first play**" trap for existing projects that use COMPRESSOR —
+     the flash notes need a `stamp-defaults`-style step or a safe-default guard.
+
+**p-lock / trigless-lock (Sessions 24–34, 37–39).** Session 34's "not tractable
+headless" wall predates the current `emu_rtos.py`, which now runs transport +
+sequencer + step handler end to end with a unit-saved card. Combined with
+octabam's named `0x4000c42c` p-lock applier and the `FW_TRANSPORT` start-case
+map, the emu-only route to the `+0x4900`→`#1` commit is more open than S39
+implied — a running-transport `emu_plock` that `--start`s, does a LIVE edit,
+then STOPs and watches `#1` is now buildable. Doesn't change the S39
+recommendation (Phase 0 HW diff is still fastest once the MKI is back), but it's
+a real alternative if HW stays out of reach.

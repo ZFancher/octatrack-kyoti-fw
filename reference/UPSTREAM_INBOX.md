@@ -16,10 +16,32 @@ agent that fetches the refs and appends new commits here.
 - 2026-09-06  octamax@7d9debc  OCTAMAX 2.x — slice-playhead view, dual-256 static-pool
               reclaim (DDR relocation), OCTAMAX_2 combined release. Techniques noted in
               kb/techniques.md; not adopted.                          [ noted, not adopted ]
-- 2026-09-06  octabam@2f241e1  the DSP-effect-addition work (bus screen, reverb/delay
-              engines, xbus accumulator fixes) — out of scope per COVERAGE.md.  [ out of scope ]
+- 2026-09-08  octabam@04b8512  the DSP-effect-addition work (one-aux bus, reverb/delay
+              engines, xbus per-core rotation) — out of scope per COVERAGE.md.  [ out of scope ]
+- 2026-09-08  octabam@04b8512  RTOS 10.17–10.18 — recorder-seam module, Bryan's click
+              (recorder length/loop) — recorder-specific, not our threads.   [ not ours ]
 
 ## Distilled
+
+- 2026-09-08  octabam@04b8512  midi_re_cc.md §7 (HW, 12 flashes) — page-2 param → engine
+              publish path: P2EDIT 0x4003a474, store DB+part*6322+0x8ef5a+track*30+page*6+slot2
+              (page=0 for FX2), bookkeeping flags mandatory, live lane 0x80000830+track*72+slot2,
+              NO DSP post (rides copier 0x4000cae8 only); page-1 posts kind-0x0f to 0x460d17ee.
+              Generic writer FUN_40054cd8. Supersedes NOTES S17 "verify".
+              [ kb/memory-map.md "Parameter value → the engine" ]
+- 2026-09-08  octabam@04b8512  COLDFIRE_PORT.md O9d — per-voice DSP record 0x80000110/0x310
+              (core1) / 0x210/0x410 (core0), 32 halfwords/track (+0..5 AMP, +6..11 FX1 pg1,
+              +12..17 FX2 pg1, page-2 in low byte, +27/+28 ids); copier 0x4000cae8; FILTER
+              coeff X:0x2c0 (FX2) / X:0x3a0 (FX1)
+              [ kb/memory-map.md, kb/dsp56300.md ]
+- 2026-09-08  octabam@04b8512  COLDFIRE_PORT.md O1–O12 — tools/ot_emu, headless C++ ColdFire
+              V4e + both DSP cores + ESAI audio + CF load; O11 r7-×3-per-track; "load part ≠
+              play part"; "dsp_host pokes r6 → a slot can publish nothing"
+              [ kb/techniques.md "the ColdFire PORT", kb/dsp56300.md ]
+- 2026-09-08  efw-tool@a5bce9a  ELEK version field = fixed 10 B @ 0x08, right-justified
+              (was 0x0D); container_header_end(); aPLib offset-bias underflow is deliberate;
+              --emit-container; section 2 DSP→bootstrap
+              [ kb/container-format.md ]
 
 - 2026-09-07  octabam@47f6cc5  RTOS 10.16 — stock Unicorn halves the ColdFire fractional
               EMAC; unicorn_emac_fractional.patch + build_unicorn.sh; MAC/MSAC ext-bit-8

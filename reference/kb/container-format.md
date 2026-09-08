@@ -41,11 +41,37 @@ DEFAULT_SEED 0x2F1349D2      # the seed the official 1.40C image uses
 Matches what our `vendor/elektron-firmware-tool` does — a useful cross-check if a
 `build_*.py` round trip ever fails.
 
+## ELEK header — version field layout (efw-tool `d407436`, 2026-09-08)
+
+> source: `refs/elektron-firmware-tool/container.{c,h}` @ `a5bce9a`. confidence: **C**
+> (upstream fix, comments cite the observed headers).
+
+The `.syx`-side **ELEK** container's text header: `ELEK_BUILD_OFF = 0x04`,
+**`ELEK_VERSION_OFF = 0x08`** (corrected from `0x0D`), `ELEK_SECT_OFF = 0x12`. The
+version is a **fixed 10-byte field `0x08..0x12`, right-justified, space-padded** —
+`"1.40C"` lands at `0x0D` only because it's right-justified, which is why the old
+`0x0D` "worked" on one sample. `container_set_version` for ELEK must re-pad on the
+left; ELE2/ELE3 instead locate it by scanning for `<digit>.<digit>` and write from
+there. `container_header_end(ct)` is the new "stop scanning, binary past here"
+bound (`ELE2_DEST_OFF` / `ELEK_SECT_OFF` / `ELE3_COUNT_OFF`). Section 2 of the
+device layout was renamed **DSP → bootstrap** (`a5bce9a`).
+
+**For us:** our builds stamp `140C_KYOTI` (exactly 10 chars → fills the field, no
+pad). If a build ever writes a shorter tag it must right-justify in `0x08..0x12`,
+or the ELEK header reads wrong. `main --emit-container` is a new dump flag.
+
+Also (`cad66e8`): the aPLib depacker's `off -= APLIB_OFFSET_BIAS` **underflow is
+deliberate** — a raw offset below the bias wraps near `UINT32_MAX` and is then
+rejected by the "offset > bytes-written" check. Do not "fix" it to a signed
+subtraction without adding an explicit guard.
+
 ## To import / verify from `refs/`
 
 - **elektron-firmware-tool** `format.h`, `main.c`, `compress.c`, `integrity.c` —
   check for format-field or checksum fixes newer than our vendored copy
-  (`whatsnew.py elektron-firmware-tool`).
+  (`whatsnew.py elektron-firmware-tool`). Vendored copy is 2 commits behind the
+  version-field fix above; harmless for us (we stamp a 10-char tag) but re-sync
+  `vendor/` before relying on `container_set_version` for a shorter string.
 - **octabam** also rolls its own writer — third independent implementation.
 - **ems-octakit** `patcher/` (Rust) is a fourth — `sparse-public-write-v3` +
   `authenticated-stock-local-reconstruction-v1`: it classifies every output byte

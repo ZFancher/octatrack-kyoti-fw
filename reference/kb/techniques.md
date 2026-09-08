@@ -84,6 +84,59 @@ handler with a delta → `--watch-mem` the sequenced-data RAM (`[0x46c82456] +
 pat*0x18b2`, near `+0x8f385`) to name the function that writes `0xFF` into the
 p-lock record. Then RE that one function statically.
 
+### octabam `tools/ot_emu` — the ColdFire PORT (C++), the audio-capable successor
+
+> source: `refs/octabam/docs/COLDFIRE_PORT.md` (2705 lines) + `COLDFIRE_WORKORDER.md`
+> @ `04b8512` (milestones O1–O12, 7–9 Sep 2026). confidence: **C** for what each
+> milestone gates; **out of scope to adopt** unless a WIP blocker needs it.
+
+`emu_rtos.py` (route A, Unicorn) is the **oracle** but costs ~120× real time, models
+no audio, and stops at the DSP host port. `ot_emu` is octabam's rewrite: a headless
+C++ Octatrack — Musashi ColdFire **V4e** (vendors `mc68k`, GPLv3; EMAC/`mov3q`/`mvs`
+`mvz` as trap-and-emulate over frozen opcode tables), the MCF5445x PIT/INTC/eDMA/ESAI,
+a CompactFlash image, and **both DSP56321 cores** (`dsp_host` folded in). ~39 M
+inst/s ≈ 4.5× slower than real time, every claim gated against route A.
+
+What it can do that route A / our `emu_rtos` cannot (as of O12):
+
+- **boot to the RTOS handoff** (O1, PC `0x40000e46`, agrees with route A);
+- **run the kernel + sequencer** with the cores live (O4/O6/O8) — the frame clock
+  is the DSP's bank word, not a timer;
+- **mount a card and `LOAD PROJECT`** (O7) — the mount needs a *delayed* INTRQ
+  (instantaneous hangs the firmware);
+- **render audio end-to-end** — ESAI input proven (O9), FLEX playback sample-exact
+  (O10), a trig → voice → DSP → read-back path (O9b), and the one-aux bus
+  **bit-identical to `dsp_host`** (O12);
+- **reproduce a hardware audio bug and find its cause** (O11: the one-aux return
+  never reached T8 because the stock dispatcher bumps `r7` **three times per
+  track**, the third unconditional after FX2 — the `dsp_host` model had two).
+
+Traps it establishes that bite our WIP work directly:
+
+- **`dsp_host` pokes `r6` directly, so a page-2 param looks live locally even when
+  the real unit publishes nothing** ("a slot can draw a knob and publish nothing",
+  `PARAM_PAGES.md`). Our `emu_sc_dsp3.py` seeds `.mem` and pokes — passing it is
+  **not** evidence the sidechain KEY/KEY FLT/KEY GAIN bytes reach `x:(r6+…)` on
+  hardware. The publish path is in `memory-map.md` "Parameter value → the engine".
+- **The part the emulated load applies is not the part that plays** — `ot_emu`'s
+  load applies bank 1 / part 1; transport start re-applies the *saved* bank's
+  pattern part and `0x4000c19c` rewrites the live lane from it. Cost octabam a
+  whole O9c session measuring a track whose FX2 was silently `SEND`. Any fixture
+  must write **every part of every bank** (`ot_project.py set-fx`, `stamp-slot`).
+- **A part saved under an older slot layout feeds the new layout its old bytes and
+  the sequencer stalls on the first play** — a 0–127 value sitting in what is now a
+  count-3 select is the "value ≥ count used as an index" trap in *stored* form, and
+  the schema cannot see stored data. After any change to a page-2 slot's
+  count/position/meaning (our sidechain adds slots to COMPRESSOR; MUTE MODE relocates
+  menu arrays), run `ot_project.py stamp-defaults` on the card before play.
+- **Never rewrite emulated code in place** (a rewritten trampoline keeps its first
+  translation in a long-running Unicorn) — relevant if we extend `emu_rtos` shims.
+
+To use it we'd vendor `mc68k` + build (`make emu-cf`), same posture as
+`vendor/dsp56300`. Worth it **only** if the Session-34 "LIVE-erase not tractable
+headless" wall actually needs a scheduler-plus-audio emulator; for static RE and
+the p-lock byte map, `emu_rtos` + `pattern-diff` still suffice.
+
 ### octabam `ot_project.py` — on-disk bank/project editor + differ
 
 `pattern-trig` (write a step trig on disk), **`pattern-diff <A> <B> <bank>`**

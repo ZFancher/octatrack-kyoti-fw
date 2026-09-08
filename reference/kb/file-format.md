@@ -213,6 +213,19 @@ touches the `+0x62`-equivalent RAM region (`[0x46c82456] + pat*0x18b2`, near
 The detour goes *after* the clear: if `record[step]` is all-`0xFF` and the step
 is a bare trigless lock, clear its mask bit. Conservative — keep on any doubt.
 
+> **octabam leads (2026-09-08, `COLDFIRE_PORT.md` O9b / `EMU.md`):**
+> a coverage diff of a trig-run vs a no-trig run names **`0x4000c42c–0x4000c5a0`
+> as "the p-lock applier"** (in the trig's 124-PC footprint, alongside an
+> armed-bitmask check at `0x4000bd14`) — distinct from our Session-39 chain
+> (`0x4009d1e8` step handler → `0x4000bad4` per-frame apply); cross-check it for
+> the `+0x4900`→`#1` commit. And octabam's **`emu_rtos.py` now runs the full
+> transport + sequencer end to end** with a card *freshly saved on the unit* +
+> `--poke-trig` + `--start` + `--internal-clock` (clears CLOCK-RECEIVE
+> `0x80000028` bit 0) — the "not tractable headless" wall of Session 34 predates
+> that maturity. Transport `FW_TRANSPORT 0x4009b964`, start case `0x4009c458`
+> (`state 0x800065b8 := 1`, phase inc `0x46107570 := tempo24<<4`, post to UI
+> queue `0x460d1664`); the STOP case is our remaining `+0x4900`→`#1` candidate.
+
 ---
 
 ## Firmware ↔ disk cross-reference

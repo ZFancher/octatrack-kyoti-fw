@@ -315,6 +315,63 @@ an unlocated fixup: TRIG draws `ONE` (raw 1 = `ONE2`), SRC3 draws `MAIN` (raw 0 
 `FLEX = 0x400d2fe4`, `STATIC = 0x400d3176` (TSTR = slot byte index 10; `1`=AUTO
 stock, `0`=OFF). PICKUP's TSTR has min 1 (0 stalls the sequencer — OOB table idx).
 
+### Parameter value → the engine — the publish path (page 1 vs page 2)
+
+> source: `refs/octabam/docs/midi_re_cc.md` §3/§6/§7 + `docs/COLDFIRE_PORT.md` O9c–O9d
+> @ `04b8512` (2026-09-05..08). confidence: **C** — §7 and the O9d record layout are
+> hardware-/port-measured across 12+ flashes; **L** for the exact halfword offsets
+> where noted. Supersedes the older "page-2 r6 offsets less certain — verify" note
+> in `NOTES.md` Session 17.
+
+A parameter byte travels **UI/CC → Part store → a live lane → the per-frame DSP
+copier → the effect's block**. Page 1 and page 2 take *different* lanes, and only
+one of them has an explicit "publish" step:
+
+| | **page 1** (knobs, CC 16–45) | **page 2** (RMS / selects / our sidechain KEY*) |
+|---|---|---|
+| generic writer | `FUN_40054cd8(track, flat, value)` — `flat = page*6 + slot`; callers `0x40062530` / `0x400625aa` (CC) / `0x400a15f0`. Knob path `FUN_40055008` is a near-copy. | `P2EDIT = 0x4003a474(slot2, delta)` — reached via the 7-record page table `0x400bb6f8`. **CC never reaches page 2** (handler admits only `cc−16 < 30`; slot `flat % 6`). |
+| Part store | audio: `Part + 0x8edaa + track*30 + machine*7 + slot` (PB page) / `Part + 0x8ee9a + track*24 + (flat−6)` (AMP·LFO·FX1·FX2). MIDI: `Part + 0x8f162 + (t−8)*32 + flat`. | `DB + part*6322 + 0x8ef5a + track*30 + page*6 + slot2` — `part = 0x80000003`, `track = 0x80000000`, `page = long 0x460d5c30` (staged index; **0 for FX2 page 2** → store is `+0 + slot2`). |
+| shadow | `0x100a4ef8` / `0x100a4fe8 + same off` | `0x100a50a8 + part*6322 + track*30 + page*6 + slot2` |
+| "edited" flags | `0x40027e00/e30` (dirty) | `DB+0x95048 |= 1<<part`, `0x100b145e |= 1<<part`, `DB+0x9b332 = 1`, `0x100f8598 = 1` — **omit any of these and the Part store is inert** (measured, octabam tags 94–99). |
+| clamp | `min = P+0x6a[slot]`, `max = min + P+0x9a[slot] − 1` (`0x40054dee`) | same, at descriptor index `slot2+6` |
+| **live lane byte** | `0x80000810 + track*72 + flat` (+ `0xa0` slew marker at `0x80000db4 + track*72 + (flat/4)*4`) | **`0x80000830 + track*72 + slot2`** (= `0x80000810 + track*72 + 0x20 + slot2`) + redraw `0x46c7d244[slot2*20 + 4] = 0x14` |
+| dial reads | the Part via the page cache | displayed value at `0x8f084 + track*30 + slot` (`slot = slot2+6`) — **separate from the store**; a write that skips it leaves the dial stale |
+| **DSP publish** | writer calls resolver `0x4009da20` → posts a **kind-0x0f** record to the DSP param queue `0x460d17ee`, consumed `0x4009204c` | **none.** Page 2 reaches the DSP *only* through the per-frame copier `0x4000cae8` (twin `0x40003d14`), which ships `0x80000a50`'s halfwords **and the `+0x20` lane** to host-port staging every frame, unconditionally. |
+| load-time fill | frame-builder refreshers `0x40170f8a` / `0x4017107a` (4 instances) from project storage | same refreshers; `0x4000c19c` on transport start re-applies the **saved bank's pattern part** over the lane (`0x4017107a + bank·635712 + part·6322 + track·24` → `0x80000816 + track·72`) |
+
+MIDI-CC pipeline: `UART → parser → queue 0x46c7e974 → MIDI-in task 0x40005540 →
+0x400d6474[status>>4] → CC handler 0x4000e79c → kernel queue 0x460d17ae (poster
+0x400053d8) → UI task 0x40061cd2 → 0x40061cfa[kind−1] → kind 0x40 → 0x40062496 →
+FUN_40054cd8`. Crossfader: CC 48 → kind `0x44` → `0x4006269a` (rebuilds gain table
+`0x80003c60..88`); panel xfader → kind `0x04` → `0x40061e0a` (same body).
+
+Also written by `FUN_40054cd8` (p-lock/override state, octabam 🟡): per-track lock
+bit `0x80001538[t] &= ~(1<<flat)`, byte `0x80001658[t*32+flat]`. (Cf. our
+`0x46c75fa0` bitmap / `0x46c7ab30` live values in "p-lock RAM structures".)
+
+### Per-voice DSP record — what the copier assembles each frame
+
+> source: `refs/octabam/docs/COLDFIRE_PORT.md` O9d @ `04b8512` (2026-09-08), decoded
+> from the host-port block dump. confidence: **C** for the record split + id slots,
+> **L** for the exact page offsets.
+
+`0x80000110` / `0x80000310` → **core 1** (tracks 5–8), `0x80000210` / `0x80000410`
+→ **core 0** (tracks 1–4). 128 halfwords each = **32 per track**, one DSP word per
+halfword:
+
+| halfword | field |
+|---|---|
+| `+0..5` | AMP page 1 |
+| `+6..11` | FX1 page 1 (`value << 8`; page-2 select in the **low byte** of the same halfword — the "flag word") |
+| `+12..17` | FX2 page 1 (same encoding) |
+| `+27` | FX1 id · `+28` FX2 id |
+
+Assembled by copier `0x4000cae8` from the pre-image `0x80000a50 + track*64`
+(halfwords 12..29). DSP-side landing: per-voice block at `X:0x4000` (`0x034000`);
+FILTER's coefficient block is `X:0x2c0` for the **FX2** instance, `X:0x3a0` for
+**FX1** (id byte at DSP record `+27/+28`; `r6` param base `X:0x2c3 / 0x3a3`).
+Stock RAM part page snapshot at `0x4017109e` (e.g. `0x7f40007f` = BASE 127 WDTH 64).
+
 ## PERSONALIZE settings — persistence (the 'ANDY' battery-SRAM block)
 
 > source: `refs/octamax` `c78ff70` (2026-09-06), verified against our `section_3_MAIN_OS.bin` in Session 19. confidence: **C** (bytes + octamax HW-confirmed).
@@ -363,9 +420,12 @@ one short of `0x800000e0` — do **not** widen further. See `tools/patch_mutemod
 ## To import next (from `refs/`)
 
 - **octabam `docs/`** — swept 2026-09-02 (menu/UI) + 2026-09-06 (kernel, sequencer
-  masks, descriptor table, recorder page). Still uncatalogued: the DSP-effects work
-  (bus screen, reverb, xbus — mostly out of scope) and ~20 octabam-only
-  `FUN_40xxxxxx` (screen-record / audio-editor / part-teardown).
+  masks, descriptor table, recorder page) + 2026-09-08 (`midi_re_cc.md` §7 page-2
+  publish path, `COLDFIRE_PORT.md` O9d per-voice DSP record — both above; the
+  ColdFire port itself → `techniques.md`). Still uncatalogued: the DSP-effects work
+  (bus screen, reverb, xbus, one-aux bus — out of scope) and ~20 octabam-only
+  `FUN_40xxxxxx` (screen-record / audio-editor / part-teardown). RTOS 10.17–10.18
+  (recorder-seam module, Bryan's click) — recorder-specific, not ours.
 - **p-lock byte→parameter map** — hypothesis now in [`file-format.md`](file-format.md)
   ("byte→parameter map"); needs the hardware `pattern-diff` pass to confirm, and
   the LIVE-REC erase handler still to be located (start from the mask consumers
