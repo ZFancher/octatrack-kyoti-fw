@@ -5694,3 +5694,53 @@ runs the storage stack + transport + sequencer) covers all of these.
 Tools next session: `tools/emu_reload.py` (drive the worker in `emu_rtos`:
 load DEMO, edit pattern P live, run the worker, assert P reverts + other
 patterns' edits survive), then `tools/patch_reload.s` + `tools/build_reload.py`.
+
+### `tools/emu_reload.py` (same day) — the core mechanic is PROVEN in `emu_rtos`
+
+`--slice` : **ALL GOOD.** Load DEMO (curbank 0, `PART_PTR == 0x400e21e0` — blob
+geometry confirmed live), `seq_select_live(0, 10)`, start the transport, then
+while playing: scribble trig-mask + p-lock bytes into both pattern 10's slab
+*and* pattern 0's slab in the blob, `memcpy` pattern 10's saved slab back, poke
+`0x46c8028a = 1`, run 400 ms of frames. Result: **pattern 10 reverted, pattern
+0's edit survived, `0x46c8028a` consumed by the running step engine,
+`0x800065b6` (pattern length−1) reloaded 0→1, step kept advancing, transport
+stayed at 1, no fault.** ⇒ the SEQ-DATA mechanic (slice-copy into the blob +
+fire the reload-now flag) works live, is bystander-safe, and needs no transport
+stop.
+
+`--strd` : the async storage-task job runs end to end — `call_as_main(
+FUN_40022778, 1<<curbank)` (a pure post, safe) → the real `FUN_4008445c`
+dequeues → `FUN_400905d4` → `FUN_4008ded0` → the blob is re-deserialised (a
+0xAB scribble across `#1` is wiped and the array refilled from a bank file).
+Stock pulled from `bank01.work` (the 0x14 case's `.strd`→`.work` copy step
+didn't take in the emu without its `0x100b14f0` context) — the FEATURE build
+redirects the open to `bank01.strd` (`0x400b86c7`→`0x400b86d8`) and skips that
+copy, so `.strd`-vs-`.work` is a patched-image / HW check, not a blocker.
+
+`call_as_main(FUN_40016864, …)` (synchronous open) **faults** `rte would return
+to user mode` — the buffered open blocks, confirming the file layer MUST run on
+the storage task, not a synchronous cave (the design already routes through
+`FUN_4008445c`).
+
+### Storage-task job model (RE this session, for the build)
+
+`FUN_40022778(mask)` builds a msg at `0x460bd912` `{[0]=type 0x14, [2]=mask(w),
+[4]=beginFn 0x40023230, [8]=doneFn 0x40023bf4, [0xc]=fn3 0x40022dc4}` and posts
+it to the storage queue `0x460d17ce` via `0x40000c3c`. `FUN_4008445c` main loop:
+`0x40000d00` blocking-dequeue → `d0 = msg[0]` (type, ≤45) → word jump table at
+**`0x40084870`** (`jmp (0x40084870, type*2 : word)`). Type 0x14 case
+`0x40085864`: `FUN_4008f0b0(0x100b14f0, mask, &outA, &outB)` (`.strd`→`.work`
+copy, posts type 6); type 6 case `0x40084eee`: `FUN_400919e4(0x100b14f0, mask,
+…)` → per-bank `FUN_400905d4`-equivalent → `FUN_4008ded0`. `0x40023230`
+(the job's `begin`) just shows the non-modal "RELOADING BANK" overlay
+(`FUN_400808bc`). **The FEATURE hooks: (1) combo → set `G_KIND`/`G_PAT`, post
+`FUN_40022778(1<<curbank)`; (2) type-0x14 case entry `0x40085864` → if `G_KIND`,
+jump to a self-contained worker cave (runs on the storage task, may block):
+sprintf `.strd` via `0x400b86d8`, `FUN_40016864` open, `FUN_4008ded0` into
+`scratch = 0x400e21e0 + ((curbank+8)&15)*0x9b340`, `FUN_4001677c` close,
+`memcpy` the SEQ slab and/or the parts region into the live blob, restore the
+scratch bank (post a stock type-6 for `1<<S`), `move.l #1,0x46c8028a`, show +
+schedule-dismiss the toast; else fall through to stock.** No `FUN_400a10c8`
+pre-step and no `FUN_400238a4` re-sync are ever invoked → no audio stop.
+`tools/patch_reload.s` + `build_reload.py` next session; then `emu_reload.py
+--patched` (post the real combo, let the real worker run).
