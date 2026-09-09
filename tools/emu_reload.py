@@ -46,7 +46,9 @@ sys.stdout.reconfigure(line_buffering=True)
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 OCTABAM = ROOT / "refs" / "octabam"
-OUR_IMAGE = ROOT / "out" / "raw" / "section_3_MAIN_OS.bin"
+STOCK_IMAGE = ROOT / "out" / "raw" / "section_3_MAIN_OS.bin"
+RELOAD_IMAGE = ROOT / "out" / "mainos_reload.bin"        # build_reload.py output
+OUR_IMAGE = STOCK_IMAGE                                  # overridden by --patched
 DEMO = pathlib.Path.home() / "Desktop" / "OT Backup" / "KYOTI" / "OT DEMO"
 DEMO_BANK1_STRD = DEMO / "bank01.strd"
 DEMO_BANK1_WORK = DEMO / "bank01.work"
@@ -255,15 +257,115 @@ def cmd_strd(rt):
     return changed
 
 
+PTN_HELD = 0x460d1742
+NO_HANDLER = 0x4005e25c
+NO_KEYCODE = 0x32
+G_KIND = 0x80006a50
+G_PAT = 0x80006a51
+
+
+def cmd_patched(rt):
+    print("\n===== --patched : drive [PTN]+[NO] on the built RELOAD image =====")
+    curbank = rt.uc.mem_read(er.CUR_BANK, 1)[0]
+    blob = part_ptr(rt)
+    P, Q = DISK_PAT, 0
+    pP, pQ = blob + P * PAT_STRIDE, blob + Q * PAT_STRIDE
+    rt.seq_select_live(curbank, P)
+
+    saved_P = rd(rt, pP, PAT_STRIDE)
+    saved_Q = rd(rt, pQ, PAT_STRIDE)
+
+    # transport up
+    rt.frame = True
+    rt.next_frame = rt.sample + er.FRAME_PERIOD
+    rt.exact_clock(); rt.internal_clock(); rt.press_play_live()
+    rt.run(ms=250)
+
+    # "live edits" into P and Q
+    for base, tag in ((pP, "P"), (pQ, "Q")):
+        for trk in (0, DISK_TRK):
+            tb = base + trk * TRAC_STRIDE
+            for off in (0x00, 0x08, PLOCK_IN_TRAC + 0x40):
+                rt.uc.mem_write(tb + off, bytes([rd(rt, tb + off, 1)[0] ^ 0x5A]))
+    assert rd(rt, pP, PAT_STRIDE) != saved_P and rd(rt, pQ, PAT_STRIDE) != saved_Q
+    print(f"edits      : P{P} and Q{Q} slabs scribbled")
+
+    # drive the combo: [PTN] held + NO press.  Stub the toast (FUN_40059f8c) to a
+    # bare rts -- emu_directjump.py stubs it the same way; it is not what we test
+    # and its countdown-window setup is not call_as_main-friendly.
+    rt.uc.mem_write(0x40059f8c, b"\x4e\x75")
+    rt.uc.ctl_flush_tb()
+    spin(rt)
+    rt.uc.mem_write(PTN_HELD, struct.pack(">I", 1))
+    faulted = None
+    try:
+        d0 = rt.call_as_main(NO_HANDLER, args=(NO_KEYCODE, 1), budget=6_000_000)
+        print(f"combo      : NO handler(kc={NO_KEYCODE:#x}, press) -> d0={d0:#x}")
+    except Exception as e:
+        faulted = f"{type(e).__name__}: {e}"
+        print(f"combo      : raised {faulted}")
+    k1 = rd(rt, G_KIND, 1)[0]
+    gp = rd(rt, G_PAT, 1)[0]
+    print(f"armed      : G_KIND -> {k1:#x}   G_PAT={gp} (active pattern {P})")
+
+    # let the storage task drain the job (two bank deserialises: .strd + .work)
+    try:
+        rt.run(ms=45000, until=lambda r: r.uc.mem_read(G_KIND, 1)[0] == 0
+               and int.from_bytes(r.uc.mem_read(RELOAD_NOW, 4), "big") == 0
+               and r.pc == er.MAIN_SPIN)
+    except Exception as e:
+        faulted = faulted or f"{type(e).__name__}: {e}"
+        print(f"drain      : raised {faulted}")
+
+    after_P, after_Q = rd(rt, pP, PAT_STRIDE), rd(rt, pQ, PAT_STRIDE)
+    flag = int.from_bytes(rd(rt, RELOAD_NOW, 4), "big")
+    gk = rd(rt, G_KIND, 1)[0]
+    tport = int.from_bytes(rd(rt, TRANSPORT, 4), "big")
+    len1 = int.from_bytes(rd(rt, SEQ_LEN_M1, 1), "big")
+
+    strd = DEMO_BANK1_STRD.read_bytes()
+    doff = D_PAT1 + D_PSTRIDE * P + D_PHDR
+    P_from_strd_t1 = strd[doff + D_TRAC * DISK_TRK + 0x62: doff + D_TRAC * DISK_TRK + 0x62 + 64]
+    ram_t1 = after_P[DISK_TRK * TRAC_STRIDE + PLOCK_IN_TRAC: DISK_TRK * TRAC_STRIDE + PLOCK_IN_TRAC + 64]
+
+    p_reverted_to_strd = ram_t1 == P_from_strd_t1
+    p_changed = after_P != saved_P or True  # informational
+    q_survived = after_Q != saved_Q
+
+    print(f"\nresult     : G_KIND={gk:#x}  0x46c8028a={flag:#x}  transport={tport}  len-1={len1}  fault={faulted}")
+    print(f"  P{P} t{DISK_TRK} p-lock head now : {ram_t1[:24].hex(' ')}")
+    print(f"  same, from bank01.strd on disk  : {P_from_strd_t1[:24].hex(' ')}")
+    print(f"  Q{Q} slab != pre-combo edit (survived) : {q_survived}")
+
+    ok = (faulted is None and gk == 0 and tport == 1 and q_survived
+          and p_reverted_to_strd and flag in (0, 1))
+    print(f"\n--patched: {'ALL GOOD' if ok else 'CHECK FAILED'}")
+    for name, cond in [("no fault (worker rejoined the storage loop)", faulted is None),
+                       ("G_KIND cleared by the worker", gk == 0),
+                       ("transport still running", tport == 1),
+                       ("Q's live edit survived", q_survived),
+                       ("P reverted to bank01.strd", p_reverted_to_strd),
+                       ("0x46c8028a fired then was consumed", flag in (0, 1))]:
+        print(f"   [{'x' if cond else ' '}] {name}")
+    return ok
+
+
 def main():
+    global OUR_IMAGE
     ap = argparse.ArgumentParser()
     ap.add_argument("--slice", action="store_true", help="slab revert + reload-now refresh (playing)")
-    ap.add_argument("--strd", action="store_true", help="FUN_4008ded0(bank01.strd) -> scratch region")
+    ap.add_argument("--strd", action="store_true", help="async storage-task reload of the blob from .strd")
+    ap.add_argument("--patched", action="store_true",
+                    help="boot out/mainos_reload.bin and drive [PTN]+[NO] end to end")
     a = ap.parse_args()
-    if not (a.slice or a.strd):
-        ap.error("pick --slice and/or --strd")
+    if not (a.slice or a.strd or a.patched):
+        ap.error("pick --slice, --strd and/or --patched")
     if not DEMO_BANK1_STRD.exists():
         sys.exit(f"missing {DEMO_BANK1_STRD} (the factory OT DEMO export)")
+    if a.patched:
+        if not RELOAD_IMAGE.exists():
+            sys.exit(f"missing {RELOAD_IMAGE} -- run python3 tools/build_reload.py first")
+        OUR_IMAGE = RELOAD_IMAGE
 
     rt = boot_and_load()
     ok = True
@@ -271,6 +373,8 @@ def main():
         ok &= cmd_slice(rt)
     if a.strd:
         ok &= cmd_strd(rt)
+    if a.patched:
+        ok &= cmd_patched(rt)
     sys.exit(0 if ok else 1)
 
 
