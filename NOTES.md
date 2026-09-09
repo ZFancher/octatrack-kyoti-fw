@@ -5576,3 +5576,121 @@ can target `.strd` + a scratch region, pin the parts offset, check whether
 `FUN_400a1eea`'s reload block covers parts, pick the combo). **Not** ready to
 write patch code until that lands — Qs 1–3 gate the design. No `tools/` files
 this session.
+
+### RE session (same day) — Qs 1–3 answered from static disasm; design holds
+
+Disassembly base `0x40000400` (`m68k-elf-objdump --adjust-vma=0x40000400`).
+
+**Q1 — can `FUN_4008ded0` target `.strd` + an arbitrary region? YES.**
+`FUN_4008ded0(fileHandle @fp+8, destRegion @fp+12, 0)` — takes an already-open
+buffered-file handle and an explicit destination pointer; streams the file in
+4-byte reads via `0x40016564`, checksum into `0x460fab5c` vs `0x400d1670` /
+`0x460fab54`. Nothing wired to `.work` naming or bank-state. The type-6 consumer
+`FUN_400905d4(mask)` (called from the bg task `FUN_4008445c`) shows the full
+recipe per bank bit:
+- `jsr 0x40025230(0,0)` → project dir (the bankpage `g_redirect` gate is inside,
+  at `0x40025244`);
+- `sprintf(buf, "%s/bank%02d.work", dir, bank+1)` — **format string
+  `0x400b86c7 = "%s/bank%02d.work"`; the `.strd` twin `0x400b86d8 =
+  "%s/bank%02d.strd"` is already in the image, 17 bytes along.** Redirect = swap
+  the `pea 0x400b86c7` operand at `0x40090676` to `pea 0x400b86d8` (or build our
+  own sprintf with `0x400b86d8`);
+- `FUN_40016864(handle@a4, path, "r" @0x400b3289, buf @0x460a8f60, 0x10000)` —
+  buffered open;
+- `FUN_4008ded0(handle, destRegion, 0)` — `destRegion = d6`, seeded
+  `0x400e21e0` and `+= 0x9b340` per bank ⇒ **the cold blob base for a bank is
+  `0x400e21e0 + bank*0x9b340`**, confirmed;
+- `FUN_4001677c(handle)` close;
+- ENOENT (`d2 == -12`) path sets `blob + 0x9b332 = 1` (the "bank invalid" flag).
+
+**Q2 — blob layout, pinned exactly** (from `FUN_40009094` + `FUN_4000faf0`):
+
+| region | offset in bank | stride / len |
+|---|---|---|
+| 16 pattern slabs | `0` | `pat*0x8ed8` (36568), 0..15 |
+| 4 part payloads | **`0x8ed80`** (= `16*0x8ed8` exactly) | `part*0x18b2` (6322), 0..3 → `0x62c8` total |
+| end of parts | `0x95048` | (= the `DB+0x95048|=1<<part` bookkeeping byte) |
+| bank stride | — | `0x9b340` (635712) |
+
+`FUN_40009094(bank, part)` reads part data from `0x40170f60 + bank*0x9b340 +
+part*0x18b2` — and `0x40170f60 == 0x400e21e0 + 0x8ed80`, i.e. the parts region of
+the cold blob (it also derives `0x40170f8a` / `0x4017107a` — the memory-map's
+"frame-builder refreshers" — which are `parts_base + 0x2a` / `+ 0x11a`).
+`FUN_4000faf0(bank)` is "make bank current": `memcpy(0x1001614e, blob +
+bank*0x9b340, 0x8ed80)` (all 16 slabs → live copy) + `memcpy(0x100a4ece,
+parts_base + bank*0x9b340, 0x62c8)` (parts → live) + 5 small per-bank
+flag/shadow copies. So:
+- **SEQ DATA** = `memcpy(live_blob + curbank*0x9b340 + P*0x8ed8, scratch + P*0x8ed8, 0x8ed8)`
+- **ALL PARTS** = `memcpy(live_blob + curbank*0x9b340 + 0x8ed80, scratch + 0x8ed80, 0x62c8)`
+- **WHOLE PATTERN** = both.
+
+The cold blob `0x400e21e0` **is the working store** — p-lock edits land there
+(Session 27's `+0x4900` writer, `emu_plock --confirm`), so other patterns'
+unsaved edits sit in their own `pat*0x8ed8` slabs and a single-slab copy leaves
+them untouched. `0x1001614e` / `0x100a4ece` are a downstream live cache that
+`FUN_4000faf0` refills from the cold blob (all-16, but only the reloaded slab
+differs, so it's safe to call).
+
+**Q3 — does the seamless reload path cover the pattern? YES for sequence; parts
+need `FUN_40009094`.** `_DAT_46c8028a` ("reload now") is polled every step by
+`FUN_400a1eea` at `0x400a2530` (`tstl … ; beq`); the block `0x400a253a–0x400a28ce`:
+`d2 = [0x800065bd]*0x9b340 + 0x400e21e0` (**active bank's cold blob**),
+`d3 = [0x800065be]` (active pattern), stride `0x8ed8` — then rebuilds, from that
+slab: per-track voice/note scratch (loop over `fp = slab+0x36` audio stride
+`0x91a` / `a5 = slab+0x48fc` MIDI stride `0x8b0`), master + per-track pattern
+length & scale (`slab+0x8e52/0x8e54`, `0x400aba50` scale table → `0x800065b6`,
+`0x800065d3[]`), the per-track pattern/bank pointer tables (`0x46c775bc` /
+`0x46c775cc/cd` — the p-lock decode inputs from S33/34), `0x8000663d` scale
+index, and zeroes `0x800065b4` / `0x800065b2` (step → 0). It does **not** touch
+Parts (purely sequencer-side) and does **not** rebuild the p-lock working set
+`#2` — but the step handler `0x4009d1e8` re-reads `#1` from the blob every step
+and rewrites `#2` unconditionally (S38), so trigs + p-locks adopt on the next
+playhead pass. The setter I found (`0x4000aea6`, `move.l #1,0x46c8028a` + soft-IRQ
+`0xfc048010`) is the plays-free PICKUP-sync auto-reload — too context-bound to
+reuse, but the flag is a plain global: **our worker just does `move.l #1,
+0x46c8028a`** and the running step engine adopts the patched slab. Parts: after
+an ALL PARTS / WHOLE copy, call the stock reload tail for the playing bank —
+`FUN_4000faf0(bank)` + `FUN_400a1030(bank,[0x80000004])` + `FUN_40009094(bank,
+[0x80000003])` (exactly what `FUN_400905d4` does at `0x400907b8` when
+`[0x80000002]==bank`).
+
+**Refined build plan**
+
+1. **Combo → 3-item overlay** (`WHOLE PATTERN` / `ALL PARTS` / `SEQ DATA`),
+   arrows move the highlight, `[YES]` / `[NO]`. Custom overlay (DIRECT JUMP v2
+   toast primitives `FUN_4005a0e0` / `FUN_5829c` + a frame countdown). Combo:
+   sibling of DIRECT JUMP's `[PTN]`+`[YES]` — candidates `[PTN]`+`[BANK]`
+   (`0x2e`+`0x2f`) or `[PTN]`+`[PAGE]`; confirm unbound in the keymap tables at
+   build. (`[PTN]` press sets `0x460d1742`, read by nothing → free chord; set
+   `0x460d173e=1` to swallow the SELECT-PATTERN-on-release.)
+2. **YES → post a job** on the `FUN_4008445c` queue (new msg type, carries {which
+   of the 3, pattern P, "P == active?"}). Worker:
+   - `sprintf(buf,"%s/bank%02d.strd", dir, curbank+1)` via `0x400b86d8`;
+     existence = `FUN_40016864` opens it (`d0 >= 0`), else toast "NOT SAVED" and
+     bail. **Only ever open `.strd` — never `.work` (FW holds it open; bankpage
+     rule).**
+   - `FUN_4008ded0(handle, 0x400e21e0 + S*0x9b340, 0)` into scratch bank index
+     `S` (`(curbank+8)&15`); `FUN_4001677c` close.
+   - `memcpy` the SEQ slab and/or the parts region scratch→live (offsets above).
+   - restore scratch S: post a stock type-6 reload for bit `1<<S` (reads
+     `bankS.work` back into `0x400e21e0 + S*0x9b340`) — or, if S is beyond the
+     project's bank count, skip.
+   - if P == active: `move.l #1,0x46c8028a` (seq); for parts also
+     `FUN_4000faf0`/`FUN_400a1030`/`FUN_40009094` as above. If transport stopped
+     (`[0x800065b8]==0`), the step engine isn't ticking → call the reload
+     directly or `FUN_400a1030(curbank,P)` to re-commit.
+   - toast "RELOADED" ~0.7 s, auto-dismiss.
+3. **MVP:** `SEQ DATA` only, single combo, active-pattern only, playing only —
+   ~1 detour + a ~120-word cave + the queue msg. Phase 2 adds the overlay +
+   `ALL PARTS` / `WHOLE` + stopped-transport + non-active P.
+
+**Still build-time (emu-verifiable, not design-blocking):** does the per-step
+trig/p-lock handler read the cold blob or `0x1001614e` (decides whether the
+`0x46c8028a` block alone refreshes SEQ, or we also need `FUN_4000faf0`);
+`FUN_4000faf0` glitch risk on the playing bank (bankpage never tested it without
+the pre-step); scratch-bank restore latency; exact combo. `emu_rtos` (Session 23,
+runs the storage stack + transport + sequencer) covers all of these.
+
+Tools next session: `tools/emu_reload.py` (drive the worker in `emu_rtos`:
+load DEMO, edit pattern P live, run the worker, assert P reverts + other
+patterns' edits survive), then `tools/patch_reload.s` + `tools/build_reload.py`.
