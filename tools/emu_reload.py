@@ -310,6 +310,8 @@ def cmd_patched(rt):
 
     spin(rt)
     rt.uc.mem_write(PTN_HELD, struct.pack(">I", 1))
+    rt.uc.mem_write(TRANSPORT, struct.pack(">I", 1))   # harness doesn't start it on the patched img
+    rt.uc.mem_write(0x800065be, bytes([P]))            # active pattern = P
     gates = {"PTN_HELD 0x460d1742": 0x460d1742, "POPUP 0x460e5cd0": 0x460e5cd0,
              "ARR_ACT 0x460d1aec": 0x460d1aec, "RUNNING 0x800065b8": 0x800065b8,
              "G_KIND 0x80006a50": 0x80006a50}
@@ -319,7 +321,7 @@ def cmd_patched(rt):
     try:
         # call the cave stub directly with (keycode, event=press) -- avoids the
         # stock NO-press action (0x4005e0e8) if any gate we didn't model bails
-        d0 = rt.call_as_main(rl_combo, args=(NO_KEYCODE, 1), budget=1_200_000)
+        d0 = rt.call_as_main(rl_combo, args=(NO_KEYCODE, 1), budget=900_000)
         print(f"combo      : rl_combo(kc={NO_KEYCODE:#x}, press) -> d0={d0:#x}")
     except Exception as e:
         faulted = f"{type(e).__name__}: {e}"
