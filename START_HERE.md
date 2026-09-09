@@ -117,6 +117,7 @@ JUMP already uses it, DT still needs it — see below). Everything here is emula
 | **4th MUTE MODE** — instant cut + FX tails + resume-at-playhead | RE'd, not built; gated on the same HW unknown as DT | `NOTES.md` "Session 14" |
 | **DIRECT JUMP** pattern-change mode | **Re-scoped + rebuilt (Session 21):** toggle is now **`[PTN]` + `[YES]`** (flashes "DIRECT JUMP ON/OFF" ~0.7 s) — no PERSONALIZE entry, so **no menu-array surgery**. `DJ_MODE` `0x800000a8`→`0x800000d8` with the Session-19 ANDY-shadow persistence. `patch_directjump.s` / `build_directjump.py` / `emu_directjump.py` updated, `emu_directjump.py` ALL GOOD (adds `test_toggle`). 522 B vs stock. **Not flashed.** | `NOTES.md` "Session 15" + "Session 21" (+ continued) |
 | **DSP side-chain compressor** | see below | `NOTES.md` "Session 17" (+ continued 1–8) |
+| **RELOAD FROM PROJECT** — per-pattern reload from the CF card, no transport stop (`WHOLE PATTERN` / `ALL PARTS` / `SEQ DATA`) | RE / feasibility only (Session 42): FEASIBLE, ~medium+. Reuses the bankpage async-load task + `FUN_4008ded0` + `FUN_400a1eea`'s reload block + the DIRECT JUMP overlay/chord toolkit; no menu-array surgery. RE session next to pin 3 gating questions. Not built. | `NOTES.md` "Session 42" |
 
 The shared HW unknown for **DT** and the **4th mode**: does the DSP keep advancing a
 0-amp / envelope-riding voice while the frame level words flow untouched? Flashing DT
@@ -173,3 +174,11 @@ Session 23) — the tool for the p-lock backlog below.
 (`kb/file-format.md`); the remaining RE is locating the erase handler — drive it in
 `emu_rtos` and `--watch-mem` the sequenced-data RAM. Full brief: `NOTES.md` "Session 13"
 + "Session 20" + "Session 23".
+
+**Backlog (scoped, RE session next):** RELOAD FROM PROJECT — surface a Digitone-style
+per-pattern reload from the CF `.strd` (`WHOLE PATTERN` / `ALL PARTS` / `SEQ DATA`) via a
+front-panel chord + a 3-item overlay, *without stopping the sequencer* (which stock
+`RELOAD BANK` cannot do, and it's whole-bank only). Deserialise `.strd` into a scratch
+bank region (bankpage-style), slice-copy the one pattern / its 4 parts into the live blob,
+fire `FUN_400a1eea`'s existing no-stop reload block. Full brief + the 6 open questions:
+`NOTES.md` "Session 42".

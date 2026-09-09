@@ -5416,3 +5416,163 @@ post and the slew-marker packer is page-1-only, page-2 p-lock plumbing differs
 from page-1 — so if **RMS itself** turns out not to p-lock cleanly to the DSP
 under the copier lane, KEY won't either, and that's stock parity, not a Kyoti
 regression. Item 3 on the to-do board is really "match RMS", nothing more.
+
+
+## Session 42 (2026-09-08, `wip/mute-mode`, RE / feasibility only — no repo code) — "RELOAD FROM PROJECT": per-pattern reload from the CF card without stopping playback
+
+> Session numbering note: NOTES's last entry was "Session 40" (= memory's
+> "Session 41" — the two numberings drifted at the 2026-09-07 repo reorg). This
+> entry is "Session 42" in both from here on.
+
+### The idea
+
+Adapt the Digitone's **RELOAD FROM PROJ** (manual §14.3.5) for the OT. On the DN
+it reloads the active pattern's data from the +Drive with three granularities:
+WHOLE PATTERN (sequence + the 4 Sounds), SOUNDS DATA, SEQUENCE DATA — each behind
+a menu entry + a YES/NO prompt. User wants it surfaced to the OT front panel: a
+key combo opens a small menu, pick one of three, `[YES]` confirms.
+
+**OT option names (user, this session):** `WHOLE PATTERN` / `ALL PARTS` /
+`SEQ DATA`. "Sounds" → "Parts" (DN Sound ≈ OT Part; a bank has 4).
+
+**The point of the feature — what stock OT cannot do:** revert a pattern (or its
+parts, or its sequence data) to the **CF-card-saved state** *without stopping the
+sequencer*. Stock `RELOAD BANK` does a card reload but (a) is whole-bank — all 16
+patterns + 4 parts — and (b) stops audio (the confirm pre-step `FUN_400a10c8`
+resets per-track note/voice scratch synchronously, and the end re-sync
+`FUN_400238a4` cuts again a few steps later — both hardware-observed in the
+bankpage RE, `reference/upstream-notes.md` "RELOAD BANK call chain"). There is no
+pattern-level reload at any granularity in stock 1.40C (the project/state parser
+`FUN_400866c4` knows `RELOAD_BANK`, `PASTE_PATTERN`, `RENAME_PART`… — no
+`RELOAD_PATTERN`).
+
+### Is a single-PART reload already covered by stock OT? — mostly yes
+
+Stock **PART → RELOAD** reverts the *active* part to its last **SAVE PART**
+snapshot, live, no transport stop (parts are designed to switch during playback;
+the .work file carries 4 live + 4 saved part copies — `kb/file-format.md`). So
+the common "I nudged the filter, put it back" case is a stock button already.
+
+What that stock path does **not** give you, and what the three options add:
+
+| gap | covered by |
+|---|---|
+| revert to the **card `.strd`** state (SAVE BANK), not the SAVE PART snapshot — a different, often older/newer point | `ALL PARTS`, `WHOLE PATTERN` |
+| revert **all 4 parts** at once | `ALL PARTS` |
+| revert **sequence data** (trigs, p-locks, length, scale) to the card state — no stock equivalent below whole-bank | `SEQ DATA`, `WHOLE PATTERN` |
+| do any of the above **without stopping playback** | all three |
+
+Conclusion: **no dedicated single-part option.** `ALL PARTS` covers the
+multi-part case, `WHOLE PATTERN` the combined case; one-part-at-a-time stays on
+the stock PART RELOAD button. (Worth a quick emu/HW confirm that stock PART
+RELOAD is genuinely transport-non-stop — consistent with how parts switch, but
+not yet verified in this repo.)
+
+### What already exists (the reuse story)
+
+- **Background bank-load task `FUN_4008445c`** (prio 1, own stack) — hardware-
+  proven (bankpage) to run `FUN_4008ded0` deserialisation into a bank's RAM
+  region *concurrently with playback, no stop*. Takes a 16-bit bank mask.
+  Job posted via `FUN_40022778` → queue `0x460d17ce` → soft-IRQ wake.
+- **`FUN_4008ded0`** — bank deserialiser (file → `0x400e21e0 + bank*0x9b340`).
+- **`.strd` vs `.work`** understood: stock reload = `FUN_4008f0b0` copies
+  `.strd`→`.work` then `FUN_400905d4`→`FUN_4008ded0` deserialises `.work`. We
+  **skip the copy** and redirect the *open* `.work`→`.strd` — same hook class as
+  bankpage's `g_redirect` project-dir redirect (`FUN_40025230 @ 0x40025244`).
+- **`FUN_400a1eea`'s reload blocks** — the arranger/RELOAD path already re-homes
+  the active pattern from the blob (step reset + length reload + per-track
+  voice-scratch re-init + **Part/scene array load**) **without stopping audio**.
+  DIRECT JUMP repurposed it. Gate: `_DAT_46c8028a ≠ 0` ("reload now").
+- **Non-playing bank RAM regions are safe scratch** (bankpage, HW-confirmed) —
+  lazily reloaded on next access.
+- **`emu_rtos.py`** runs the full storage stack + LOAD PROJECT + transport +
+  sequencer against our image → this feature is **end-to-end emulator-testable**
+  before any flash.
+- **Custom overlay + keymap-chord toolkit** — DIRECT JUMP v2's box-free toast
+  (`FUN_4005a0e0` + a frame countdown spliced into `0x40052200`), the 26-byte
+  keymap records, the catalogued free chords (`[PTN]`+X is free bar
+  `[PTN]`+`[YES]`). **No PERSONALIZE menu-array surgery** — the only thing that
+  has ever bricked the MKI is avoided.
+
+### Proposed architecture
+
+1. **Combo → 3-item overlay** (`WHOLE PATTERN` / `ALL PARTS` / `SEQ DATA`),
+   up/down + `[YES]` / `[NO]`. Custom overlay, not a PERSONALIZE screen.
+2. **On YES**, post a background job (new msg type on the `FUN_4008445c` queue):
+   - Existence/validity check on `<proj>/bankNN.strd` via the firmware's own open
+     helper `FUN_40016864` (bankpage's validated method). **Rule from bankpage
+     RE: never open a handle the firmware holds open for playback** — `.strd` is
+     not held open (only `.work` is), so this is safe; verify at build. This is
+     the OT analogue of the DN's "must have saved at least once".
+   - `FUN_4008ded0(bankNN.strd)` → a **scratch bank region** S (`(curbank+8)&15`,
+     or the top unused bank index).
+   - `memcpy` the selected slice(s) from scratch pattern P → live blob pattern P
+     (`0x400e21e0 + curbank*0x9b340 + P*0x8ed8`):
+     - `SEQ DATA`: the `P*0x8ed8` TRAC region — 8 × `0x91a` per-track blocks
+       (trigs at `+0x00`, masks `+0x08..0x38`, p-locks `+0x59`, param hdr `+0x50`)
+       + the pattern header (length `+0x8e54`, scale `+0x8e55`, part index
+       `+0x8e57`/`+0x8ee7`). Sub-ranges mostly mapped from the p-lock work
+       (`kb/file-format.md`); confidence C for masks, L for the p-lock internal
+       param map — but a whole-region copy doesn't need the internal map.
+     - `ALL PARTS`: the 4 part payloads (`part*0x18b2`, base region ~`+0x8f04a` /
+       `part*6322` — **needs pinning at build**).
+     - `WHOLE PATTERN`: both.
+   - If P == active pattern: set `_DAT_46c8028a` → `FUN_400a1eea`'s immediate-
+     reload block re-reads the (now byte-patched) blob for P next step, no audio
+     stop. If P ≠ active: do nothing — picked up on the next switch.
+   - Invalidate/restore scratch region S (post a stock type-6 reload for index S,
+     or clear its "loaded" flag so next access refills it).
+3. **Overlay auto-dismisses** (frame countdown, DIRECT JUMP v2 style).
+
+### Which saved snapshot?
+
+`.strd` (SAVE BANK) for all three, for coherence — `WHOLE PATTERN` then means
+"seq + parts from one consistent point", matching the DN's "from +Drive". Note
+`ALL PARTS`-from-`.strd` is genuinely distinct from repeating stock PART RELOAD
+even for the active part, because PART RELOAD targets the *SAVE PART* slot, a
+different snapshot. **Cheaper phase-1 alternative for `ALL PARTS` only:** copy the
+4 in-RAM saved part slots → the 4 live slots (pure RAM, no file I/O, no scratch) —
+but that's the SAVE PART snapshot, not the card state, so it breaks the "one
+consistent point" story for `WHOLE PATTERN`. Recommend `.strd` for all three.
+
+### Open questions to resolve in the first RE session
+
+1. Can `FUN_4008ded0` be pointed straight at `.strd` into an arbitrary bank
+   region, or does it key off `.work` naming / bank-state bookkeeping?
+2. Exact byte sub-ranges: the parts base offset + stride in the blob (pin
+   `part*0x18b2` vs `part*6322` and the base — `0x8f04a` / `0x8f382` seen in
+   different notes), and the full TRAC-region extent per pattern.
+3. Does `FUN_400a1eea`'s reload block fully re-apply **part params** for the
+   active pattern, or is a `FUN_40009094` (part-by-event) nudge also needed for
+   `ALL PARTS` / `WHOLE PATTERN`?
+4. Position on reload-while-playing: stock immediate-reload zeroes
+   `_DAT_800065b4` (step-0 restart). Accept for MVP, or reuse DIRECT JUMP's
+   modulo position-preserve.
+5. Combo choice — pick a free chord, confirm globally unbound against the keymap
+   tables.
+6. Scratch-region choice when the project uses all 16 banks (fall back: copy the
+   other 15 patterns out, do a full reload, copy them back).
+
+### Effort, risk, recommendation
+
+- **Effort:** ~2–4 RE/design sessions (pin Qs 1–6) + ~2–3 build/emu sessions
+  (`emu_rtos` covers it) + 1–2 flashes. Bigger than DIRECT JUMP by the file-I/O
+  layer; smaller than the DSP side-chain.
+- **Brick risk:** moderate — comparable to DIRECT JUMP, well below the DSP flash.
+  No menu-array surgery. Worst realistic failure = audio glitch / hang needing a
+  power cycle. The one real hazard is deserialising into the wrong RAM region /
+  touching a held FS handle → mitigated by the bankpage rules (scratch = a
+  non-playing bank index; only ever open `.strd`).
+- **MVP:** `SEQ DATA` first, as a single combo (skip the overlay-menu build).
+  That is the entirely-new capability and the smallest slice. Add the 3-way
+  overlay + `ALL PARTS` / `WHOLE PATTERN` as phase 2.
+- Build now (emulator-testable), flash later — fits the MKI-gated queue. Shares
+  deserialiser/serialiser RE with the trigless-lock backlog.
+
+### Ready to develop?
+
+Ready to start the **RE session** now (drive `emu_rtos`: confirm `FUN_4008ded0`
+can target `.strd` + a scratch region, pin the parts offset, check whether
+`FUN_400a1eea`'s reload block covers parts, pick the combo). **Not** ready to
+write patch code until that lands — Qs 1–3 gate the design. No `tools/` files
+this session.
