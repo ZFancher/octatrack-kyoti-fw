@@ -13,8 +13,9 @@ Running Claude on this Mac auto-loads the project memory
 digest of state. Treat it as the summary; this repo's docs are the detail.
 
 Local repo: `~/Documents/octatrack-kyoti-fw/` (was `~/Documents/octamax/` until
-2026-09-01). Published as <https://github.com/Zac-Kyoti/octatrack-kyoti-fw>, a fork
-of `mxldyn/octamax`. Remotes: `origin` = your fork, `upstream` = mxldyn (fetch only).
+2026-09-01). Published as <https://github.com/Zac-Kyoti/octatrack-kyoti-fw>; began
+as a fork of `mxldyn/octamax`, derived from it since. Remotes: `origin` = the
+published repo, `upstream` = mxldyn (fetch only, for `whatsnew.py`).
 
 ## 1. Read order for a new chat
 

@@ -15,9 +15,9 @@ the tools analyze it and, if you ask, produce a modified image byte-for-byte
 reproducibly from *your* copy. No `.bin` / `.syx` is ever distributed — only the
 tools to roll your own.
 
-This repository is a fork of
-[`mxldyn/octamax`](https://github.com/mxldyn/octamax) by Maxolydian and inherits
-its method and infrastructure — the container / update-chain analysis, the
+This project began as a fork of
+[`mxldyn/octamax`](https://github.com/mxldyn/octamax) by Maxolydian and is built
+on its method and infrastructure — the container / update-chain analysis, the
 guarded binary-patch build pipeline, the code-cave detour technique, and the
 flashing procedure. Full lineage and acknowledgements:
 [`CREDITS.md`](CREDITS.md).
@@ -283,7 +283,7 @@ stock file is wrong, already patched, or the checksum is off.
 
 ---
 
-*OT Kyoti FW is an independent, unofficial, educational project — a fork of
+*OT Kyoti FW is an independent, unofficial, educational project derived from
 `mxldyn/octamax`. "Elektron" and "Octatrack" are trademarks of Elektron Music
 Machines MAV AB, used here only to identify the hardware under study. Not
 affiliated with or endorsed by Elektron.*
