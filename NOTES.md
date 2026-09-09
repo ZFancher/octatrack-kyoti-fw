@@ -5800,55 +5800,74 @@ shows that stock dialog. No new strings, no dialog code. ALL PARTS: count
 **No confirm prompt** — matches stock PART RELOAD; the two-key combo is the
 intent (user's call, agreed).
 
-**`patch_reload.s` v2 (SEQ DATA, the `FUN_4008cebc` discard-loop) — BUILT.**
-784-word cave, `OCTATRACK_OS1.40C_RELOAD.{syx,bin}` 571 B vs stock, Bug-1 fix
-byte-identical. Combo hook: `[PTN]`+`[NO]`, `tst.l RUNNING`, toast via
-`FUN_4005a2b8`. Worker: open (28 KB buf) → 22-B header read → verWord =
-`hdr[0x14..0x15]` → `FUN_4008cebc` ×(P+1) into `SCRATCH` (`0x460aff60`) →
-`FUN_40020898` SCRATCH→live slab → `0x46c8028a` if P active → rejoin
-`0x400858a8` (`d0=-12` on ENOENT → stock "never saved"). `0x460fab5c`
-saved/restored via a cave word.
+**`patch_reload.s` v3 (SEQ DATA emu-validated + phase-2 picker) — BUILT.**
+1198-word cave, `OCTATRACK_OS1.40C_RELOAD.{syx,bin}` 952 B vs stock, Bug-1 fix
+byte-identical, `patch_trigscale` unaffected. **Four detours:**
+- `rl_combo` @ NO handler `0x4005e25c` — `[PTN]`+`[NO]` (playing / no arranger /
+  no popup): open the picker (bare-text popup `FUN_4005a0e0`: `RLD SEQ` /
+  `RLD PARTS` / `RLD WHOLE`, `G_MENU`/`G_SEL` at `0x80006a52/53`) or cycle the
+  selection if already open. `tst.l RUNNING` (the transport state `0x800065b8`
+  is a big-endian LONGWORD — `tst.b` read the always-0 MSB, the v1/v2
+  combo-never-armed bug). Swallow NO.
+- `rl_yes` @ YES handler `0x4005e4c8` — `[PTN]`+`[YES]` with the picker open:
+  close it (`FUN_40056bc0`), then PARTS/WHOLE → `rl_parts` = `FUN_4004aab4(0..3)`
+  + the stock RELOAD PART UI refresh (`0x46c7c72c=1`, `FUN_4004d948(-1)`, +6
+  redraw fns) here in the key handler; SEQ/WHOLE → arm `{G_KIND=1, G_PAT=active}`
+  + post `FUN_40022778(1<<curbank)`. Toast (`FUN_4005a2b8`) + swallow YES.
+- `rl_tick` @ `0x400522ca` (jsr detour, the DIRECT JUMP v2 per-control-frame
+  splice — displaces `lea 0x46c7dfba,%a2`) — counts `G_TICKS` (`0x80006a54`)
+  down; at 0 closes the picker + clears `G_MENU`. ~1.5 s (`0x1e0` frames).
+- `rl_job` @ storage `0x14` case `0x40085864` — the SEQ worker (unchanged):
+  open `bankNN.strd` (28 KB of the loader's buffer) → 22-B header → verWord =
+  `hdr[0x14..0x15]` → `FUN_4008cebc` ×(P+1) into `SCRATCH` (`0x460aff60`) →
+  `FUN_40020898` SCRATCH→live slab → `0x46c8028a` if P active → rejoin
+  `0x400858a8` (`d0=-12` on ENOENT → stock "never saved"). `0x460fab5c`
+  saved/restored via a cave word. Inert unless `G_KIND==1`; latches+clears it
+  on entry so a real RELOAD BANK is unaffected.
 
 **emu validation (`tools/emu_reload.py`):**
 - `--slice` **ALL GOOD** (Session 42 earlier) — the slab-copy + `0x46c8028a`
   seamless-revert mechanism, bystander patterns untouched, transport running.
 - `--strd` — the async `FUN_40022778` → `FUN_4008445c` → deserialiser path runs
   end to end (whole-bank stock path; kept as a sanity check).
-- **`--combo` — the combo logic PASSES.** Single-steps `rl_combo` in isolation
-  (gates forced, no scheduler): gates pass → `G_KIND=1`, `G_PAT` = the active
-  pattern, `PTN_USED=1` (chooser suppressed), `FUN_40022778` posted, toast
-  fired, then `rts` (swallow). Every branch correct.
-- **`--patched` — the FULL worker PASSES end to end.** Boots `mainos_reload.bin`,
-  loads the DEMO, forces `RUNNING` (harness doesn't start the transport on the
-  patched image — an emu quirk), scribbles pattern 0 (target) + pattern 10
-  (bystander) in both the blob and the live copy, drives `rl_combo(0x32, press)`,
-  drains the storage task. The whole chain runs: `rl_job` → `FUN_40016864` open
-  `bank01.strd` → **exactly one** `FUN_4008cebc` (P=0, empty discard loop) →
-  `FUN_40020898` into the live slab → `0x46c8028a` → rejoin `0x400858a8`.
-  Result: **no fault**; `G_KIND` armed then cleared; **pattern 0's p-lock array ==
-  `bank01.strd` on disk, byte-for-byte** (the parse landed correctly);
-  **pattern 10 untouched** (a write-hook on its slab caught only the *stock*
-  deserialiser's PCs `0x4009abca..` — the worker's writes go to `SCRATCH` +
-  pattern 0's slab, which don't overlap pattern 10); `0x46c8028a` fired and was
-  consumed by the running step engine; transport still `1`. (The stock
-  whole-bank deser that reverts everything in a long drain is the emu's 10 MB
-  initial load finishing / an autosave-reload — NOT `[PTN]`+`[NO]`, which never
-  posts a type-6 job; the test halts it on entry so the worker's effect is seen
-  in isolation.)
-- **Hardware-only from here:** `FUN_4008cebc` against a real CF card, the
-  discard loop for P > 0 (parse-and-discard patterns 0..P-1), `FUN_4005a2b8`
-  toast from the NO key handler, and reload timing.
+- **`--combo` — the whole picker PASSES.** Single-steps `rl_combo` + `rl_yes` in
+  isolation (gates forced, no scheduler, firmware fns stubbed): `[PTN]`+`[NO]` ×4
+  opens then cycles `G_SEL` 0→1→2→0 (`FUN_4005a0e0` shown each time, `PTN_USED`
+  set); `[PTN]`+`[YES]` per selection — SEQ → close + `G_KIND=1` + `G_PAT`=active
+  + `FUN_40022778` posted, no `FUN_4004aab4`; PARTS → close + `FUN_4004aab4` ×4,
+  no post, `G_KIND` stays 0; WHOLE → close + `FUN_4004aab4` ×4 AND arm + post.
+  `[PTN]` released → falls to stock `[NO]`. Every branch correct.
+- **`--patched` — the FULL SEQ worker PASSES end to end.** Boots
+  `mainos_reload.bin`, loads the DEMO, forces `RUNNING` (harness doesn't start
+  the transport on the patched image), scribbles pattern 0 (target) + pattern 10
+  (bystander) in both the blob and the live copy, sets `G_MENU=1`/`G_SEL=0` and
+  drives `rl_yes(0x31, press)` (the way `[PTN]`+`[YES]` on SEQ does), drains the
+  storage task. The chain runs: `rl_yes` → post → `rl_job` → `FUN_40016864` open
+  `bank01.strd` → **exactly one** `FUN_4008cebc` (P=0) → `FUN_40020898` into the
+  live slab → `0x46c8028a` → rejoin `0x400858a8`. Result: **no fault**;
+  `G_KIND` armed then cleared; **pattern 0's p-lock array == `bank01.strd`
+  byte-for-byte**; **pattern 10 untouched** (a write-hook caught only the *stock*
+  deserialiser's PCs `0x4009abca..` — the worker writes `SCRATCH` + pattern 0's
+  slab, no overlap); `0x46c8028a` fired and was consumed; transport still `1`.
+  (The stock whole-bank deser that reverts everything in a long drain is the
+  emu's 10 MB initial load finishing — NOT `[PTN]`+`[NO]`, which never posts a
+  type-6 job; the test halts it on entry so the worker is seen in isolation.)
+- **Hardware-only from here:** `FUN_4008cebc` against a real CF card; the discard
+  loop for P > 0; `FUN_4004aab4` + the 7 UI-refresh fns from the YES key handler
+  (stock context, but our call site is new); the `FUN_4005a0e0` picker render +
+  `rl_tick` auto-close; toast + reload timing.
 
 **Bugs found + fixed this session:** the scratch-bank design (retracted — put a
 bystander bank's data at risk, user caught it); a fabricated "~0.01% torn-read
 odds" (retracted); `tst.b` on the big-endian LONGWORD transport state
 `0x800065b8` (→ `tst.l`); a cargo-culted `NO_DISABLE` gate (dropped).
 
-**Where it stands:** RE + design complete, `patch_reload.s` v2 built,
-**SEQ DATA emu-validated end to end** (`--combo` + `--patched`). Flash-ready —
-same posture as DIRECT JUMP (emu-clean, HW pass pending). FLASHING.md §4.7 has
-the HW test procedure. HW risk: a storage-task hang needing a power cycle
-(recoverable, flash stock to revert); the feature writes only pattern N's live
-slab, never disk. Queue: behind DT / SIDECHAIN2 / SIDECHAIN3 / DIRECTJUMP (all
-also unflashed). Phase 2: ALL PARTS (`FUN_4004aab4(0..3)`) + WHOLE + the 3-way
-picker.
+**Where it stands:** **the full feature is built** — `patch_reload.s` v3
+(SEQ + PARTS + WHOLE + the 3-way picker), `OCTATRACK_OS1.40C_RELOAD.{syx,bin}`
+952 B vs stock, Bug-1 fix byte-identical. **SEQ DATA + the picker are
+emu-validated end to end** (`--combo` + `--patched`); `FUN_4004aab4` (the PARTS
+path) is the stock RELOAD PART. Flash-ready — same posture as DIRECT JUMP
+(emu-clean, HW pass pending). FLASHING.md §4.7 has the HW procedure. HW risk:
+a storage-task hang needing a power cycle (recoverable, flash stock to revert);
+SEQ writes only pattern N's live slab, never disk; PARTS is the stock path.
+Queue: behind DT / SIDECHAIN2 / SIDECHAIN3 / DIRECTJUMP (all also unflashed).

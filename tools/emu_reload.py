@@ -327,7 +327,7 @@ def cmd_patched(rt):
                         begin=pQ, end=pQ + PAT_STRIDE - 1)
     # log entry to the deserialiser / per-pattern parser / stock reload workers
     fx = []
-    NAMES = {0x400d749a: "rl_job", 0x4008cebc: "FUN_4008cebc(parse-one-pat)",
+    NAMES = {_sym("rl_job"): "rl_job", 0x4008cebc: "FUN_4008cebc(parse-one-pat)",
              0x4008ded0: "FUN_4008ded0(deser-whole-bank)", 0x400905d4: "FUN_400905d4(load-worker)",
              0x4008f0b0: "FUN_4008f0b0(strd->work)", 0x40016864: "FUN_40016864(open)"}
     deser_seen = [False]
@@ -349,26 +349,27 @@ def cmd_patched(rt):
         hf.append(rt.uc.hook_add(er.eb.UC_HOOK_CODE, mk(nm), begin=a, end=a))
     rt.uc.ctl_flush_tb()
 
-    # stub the op-toast (0x4005a2b8) -- not what we test, and its window ctor
-    # is not call_as_main-friendly (emu_directjump.py stubs its toast the same way)
+    # stub the toast + the picker-close cb -- not what we test, and their window
+    # ops are not call_as_main-friendly (emu_directjump.py stubs its toast too)
     rt.uc.mem_write(TOAST_FN, b"\x4e\x75")
+    rt.uc.mem_write(0x40056bc0, b"\x4e\x75")   # FUN_40056bc0 (CLOSE_CB)
     rt.uc.ctl_flush_tb()
 
     spin(rt)
     rt.uc.mem_write(PTN_HELD, struct.pack(">I", 1))
     rt.uc.mem_write(TRANSPORT, struct.pack(">I", 1))   # harness doesn't start it on the patched img
     rt.uc.mem_write(0x800065be, bytes([P]))            # active pattern = P
-    gates = {"PTN_HELD 0x460d1742": 0x460d1742, "POPUP 0x460e5cd0": 0x460e5cd0,
-             "ARR_ACT 0x460d1aec": 0x460d1aec, "RUNNING 0x800065b8": 0x800065b8,
-             "G_KIND 0x80006a50": 0x80006a50}
-    print("gates      : " + "  ".join(
-        f"{n}={int.from_bytes(rd(rt,a,4),'big'):#x}" for n, a in gates.items()))
+    print(f"gates      : PTN_HELD=1  RUNNING=1  active pattern={P}")
     faulted = None
     try:
-        # call the cave stub directly with (keycode, event=press) -- avoids the
-        # stock NO-press action (0x4005e0e8) if any gate we didn't model bails
-        d0 = rt.call_as_main(rl_combo, args=(NO_KEYCODE, 1), budget=900_000)
-        print(f"combo      : rl_combo(kc={NO_KEYCODE:#x}, press) -> d0={d0:#x}")
+        # the picker (rl_combo open -> rl_yes execute) is proven by --combo; here
+        # arm the SEQ worker the way rl_yes does and drive rl_yes for real
+        rt.uc.mem_write(G_KIND, b"\x00")
+        rt.uc.mem_write(G_KIND + 2, b"\x01")               # G_MENU = 1 (picker open, SEL 0 = SEQ)
+        rt.uc.mem_write(G_KIND + 3, b"\x00")
+        rl_yes = _sym("rl_yes")
+        d0 = rt.call_as_main(rl_yes, args=(0x31, 1), budget=900_000)
+        print(f"combo      : rl_yes(kc=0x31, press) -> d0={d0:#x}")
     except Exception as e:
         faulted = f"{type(e).__name__}: {e}"
         print(f"combo      : raised {faulted}")

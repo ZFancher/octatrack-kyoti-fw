@@ -240,44 +240,50 @@ passes audio through.
 > Power-cycle after the flash before judging audio — an OS upgrade doesn't clear
 > the DSP state RAM (see §6 (a-bis)).
 
-### 4.7  RELOAD FROM PROJECT — SEQ DATA  (`build_reload.py` — emulator combo only, never flashed)
+### 4.7  RELOAD FROM PROJECT  (`build_reload.py` — emulator only, never flashed)
 
-`[PTN]` + `[NO]` (while the sequencer is **playing**) reloads the **active
-pattern's sequence data** (trigs, p-locks, length, scale, trig conditions,
-microtiming, the pattern→part link) from the CF card's last **SAVE BANK**
-snapshot — without stopping playback. The async file work rides the storage
-task; the active pattern re-homes through the sequencer's own no-stop reload
-path. Nothing but that one pattern's data changes — no other pattern, no Part,
-no other bank.
+`[PTN]` + `[NO]` (while the sequencer is **playing**) opens a 3-item picker:
+
+    RLD SEQ   -- the active pattern's sequence data (trigs, p-locks, length,
+                 scale, trig conditions, microtiming, the pattern->part link)
+    RLD PARTS -- all 4 Parts  (= stock RELOAD PART x4)
+    RLD WHOLE -- both
+
+Each further `[PTN]`+`[NO]` tap cycles the highlight; `[PTN]`+`[YES]` executes it
+and closes the picker (which also auto-closes after ~1.5 s of no input). All
+reloads are from the CF card's last **SAVE BANK** snapshot and do **not** stop
+playback: SEQ rides the storage task and re-homes through the sequencer's own
+no-stop reload path; PARTS is the stock live per-part reload.
 
 Setup: a project on the card with **at least one SAVE BANK** done. Pick a bank,
-**SAVE BANK** it, then note pattern N's trigs.
+**SAVE BANK** it, then note pattern N's trigs + a Part's filter/level.
 
-1. Play pattern N. Edit its trigs / turn some p-locks — make it obviously
-   different. Do **not** SAVE BANK again.
-2. Hold **[PTN]**, tap **[NO]** → a brief **"RELOAD SEQ"** toast. Within ~1 s
-   the pattern's sequence reverts to the saved state **with no audible gap** in
-   playback. The SELECT PATTERN chooser must **not** pop on the [PTN] release.
-3. Your **Parts / sounds** are untouched (only the sequence reverted).
-4. Switch to a **different pattern** in the same bank that you *also* edited —
-   its edits must still be there (only the pattern you triggered the reload on
-   reverts).
-5. On a bank you have **never** SAVE BANK'd (or a freshly created project),
-   `[PTN]`+`[NO]` shows the stock **"THIS BANK HAS NEVER BEEN SAVED! NOTHING TO
-   RELOAD!"** dialog and changes nothing.
-6. With the sequencer **stopped**, `[PTN]`+`[NO]` does nothing (stock `[NO]`).
-7. Higher pattern numbers take slightly longer to land (the worker parses past
-   the earlier patterns) — up to ~1 s for pattern 16. Still no audio gap.
+1. Play pattern N. Edit its trigs / p-locks AND tweak a Part (filter, FX, level).
+   Do **not** SAVE BANK again.
+2. `[PTN]`+`[NO]` -> picker shows **RLD SEQ**.  `[PTN]`+`[YES]` -> within ~1 s the
+   sequence reverts, **no audible gap**.  The Part tweak is still there.  The
+   SELECT PATTERN chooser must **not** pop on the [PTN] release.
+3. Re-edit.  `[PTN]`+`[NO]`, `[PTN]`+`[NO]` (now **RLD PARTS**), `[PTN]`+`[YES]`
+   -> all 4 Parts revert; the sequence edits are still there.
+4. `[PTN]`+`[NO]` x3 (**RLD WHOLE**), `[PTN]`+`[YES]` -> both revert.
+5. Switch to a **different pattern** in the same bank that you also edited -- its
+   sequence edits must still be there (only the pattern you reloaded reverts).
+6. On a bank you have **never** SAVE BANK'd, choosing RLD SEQ / RLD WHOLE shows
+   the stock **"THIS BANK HAS NEVER BEEN SAVED! NOTHING TO RELOAD!"** dialog;
+   RLD PARTS on a never-saved Part shows **"SAVE PART FIRST!"**.
+7. Open the picker and don't touch anything for ~2 s -> it closes on its own.
+8. With the sequencer **stopped**, `[PTN]`+`[NO]` does nothing (stock `[NO]`).
+9. Higher pattern numbers take slightly longer for SEQ (the worker parses past
+   the earlier patterns) -- up to ~1 s for pattern 16.  Still no audio gap.
 
-> **If it misbehaves:** the risk is a storage-task hang (a save/load or the
-> reload appears to freeze). Power-cycle — it recovers. To fully revert, reflash
-> stock 1.40C (§5). The feature writes only pattern N's live slab; it never
-> touches disk.
-> The `FUN_4008cebc` one-pattern parse and the storage-case rejoin are
-> **hardware-first** — `emu_reload.py` verified the combo (`--combo`) and the
-> revert mechanism (`--slice`), but not the full worker. Details + the remaining
-> checks: `NOTES.md` "Session 42".
-> ALL PARTS (`FUN_4004aab4` ×4) and WHOLE PATTERN are phase 2, not in this build.
+> **If it misbehaves:** the SEQ risk is a storage-task hang (a save/load or the
+> reload appears to freeze).  Power-cycle -- it recovers.  To fully revert,
+> reflash stock 1.40C (§5).  SEQ writes only pattern N's live slab, never
+> disk; PARTS is the stock per-part reload path.
+> emu-validated: `emu_reload.py --combo` (the whole picker: open/cycle + execute
+> all 3) and `--patched` (the SEQ worker end to end).  Not exercised on real
+> hardware: `FUN_4008cebc` vs a real card, the SEQ discard loop for pattern > 0,
+> the picker render + auto-close, timing.  Details: `NOTES.md` "Session 42".
 
 ---
 
