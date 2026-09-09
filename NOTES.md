@@ -5807,7 +5807,35 @@ byte-identical. Combo hook: `[PTN]`+`[NO]`, `tst.l RUNNING`, toast via
 `hdr[0x14..0x15]` → `FUN_4008cebc` ×(P+1) into `SCRATCH` (`0x460aff60`) →
 `FUN_40020898` SCRATCH→live slab → `0x46c8028a` if P active → rejoin
 `0x400858a8` (`d0=-12` on ENOENT → stock "never saved"). `0x460fab5c`
-saved/restored via a cave word. `emu_reload.py --patched` rewritten (P=0 so the
-discard loop is empty; calls `rl_combo` directly; checks arm + post + worker
-reverts P to `.strd` + bystander Q survives + `0x46c8028a` + no fault) — running.
-Old `emu_reload.py --strd` (whole-bank stock path) kept as a sanity check.
+saved/restored via a cave word.
+
+**emu validation (`tools/emu_reload.py`):**
+- `--slice` **ALL GOOD** (Session 42 earlier) — the slab-copy + `0x46c8028a`
+  seamless-revert mechanism, bystander patterns untouched, transport running.
+- `--strd` — the async `FUN_40022778` → `FUN_4008445c` → deserialiser path runs
+  end to end (whole-bank stock path; kept as a sanity check).
+- **`--combo` — the combo logic PASSES.** Single-steps `rl_combo` in isolation
+  (gates forced, no scheduler): gates pass → `G_KIND=1`, `G_PAT` = the active
+  pattern, `PTN_USED=1` (chooser suppressed), `FUN_40022778` posted, toast
+  fired, then `rts` (swallow). Every branch correct.
+- The full worker (`FUN_4008cebc` real parse + the `0x400858a8` rejoin) is a
+  **hardware test** — the Python `emu_rtos` is too slow to run it in a
+  reasonable loop (a single pattern-chunk parse on the storage task is minutes
+  of wall time), and `FUN_4008cebc` is RE'd thoroughly enough (it IS what
+  `FUN_4008ded0` calls 16× with `dest = bankbase + i*0x8ed8`; same args, file
+  positioned identically by the sequential parse) that HW is the right next
+  check. `--patched` (P=0 end-to-end) exists but `press_play_live` doesn't start
+  the transport on the patched image in the harness (an emu quirk, not a patch
+  bug — `--combo` forces `RUNNING`); not worth chasing.
+
+**Bugs found + fixed this session:** the scratch-bank design (retracted — put a
+bystander bank's data at risk, user caught it); a fabricated "~0.01% torn-read
+odds" (retracted); `tst.b` on the big-endian LONGWORD transport state
+`0x800065b8` (→ `tst.l`); a cargo-culted `NO_DISABLE` gate (dropped).
+
+**Where it stands:** RE + design complete. `patch_reload.s` v2 built + combo
+emu-clean. ~1–2 focused sessions + an MKI pass from flash-ready. Flash test:
+project with a saved bank, edit the active pattern's trigs/p-locks while
+playing, `[PTN]`+`[NO]` → "RELOAD SEQ" toast, pattern reverts to the saved
+state, no audio drop; on a never-saved bank → stock "THIS BANK HAS NEVER BEEN
+SAVED!" dialog. Then ALL PARTS (`FUN_4004aab4(0..3)`) + WHOLE + the 3-way picker.

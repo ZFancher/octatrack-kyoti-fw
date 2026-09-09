@@ -310,11 +310,16 @@ def cmd_patched(rt):
 
     spin(rt)
     rt.uc.mem_write(PTN_HELD, struct.pack(">I", 1))
+    gates = {"PTN_HELD 0x460d1742": 0x460d1742, "POPUP 0x460e5cd0": 0x460e5cd0,
+             "ARR_ACT 0x460d1aec": 0x460d1aec, "RUNNING 0x800065b8": 0x800065b8,
+             "G_KIND 0x80006a50": 0x80006a50}
+    print("gates      : " + "  ".join(
+        f"{n}={int.from_bytes(rd(rt,a,4),'big'):#x}" for n, a in gates.items()))
     faulted = None
     try:
         # call the cave stub directly with (keycode, event=press) -- avoids the
         # stock NO-press action (0x4005e0e8) if any gate we didn't model bails
-        d0 = rt.call_as_main(rl_combo, args=(NO_KEYCODE, 1), budget=8_000_000)
+        d0 = rt.call_as_main(rl_combo, args=(NO_KEYCODE, 1), budget=1_200_000)
         print(f"combo      : rl_combo(kc={NO_KEYCODE:#x}, press) -> d0={d0:#x}")
     except Exception as e:
         faulted = f"{type(e).__name__}: {e}"
@@ -370,6 +375,76 @@ def cmd_patched(rt):
                        ("transport still running", tport == 1)]:
         print(f"   [{'x' if cond else ' '}] {name}")
     return ok
+
+
+def cmd_combo(rt):
+    """Isolate rl_combo: single-step it on a private stack with the gates forced,
+    the scheduler NOT running underneath.  Decisive + fast."""
+    eb = er.eb
+    rl_combo = _sym("rl_combo")
+    curbank = rt.uc.mem_read(er.CUR_BANK, 1)[0]
+    print(f"\n===== --combo : single-step rl_combo in isolation =====")
+    print(f"rl_combo={rl_combo:#x}  curbank={curbank}")
+
+    # stub FUN_40022778 (post) and 0x4005a2b8 (toast) to a bare rts; record entry
+    for a in (0x40022778, TOAST_FN):
+        rt.uc.mem_write(a, b"\x4e\x75")
+    rt.uc.ctl_flush_tb()
+
+    # force gates favourable
+    rt.uc.mem_write(0x460d1742, struct.pack(">I", 1))   # PTN held
+    rt.uc.mem_write(0x460e5cd0, struct.pack(">I", 0))   # no popup
+    rt.uc.mem_write(0x460d1aec, struct.pack(">I", 0))   # no arranger
+    rt.uc.mem_write(0x800065b8, struct.pack(">I", 1))   # transport = playing
+    rt.uc.mem_write(0x80006a50, b"\x00")                # G_KIND idle
+    rt.uc.mem_write(0x800065be, bytes([7]))             # active pattern = 7 (arbitrary)
+    rt.uc.mem_write(0x460d173e, struct.pack(">I", 0))   # PTN_USED clear
+
+    STK = 0x46cf0000
+    # return address = a mapped RAM word holding 0x4e75 (rts) so the harness halts
+    # cleanly when rl_combo does its swallowing rts
+    RET = 0x46cf0f00
+    rt.uc.mem_write(RET, b"\x4e\x75\x4e\x75")
+    rt.uc.reg_write(eb.UC_M68K_REG_A7, STK)
+    rt.uc.mem_write(STK, struct.pack(">3I", RET, 0x32, 1))  # ret, keycode, event=press
+    rt.uc.reg_write(eb.UC_M68K_REG_PC, rl_combo)
+
+    NO_REL, NO_PRESS = 0x4005e276, 0x4005e262
+    trail = []
+    end = None
+    for _ in range(400):
+        pc = rt.uc.reg_read(eb.UC_M68K_REG_PC)
+        if pc in (RET, NO_REL, NO_PRESS) or not (0x400d7400 <= pc < 0x400d8000
+                                                 or pc in (0x40022778, TOAST_FN)):
+            end = pc
+            break
+        trail.append(pc)
+        try:
+            rt.uc.emu_start(pc, 0, count=1)
+        except Exception as e:
+            end = f"exc@{pc:#x}: {e}"
+            break
+
+    gk = rt.uc.mem_read(0x80006a50, 1)[0]
+    gp = rt.uc.mem_read(0x80006a51, 1)[0]
+    pu = int.from_bytes(rt.uc.mem_read(0x460d173e, 4), "big")
+    posted = 0x40022778 in trail
+    toasted = TOAST_FN in trail
+    endname = {NO_REL: "NO_REL (stock release)", NO_PRESS: "NO_PRESS (stock press -- gate bailed)",
+               RET: "returned (rts)"}.get(end, str(end) if not isinstance(end, int) else hex(end))
+    print(f"end        : {endname}")
+    print(f"trail tail : {[hex(x) for x in trail[-8:]]}")
+    print(f"result     : G_KIND={gk:#x} (want 1)  G_PAT={gp} (want 7)  PTN_USED={pu:#x} (want 1)  "
+          f"posted={posted}  toasted={toasted}")
+    swallowed = end == RET or (isinstance(end, str) and hex(RET) in end)
+    ok = gk == 1 and gp == 7 and pu == 1 and posted and swallowed
+    for name, cond in [("gates passed + G_KIND armed", gk == 1),
+                       ("G_PAT = active pattern", gp == 7),
+                       ("PTN chooser suppressed", pu == 1),
+                       ("FUN_40022778 (storage job) posted", posted),
+                       ("swallowed the NO key (rts)", swallowed)]:
+        print(f"   [{'x' if cond else ' '}] {name}")
+    print(f"\n--combo: {'ALL GOOD' if ok else 'CHECK FAILED'}")
     return ok
 
 
@@ -378,20 +453,23 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--slice", action="store_true", help="slab revert + reload-now refresh (playing)")
     ap.add_argument("--strd", action="store_true", help="async storage-task reload of the blob from .strd")
+    ap.add_argument("--combo", action="store_true", help="single-step rl_combo in isolation (fast)")
     ap.add_argument("--patched", action="store_true",
                     help="boot out/mainos_reload.bin and drive [PTN]+[NO] end to end")
     a = ap.parse_args()
-    if not (a.slice or a.strd or a.patched):
-        ap.error("pick --slice, --strd and/or --patched")
+    if not (a.slice or a.strd or a.patched or a.combo):
+        ap.error("pick --slice, --strd, --combo and/or --patched")
     if not DEMO_BANK1_STRD.exists():
         sys.exit(f"missing {DEMO_BANK1_STRD} (the factory OT DEMO export)")
-    if a.patched:
+    if a.patched or a.combo:
         if not RELOAD_IMAGE.exists():
             sys.exit(f"missing {RELOAD_IMAGE} -- run python3 tools/build_reload.py first")
         OUR_IMAGE = RELOAD_IMAGE
 
     rt = boot_and_load()
     ok = True
+    if a.combo:
+        ok &= cmd_combo(rt)
     if a.slice:
         ok &= cmd_slice(rt)
     if a.strd:
