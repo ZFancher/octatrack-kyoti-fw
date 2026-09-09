@@ -5871,3 +5871,102 @@ path) is the stock RELOAD PART. Flash-ready — same posture as DIRECT JUMP
 a storage-task hang needing a power cycle (recoverable, flash stock to revert);
 SEQ writes only pattern N's live slab, never disk; PARTS is the stock path.
 Queue: behind DT / SIDECHAIN2 / SIDECHAIN3 / DIRECTJUMP (all also unflashed).
+
+## Session 43 (2026-09-09, `wip/mute-mode`) — RELOAD FROM PROJECT: a scaled-down 2-option sibling build + a stay-open modal picker UX for BOTH builds
+
+Two things this session, both on top of Session 42's built-but-unflashed RELOAD.
+
+### Part 1 — the scaled-down sibling (`build_reload2.py`)
+
+User wants a **smaller** RELOAD as a **separate build**. Session 42's
+`patch_reload.s` / `build_reload.py` stay — a new triple was added:
+
+- **`tools/patch_reload2.s`** — 2-item picker: **`SEQ DATA`** / **`PART + SEQ DATA`**.
+  * `SEQ DATA` — byte-identical mechanism to `patch_reload.s`'s `SEQ` (`rl_job` /
+    `rl_openstrd` copied verbatim: async worker parses one pattern from
+    `bankNN.strd` → live slab → `0x46c8028a`).
+  * `PART + SEQ DATA` — `SEQ DATA` + `rl_part`: `move.b 0x80000003,%d2` then
+    `FUN_4004aab4(d2)` **once**. `0x80000003` = the Part the sounding pattern is
+    assigned to (octakit-abi `GK_STOCK_CURRENT_PART_MIRROR`). Confirmed:
+    `FUN_400905d4 @ 0x400907b8` passes `[0x80000003]` as the *part* arg to
+    `FUN_40009094(bank, part)`; `FUN_4004aab4` compares `[0x80000003]` to decide
+    "re-apply to engine" (so it re-applies live). **`0x80000002` = current
+    BANK**, not "active part" — `reference/upstream-notes.md` L26/L150 mislabel
+    it; octakit-abi is right.
+  * Dropped vs `patch_reload.s`: `ALL PARTS` (the `FUN_4004aab4(0..3)` loop) and
+    the "PARTS only → skip the SEQ post" branch.
+- **`tools/build_reload2.py`** — clone of `build_reload.py`; → `out/mainos_reload2.bin`,
+  `OCTATRACK_OS1.40C_RELOAD2.{syx,bin}` `140C_KYOTI`.
+- **`tools/emu_reload2.py`** — thin shim over `emu_reload.py`: repoints the
+  image/elf and overrides `COMBO_ITEMS` (2 items). `emu_reload.py` gained a
+  module-level `COMBO_ITEMS` table so its `cmd_combo` is data-driven.
+
+### Part 2 — stay-open modal picker (patch_reload.s AND patch_reload2.s)
+
+Session 42's picker required holding `[PTN]` the whole time and tapping `[NO]`
+to cycle. New UX (user's spec):
+
+    [PTN]+[NO]  opens the window; release [PTN], it stays open.
+    arrows      move the highlight (UP/RIGHT = prev, DOWN/LEFT = next, wrapping).
+    [YES]       execute the highlight + close.
+    [NO]        close, execute nothing.
+    While the window is open [YES]/[NO] act ONLY on the picker (rl_yes/rl_no
+    fully swallow the key — the stock handlers never run).  Other keys are not
+    intercepted.  ~10 s no-input auto-close (rl_tick, re-armed on each arrow) is
+    a walk-away safety.
+
+Both builds now use **6 detours** (was 4): `rl_no` @ `0x4005e25c`, `rl_yes` @
+`0x4005e4c8`, **`rl_arr_a` @ `0x4004b970`**, **`rl_arr_b` @ `0x400491a0`**,
+`rl_tick` @ `0x400522ca`, `rl_job` @ `0x40085864`.
+
+- **Arrow-key RE** (folded into `kb/memory-map.md`): the 26-byte keymap tables
+  (T1 `0x400bfc10`, T2 `0x400c01f4`; selector structs `0x400c090c` / `0x400c0920`
+  chosen by `0x46c8d18c` in the event loop `FUN_40061b60` @ `0x40061bca`) map
+  **`0x34` (UP) / `0x21` (RIGHT) → `0x4004b970`** and **`0x33` (DOWN) / `0x20`
+  (LEFT) → `0x400491a0`** (the DOWN/LEFT wrapper falls to `0x40049114`; cursor
+  `0x460d16e4`, scroll `0x460d16e8`). Consistent with octabam MAINMENU.md §7
+  (HW-tested: "0x34 the UP arrow moves up, 0x33 moves down").
+- **Arrow detour shape:** `tst.b G_MENU` — closed → replay the displaced
+  prologue (`lea -12(sp),sp ; movem.l d2-d3/a2,(sp)` for A, resume `0x4004b978`;
+  `move.l d2,-(sp) ; movea.l 8(sp),a0` for B, resume `0x400491a6`) and fall
+  through, behaviourally invisible; open → `G_SEL = (G_SEL ± 1) mod N_ITEMS`,
+  `jsr rl_draw`, `rts` (swallow, stack untouched on entry). New `rl_draw`
+  subroutine = the `FUN_4005a0e0` redraw + `G_TICKS` re-arm, shared by `rl_no`
+  and both arrows.
+- **`rl_yes`:** drops the `tst.l PTN_HELD` gate; tests **`G_MENU` first** so a
+  merged DJ+RELOAD build routes window-open → RELOAD execute, window-closed →
+  (PTN held) DJ toggle. The DJ toggle will also need a `tst.b G_MENU / bne
+  stock` guard. Also dropped the trailing `PTN_USED = 1` (PTN is long released
+  by [YES] time).
+- **`rl_no`:** press with `G_MENU==1` → close (`FUN_40056bc0`), execute nothing,
+  swallow. Press with `G_MENU==0` + [PTN] held + gates → open. Else stock.
+- `MENU_FRAMES` `0x1e0` → `0xc80` (~10 s).
+
+### emu
+
+- **`emu_reload.py --combo` (3-item) ALL GOOD** — open; arrow B cycles
+  0→1→2→0→1, arrow A from 0 wraps to 2, each redraws; arrows fall through
+  cleanly when closed; `[YES]` per item (SEQ post-only / PARTS ×4-only / WHOLE
+  both); `[NO]` cancels (no post, no `FUN_4004aab4`); `[YES]`/`[NO]` closed →
+  stock.
+- **`emu_reload2.py --combo` (2-item) ALL GOOD** — same, cycling 0↔1.
+- **`emu_reload.py --patched` + `emu_reload2.py --patched` ALL GOOD** — SEQ
+  worker end to end for both: `rl_yes` (G_MENU=1) → post → `rl_job` → open
+  `bank01.strd` → one `FUN_4008cebc` (P=0) → slab memcpy → `0x46c8028a` fired +
+  consumed; no fault; pattern 0's p-lock array == `bank01.strd`; bystander
+  pattern 10 untouched; transport still `1`. (`cmd_patched`'s stale
+  `PTN_USED == 1` assertion relaxed to `[YES] armed the SEQ job` — `rl_yes` no
+  longer sets `PTN_USED`.)
+
+### HW-only (adds to Session 42's list)
+
+Whether an arrow press reaches `rl_arr_a`/`rl_arr_b` while the `FUN_4005a0e0`
+popup is up (base-view arrow routing). If not, the fallback is a hook in the
+event dispatcher `FUN_40061b60` (78-way jump table at `0x40061cfa`). Also: the
+`FUN_4005a0e0` picker render, the `PART + SEQ DATA` column width, toast/timing,
+`FUN_4008cebc` vs a real card, the discard loop P > 0.
+
+Docs: `patch_reload{,2}.s` / `build_reload{,2}.py` / `emu_reload{,2}.py` headers,
+`kb/memory-map.md` (arrow keycodes), `README.md`, `BUILD_KYOTI.md`,
+`FLASHING.md` §4.7, `START_HERE.md`. First-attempt in-place scaled-down edit was
+reverted (`git stash@{0}`). **NOT committed, NOT pushed** as of session end.

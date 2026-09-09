@@ -195,7 +195,21 @@ adds `0x1c..0x1f`); selector structs `{table_ptr, 0x400c085a}` at `0x400c090c` /
 | track keys | `0x10–0x17` | `0x40040250` → mute `FUN_40083ab4` | **BANK** | `0x2f` | `0x4007af80` |
 | param-page | `0x22–0x26` | `FUN_4005578c` (via `0x400a7280={0,2,1,3,4}`) | **PAGE** | `0x1b` | `FUN_4004ffc4` |
 | MKII MAIN MENU | `0x1c` | `0x40064d78` → `FUN_40064c18` | **YES** | `0x31` | `0x4005e4c8` |
-| | | | **NO** | `0x32` | `0x4005e25c` |
+| **arrow UP** | `0x34` | `0x4004b970` | **NO** | `0x32` | `0x4005e25c` |
+| **arrow RIGHT** | `0x21` | `0x4004b970` (same as UP) | **arrow DOWN** | `0x33` | `0x400491a0` |
+| **arrow LEFT** | `0x20` | `0x400491a0` (same as DOWN) | | | |
+
+Arrows (Session 43, confidence C — decoded from the keymap + cross-checked vs octabam
+MAINMENU.md §7, HW-tested there): **UP `0x34` / RIGHT `0x21` share `0x4004b970`**;
+**DOWN `0x33` / LEFT `0x20` share `0x400491a0`** (a wrapper — arg==press &&
+`0x80000012`==0 && `0x8000004b`==3 → `0x460d17aa=1; jmp 0x4007c404`, else arranger →
+`0x40049114`, else `rts`). `0x40049114` is the list-cursor mover: `0x460d16e4` cursor,
+`0x460d16e8` scroll. `0x4004b970` special-cases keycode `0x34` vs `0x21` at `0x4004b9d6`.
+Both handlers are reached via the keymap for `handler(keycode@4, event@8)`; RELOAD FROM
+PROJECT's `patch_reload{,2}.s` detour both (displaced prologue: `0x4004b970` = `lea
+-12(sp),sp ; movem.l d2-d3/a2,(sp)` resume `0x4004b978`; `0x400491a0` = `move.l d2,-(sp)
+; movea.l 8(sp),a0` resume `0x400491a6`). The T1/T2 selector is chosen in the event loop
+`FUN_40061b60` at `0x40061bca` on `0x46c8d18c` (MKI vs MKII).
 
 `FUN_4005a044` (**PTN**): press → `0x460d1742 = 1` ("[PTN] held"), clear `0x460d173e`;
 release → opens SELECT PATTERN (`FUN_40059f8c(0x400b484e, 0xf0, 1, 0x40043418)`) **only if

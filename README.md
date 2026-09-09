@@ -132,12 +132,14 @@ Stock 1.40C can only reload from the card at whole-**bank** granularity, and doi
 so stops the audio. This adds a per-pattern reload, seamlessly. Adapted from the
 Digitone's RELOAD FROM PROJ.
 
-**`[PTN]` + `[NO]`** (while the sequencer is playing) opens a 3-item picker —
-`RLD SEQ` / `RLD PARTS` / `RLD WHOLE` — each further `[PTN]`+`[NO]` tap cycles the
-highlight; **`[PTN]` + `[YES]`** executes it (the picker also auto-closes after
-~1.5 s). All reload from the card's last **SAVE BANK** snapshot:
+**`[PTN]` + `[NO]`** (while the sequencer is playing) opens a picker window; you
+can let go of `[PTN]` and it stays open. The **arrow keys** move the highlight;
+**`[YES]`** executes it and closes the window; **`[NO]`** closes it and runs
+nothing. While the window is open `[YES]`/`[NO]` act only on the picker. It also
+self-closes after ~10 s of no input. All items reload from the card's last
+**SAVE BANK** snapshot:
 
-| item | what it does | how |
+| item (3-item build) | what it does | how |
 |---|---|---|
 | **RLD SEQ** | the active pattern's sequence data (trigs, p-locks, length, scale, trig conditions, microtiming, the pattern→part link) | an async job on the storage task parses that one pattern from `bankNN.strd` with the firmware's own per-pattern chunk parser, copies it into the live blob, and fires the sequencer's own no-stop reload flag. Nothing else is touched — no other pattern, no Part, no other bank, no disk write. |
 | **RLD PARTS** | all 4 Parts, to their last saved state | the stock RELOAD PART path, run ×4 (`FUN_4004aab4`) |
@@ -145,15 +147,23 @@ highlight; **`[PTN]` + `[YES]`** executes it (the picker also auto-closes after
 
 Guards are the stock ones: a never-saved bank shows *"THIS BANK HAS NEVER BEEN
 SAVED! NOTHING TO RELOAD!"*; a never-saved Part shows *"SAVE PART FIRST!"*. No
-confirmation prompt (the two-key combo is the intent).
+confirmation prompt.
 
-`tools/patch_reload.s` — four hooks (the `[NO]` and `[YES]` key handlers, a
-per-frame tick for the picker auto-close, and the storage task's bank-reload
-case). `python3 tools/build_reload.py` → `140C_KYOTI`. Write-up:
-[`NOTES.md`](NOTES.md) "Session 42"; emulator `tools/emu_reload.py` — `--combo`
-(the whole picker, single-stepped) and `--patched` (the SEQ worker end to end in
-the full-firmware emulator) both pass; the one-pattern parse against a real CF
-card and the picker rendering are a **hardware** test. **Never flashed.**
+`tools/patch_reload.s` — six hooks (the `[NO]`, `[YES]` and two arrow key
+handlers, a per-frame tick for the auto-close, and the storage task's
+bank-reload case). `python3 tools/build_reload.py` → `140C_KYOTI`. Write-up:
+[`NOTES.md`](NOTES.md) "Session 42" + "Session 43"; emulator
+`tools/emu_reload.py` — `--combo` (the whole modal picker, single-stepped) and
+`--patched` (the SEQ worker end to end in the full-firmware emulator) both pass;
+whether an arrow reaches the picker on hardware, the parse against a real CF card
+and the picker rendering are a **hardware** test. **Never flashed.**
+
+**Scaled-down build** (`tools/patch_reload2.s`, `python3 tools/build_reload2.py`
+→ `OCTATRACK_OS1.40C_RELOAD2.{syx,bin}`): same window, a 2-item picker —
+**`SEQ DATA`** (= `RLD SEQ`) and **`PART + SEQ DATA`** (that, plus the one Part
+the pattern is assigned to, via `FUN_4004aab4`). No `ALL PARTS`. A separate
+image; `build_reload.py`'s 3-item menu is unchanged. `tools/emu_reload2.py
+--combo` + `--patched` pass. [`NOTES.md`](NOTES.md) "Session 43".
 
 ### Backlog — scoped, not built
 
@@ -176,7 +186,7 @@ card and the picker rendering are a **hardware** test. **Never flashed.**
 | **DIRECT JUMP** pattern-change mode | `build_directjump*.py` | **emulator only** (stub-level), never flashed |
 | side-chain `KEY` menu + formatter | `build_sidechain.py` / `build_sidechain3.py` | **emulator only**, never flashed |
 | side-chain DSP hooks | `build_sidechain2.py` / `build_sidechain3.py` | hooks **emulator-verified** (dsp56kEmu); audio path untested, never flashed |
-| **RELOAD FROM PROJECT** — picker + SEQ / PARTS / WHOLE | `build_reload.py` | picker + the SEQ worker **emulator-verified end to end** (`emu_reload.py`); the parse vs a real card is a hardware test, never flashed |
+| **RELOAD FROM PROJECT** — modal picker + SEQ / PARTS / WHOLE | `build_reload.py` (3-item) / `build_reload2.py` (2-item: SEQ DATA / PART + SEQ DATA) | modal picker + the SEQ worker **emulator-verified end to end** (`emu_reload.py` / `emu_reload2.py`); the parse vs a real card and whether arrows reach the picker on HW are hardware tests, never flashed |
 
 `OT` mode is byte-for-byte stock, and every mod is `OFF` by default. The soft
 paths, DIRECT JUMP and RELOAD FROM PROJECT are validated in a ColdFire emulator

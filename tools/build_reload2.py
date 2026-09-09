@@ -2,39 +2,50 @@
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2026 Zac-Kyoti
 """
-RELOAD FROM PROJECT (NOTES.md "Session 42" / "Session 43") -- stock 1.40C + the
-MIDI manual-trig fix + a stay-open 3-item picker window (RLD SEQ / RLD PARTS /
-RLD WHOLE).  Reloads the active pattern's sequence data and/or the 4 Parts from
-the CF card's last SAVE BANK snapshot, without stopping the sequencer.
+RELOAD FROM PROJECT -- scaled-down variant (NOTES.md "Session 43").
+
+A trimmed sibling of build_reload.py.  build_reload.py (Session 42: SEQ / ALL
+PARTS / WHOLE PATTERN, patch_reload.s) is UNCHANGED and still builds.  This one
+builds a SEPARATE image from patch_reload2.s:
+
+  stock 1.40C + the MIDI manual-trig fix + a stay-open 2-item picker window.
 
   UX (Session 43 revision):
     [PTN]+[NO]  opens the window (playing, no arranger, no popup).  You may
                 release [PTN] -- the window stays open.
-    arrows      move the highlight (UP/RIGHT prev, DOWN/LEFT next, wrapping).
+    arrows      UP/RIGHT -> SEQ DATA ; DOWN/LEFT -> PART + SEQ DATA.
     [YES]       execute the highlight, close the window.
     [NO]        close the window, execute nothing.
     While the window is open [YES]/[NO] act ONLY on the picker.  ~10 s no-input
     auto-close (re-armed on every arrow) is a walk-away safety.
 
+  SEQ DATA        -- reload the active pattern's sequence data from bankNN.strd
+                     (identical mechanism to build_reload.py's "SEQ").
+  PART + SEQ DATA -- the above, plus the one Part the pattern is assigned to
+                     (0x80000003, the "current part mirror"), via the stock
+                     RELOAD PART path FUN_4004aab4(part).
+
+  Dropped vs build_reload.py: "ALL PARTS" (the FUN_4004aab4(0..3) loop) and the
+  "PARTS only -> skip the SEQ post" branch.
+
   1. patch_trigscale  -- MIDI manual-trig stall fix.  Byte-identical detour + cave
-                         to build_trigscale_only.py / build_directjump.py.
-  2. patch_reload     -- six detours:
+                         to build_trigscale_only.py / build_reload.py.
+  2. patch_reload2    -- six detours:
        rl_no    @0x4005e25c  NO handler.  [PTN]+[NO] press -> open the window
                              (bare-text popup FUN_4005a0e0).  [NO] with the
                              window open -> close it, execute nothing.  Swallow.
        rl_yes   @0x4005e4c8  YES handler.  [YES] with the window open -> close
-                             it, then: PARTS/WHOLE -> FUN_4004aab4(0..3) (stock
-                             RELOAD PART x4) + the stock UI refresh, here in the
-                             key handler; SEQ/WHOLE -> arm {G_KIND=1,
-                             G_PAT=active} + post FUN_40022778(1<<curbank).
-                             Toast + swallow.  Window closed -> replay the stock
-                             prologue (the DJ toggle slots in here in the merged
-                             build -- G_MENU first).
+                             it, then: PART + SEQ DATA -> FUN_4004aab4 on the
+                             pattern's own Part + the stock UI refresh; both
+                             options -> arm {G_KIND=1, G_PAT=active} + post
+                             FUN_40022778(1<<curbank).  Toast + swallow.  Window
+                             closed -> replay the stock prologue (the DJ toggle
+                             slots in here in the merged build -- G_MENU first).
        rl_arr_a @0x4004b970  UP/RIGHT key handler (keycodes 0x34/0x21).  Window
-                             open -> previous item, redraw, swallow.  Closed ->
-                             replay the displaced prologue, fall through.
+                             open -> G_SEL=0, redraw, swallow.  Closed -> replay
+                             the displaced prologue, fall through (invisible).
        rl_arr_b @0x400491a0  DOWN/LEFT key handler (keycodes 0x33/0x20).  Window
-                             open -> next item, redraw, swallow.  Closed -> ditto.
+                             open -> G_SEL=1, redraw, swallow.  Closed -> ditto.
        rl_tick  @0x400522ca  the engine per-control-frame handler (same splice
                              DIRECT JUMP v2 uses).  Counts G_TICKS down; at 0
                              closes the window (FUN_40056bc0) + clears G_MENU.
@@ -50,18 +61,29 @@ the CF card's last SAVE BANK snapshot, without stopping the sequencer.
                              G_KIND==0; a re-entrant real RELOAD BANK is
                              unaffected (worker latches + clears G_KIND).
 
-  No scratch BANK is used (an earlier design borrowed one -- rejected: it put a
-  bystander bank's data at risk).  SEQ writes nothing but pattern P's live slab;
-  PARTS is the stock per-part reload path.  No PERSONALIZE entry, no persistent
-  state -> no 'ANDY' shadow / pea 0x64->0x70.
+  No scratch BANK is used.  SEQ DATA writes nothing but pattern P's live slab;
+  the Part reload is the stock per-part reload path.  No PERSONALIZE entry, no
+  persistent state -> no 'ANDY' shadow / pea 0x64->0x70.
 
-  STATUS: SEQ DATA emu-validated end to end (emu_reload.py --combo + --patched).
-  PARTS/WHOLE + the picker: static + assembly checked; PARTS = the stock
-  FUN_4004aab4 path.  Needs a hardware pass (FLASHING.md 4.7).
+  STATUS: SEQ DATA emu-validated end to end (emu_reload2.py --combo + --patched).
+  PART + SEQ DATA + the picker: static + assembly checked; the Part reload = the
+  stock FUN_4004aab4 path.  Needs a hardware pass (FLASHING.md 4.7).
 
-Usage:   python3 tools/build_reload.py [VERSTR]      (default VERSTR = "140C_KYOTI")
-Outputs: out/mainos_reload.bin, out/elek_reload.bin,
-         out/OCTATRACK_OS1.40C_RELOAD.syx, out/OCTATRACK_RELOAD.bin
+  MERGE NOTE (DJ + RELOAD2, planned): [YES] here acts only while G_MENU==1 --
+  otherwise it replays the stock prologue and falls through.  DIRECT JUMP's
+  [PTN]+[YES] toggle is currently a *different* image; the merged build uses one
+  0x4005e4c8 handler that tests G_MENU FIRST (window open -> RELOAD execute) and
+  only reaches the DJ toggle when it is clear.  The DJ toggle also gains a
+  `tst.b G_MENU / bne stock` guard.  So the RELOAD window must be closed before
+  DJ can operate -- which is the intended behaviour.
+
+  HW-only from Session 42, plus: whether an arrow press reaches rl_arr_a/b while
+  the FUN_4005a0e0 popup is up (the base-view arrow routing) -- if not, the
+  fallback is a hook in the event dispatcher FUN_40061b60.
+
+Usage:   python3 tools/build_reload2.py [VERSTR]      (default VERSTR = "140C_KYOTI")
+Outputs: out/mainos_reload2.bin, out/elek_reload2.bin,
+         out/OCTATRACK_OS1.40C_RELOAD2.syx, out/OCTATRACK_RELOAD2.bin
 """
 import os, pathlib, subprocess, sys
 
@@ -71,10 +93,10 @@ ROOT = HERE.parent
 STOCK_SECT = ROOT / "out/raw/section_3_MAIN_OS.bin"
 STOCK_SYX = ROOT / "downloads/extracted/OCTATRACK_OS1.40C.syx"
 EFT = ROOT / "vendor/elektron-firmware-tool/elektron-firmware-tool"
-OUT = ROOT / "out/mainos_reload.bin"
-ELEK = ROOT / "out/elek_reload.bin"
-OUT_SYX = ROOT / "out/OCTATRACK_OS1.40C_RELOAD.syx"
-OUT_BIN = ROOT / "out/OCTATRACK_RELOAD.bin"
+OUT = ROOT / "out/mainos_reload2.bin"
+ELEK = ROOT / "out/elek_reload2.bin"
+OUT_SYX = ROOT / "out/OCTATRACK_OS1.40C_RELOAD2.syx"
+OUT_BIN = ROOT / "out/OCTATRACK_RELOAD2.bin"
 
 VERSTR = sys.argv[1] if len(sys.argv) > 1 else "140C_KYOTI"
 
@@ -82,7 +104,7 @@ VERSTR = sys.argv[1] if len(sys.argv) > 1 else "140C_KYOTI"
 PATCHES = [
     ("patch_trigscale", 0x400d7b00, None,
      [(0x4009b6f2, "cave", "203c0000091a", 18, "jmp")]),
-    ("patch_reload", 0x400d7400, None,
+    ("patch_reload2", 0x400d7400, None,
      [(0x4005e25c, "rl_no", "202f00086714", 6, "jmp"),         # NO handler: move.l 8(sp),d0 ; beq.s 0x4005e276
       (0x4005e4c8, "rl_yes", "222f0004202f0008", 8, "jmp"),    # YES handler: move.l 4(sp),d1 ; move.l 8(sp),d0
       (0x4004b970, "rl_arr_a", "4feffff448d7040c", 8, "jmp"),  # UP/RIGHT handler: lea -12(sp),sp ; movem.l d2-d3/a2,(sp)
@@ -184,7 +206,7 @@ def main():
     print(f"\n  {OUT_SYX.name}  (MIDI DIN)  +  {OUT_BIN.name}  (CF card)")
     print(f"  version screen / SYSTEM STATUS -> OS VERSION will read:  {VERSTR}")
     print("  [PTN] + [NO]  (while playing)  ->  opens the picker window (stays open)")
-    print("  arrows                         ->  move the highlight: RLD SEQ / RLD PARTS / RLD WHOLE")
+    print("  arrows                         ->  UP/RIGHT SEQ DATA / DOWN/LEFT PART + SEQ DATA")
     print("  [YES]                          ->  execute the highlight + close, no transport stop")
     print("  [NO]                           ->  close the window, execute nothing")
     print("  Revert = flash downloads/extracted/OCTATRACK_OS1.40C.syx")

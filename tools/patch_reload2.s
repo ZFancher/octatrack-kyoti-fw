@@ -1,43 +1,56 @@
 | SPDX-License-Identifier: MIT
 | SPDX-FileCopyrightText: 2026 Zac-Kyoti
 |
-| patch_reload -- "RELOAD FROM PROJECT" (NOTES.md "Session 42" / "Session 43").
+| patch_reload2 -- "RELOAD FROM PROJECT", scaled-down variant (NOTES.md "Session 43").
+|
+| A trimmed sibling of patch_reload.s (Session 42, SEQ / ALL PARTS / WHOLE
+| PATTERN).  patch_reload.s is UNCHANGED and still builds via build_reload.py;
+| this is a separate image (build_reload2.py -> OCTATRACK_OS1.40C_RELOAD2.*).
 |
 | ---- UX (Session 43 revision -- a stay-open modal picker) ----
 |   [PTN] + [NO]   (while the sequencer is playing) opens the picker window.
 |                  You may release [PTN] -- the window stays open.
-|   arrow keys     move the highlight through  RLD SEQ / RLD PARTS / RLD WHOLE
+|   arrow keys     move the highlight between SEQ DATA / PART + SEQ DATA
 |                  (UP/RIGHT = previous, DOWN/LEFT = next, wrapping).
 |   [YES]          execute the highlighted option, close the window.
 |   [NO]           close the window, execute nothing.
 |
 |   While the window is open, [YES] and [NO] act ONLY on the picker -- the stock
-|   YES/NO handlers never run.  Other keys are not intercepted.  A ~10 s no-input
-|   auto-close (rl_tick, re-armed on every arrow press) is a walk-away safety.
+|   YES/NO handlers never run (rl_yes / rl_no swallow the key).  Other keys are
+|   not intercepted.  A ~10 s no-input auto-close (rl_tick, re-armed on every
+|   arrow press) is a walk-away safety so the window can never sit on the
+|   keyboard forever.
 |
-|   MERGE NOTE (DJ + RELOAD, planned): the shared YES handler 0x4005e4c8 must
+|   MERGE NOTE (DJ + RELOAD2, planned): the shared YES handler 0x4005e4c8 must
 |   test G_MENU FIRST -- window open -> RELOAD execute; only when G_MENU == 0 may
 |   [PTN]+[YES] reach the DIRECT JUMP toggle.  rl_yes here is already written that
-|   way.  The DJ toggle also has to gain a `tst.b G_MENU / bne stock` guard.
+|   way (G_MENU branch before the stock fall-through).  The DJ toggle also has to
+|   gain a `tst.b G_MENU / bne stock` guard when the two are combined.
 |
-|   SEQ    -- reload the ACTIVE pattern's SEQUENCE DATA (trigs, p-locks, length,
-|             scale, trig conditions, microtiming, the pattern->part link) from
-|             the CF card's last SAVE BANK snapshot (bankNN.strd), seamlessly.
-|   PARTS  -- reload all 4 Parts to their last saved state (= stock RELOAD PART
-|             x4: FUN_4004aab4).  Pure RAM.
-|   WHOLE  -- PARTS + SEQ.
+|   SEQ DATA        -- reload the ACTIVE pattern's SEQUENCE DATA (trigs, p-locks,
+|                      length, scale, trig conditions, microtiming, the
+|                      pattern->part link) from the CF card's last SAVE BANK
+|                      snapshot (bankNN.strd), seamlessly.  Identical mechanism
+|                      to patch_reload.s's "SEQ".
+|   PART + SEQ DATA -- the above, plus reload the one Part the active pattern is
+|                      assigned to -- the part index at 0x80000003 (the "current
+|                      part mirror") -- via the stock RELOAD PART path
+|                      FUN_4004aab4(part).  Pure RAM.
+|
+| Dropped vs patch_reload.s: the "ALL PARTS" menu item + its FUN_4004aab4(0..3)
+| loop, and the "PARTS only -> skip the SEQ post" branch in rl_yes.
 |
 | Stock 1.40C only reloads from the card at whole-BANK granularity, and doing so
 | stops audio (FUN_400a10c8 pre-step + FUN_400238a4 re-sync).  This is per-pattern
 | and seamless: the SEQ file work rides the async storage task and the active
 | pattern re-homes through FUN_400a1eea's own no-stop reload block (0x46c8028a);
-| PARTS is the stock per-part reload, which already runs live.
+| the Part reload is the stock per-part path, which already runs live.
 |
 | ---- state (volatile scratch, no persistence needed -- one-shot actions) ----
     .equ G_KIND,    0x80006a50          | worker request: 0 idle, 1 = SEQ (set by rl_yes)
     .equ G_PAT,     0x80006a51          | pattern to reload (byte)
     .equ G_MENU,    0x80006a52          | 1 = the picker window is open
-    .equ G_SEL,     0x80006a53          | highlighted item: 0 SEQ / 1 PARTS / 2 WHOLE
+    .equ G_SEL,     0x80006a53          | highlighted item: 0 = SEQ DATA / 1 = PART + SEQ DATA
     .equ G_TICKS,   0x80006a54          | picker auto-close frame countdown (long)
 
 |   ---- stock symbols ----
@@ -48,6 +61,7 @@
     .equ RUNNING,   0x800065b8          | transport state -- LONGWORD (=1 playing)
     .equ ACT_PAT,   0x800065be          | sequencer's active pattern (byte)
     .equ CUR_BANK,  0x80000002
+    .equ CUR_PART,  0x80000003          | the Part the sounding pattern is assigned to (byte)
     .equ RELOAD_NOW,0x46c8028a          | step engine polls this at 0x400a2530
     .equ POPUP2,    0x4005a0e0          | FUN_4005a0e0(text) -- bare text box, no timeout
     .equ CLOSE_CB,  0x40056bc0          | FUN_40056bc0 -- close the 0x460d1e64 popup
@@ -62,7 +76,8 @@
 
 |   arrow keys -- keycodes 0x34 (UP) / 0x21 (RIGHT) -> ARROW_A ; 0x33 (DOWN) /
 |   0x20 (LEFT) -> ARROW_B.  Verified against the 26-byte keymap tables
-|   (T1 0x400bfc10 / T2 0x400c01f4) + octabam MAINMENU.md sec 7.
+|   (T1 0x400bfc10 / T2 0x400c01f4) + octabam MAINMENU.md sec 7 (HW-tested:
+|   "0x34 the UP arrow moves up, 0x33 moves down").
     .equ ARROW_A_H,     0x4004b970      | UP / RIGHT handler
     .equ ARROW_A_RESUME,0x4004b978      | after `lea -12(sp),sp ; movem.l d2-d3/a2,(sp)`
     .equ ARROW_B_H,     0x400491a0      | DOWN / LEFT handler
@@ -95,7 +110,7 @@
     .equ PATSTRIDE, 0x8ed8
 
     .equ MENU_FRAMES, 0xc80             | ~10 s at the 0x40052200 frame rate (walk-away safety)
-    .equ N_ITEMS,     3
+    .equ N_ITEMS,     2
 
     .text
 
@@ -138,7 +153,7 @@ rln_tryopen:
 
     moveq   #1,%d0
     move.b  %d0,G_MENU                 | open
-    clr.b   G_SEL                      | default = SEQ
+    clr.b   G_SEL                      | default = SEQ DATA
     jsr     rl_draw
 rln_swallow:
     moveq   #1,%d0
@@ -172,18 +187,15 @@ rl_yes:
     lea     16(%sp),%sp
 
     moveq   #0,%d2
-    move.b  G_SEL,%d2                  | 0 SEQ / 1 PARTS / 2 WHOLE
+    move.b  G_SEL,%d2                  | 0 = SEQ DATA / 1 = PART + SEQ DATA
 
-|   --- PARTS or WHOLE: reload all 4 Parts now (key context, like stock) ---
+|   --- PART + SEQ DATA: reload the pattern's own Part now (key context, like stock) ---
     tst.l   %d2
     beq.b   rly_seq
-    jsr     rl_parts
-    moveq   #1,%d0
-    cmp.l   %d2,%d0
-    beq.b   rly_toast                  | PARTS only -> done
+    jsr     rl_part
 
 rly_seq:
-|   --- SEQ or WHOLE: arm + post the async SEQ job ---
+|   --- both options reload the active pattern's SEQUENCE DATA: arm + post the job ---
     move.b  ACT_PAT,%d0
     move.b  %d0,G_PAT
     moveq   #1,%d0
@@ -200,11 +212,7 @@ rly_toast:
     lea     rl_msg_seq,%a0
     tst.l   %d2
     beq.b   rly_t1
-    lea     rl_msg_parts,%a0
-    moveq   #1,%d0
-    cmp.l   %d2,%d0
-    beq.b   rly_t1
-    lea     rl_msg_whole,%a0
+    lea     rl_msg_ps,%a0
 rly_t1:
     pea     0x44
     move.l  %a0,-(%sp)
@@ -220,7 +228,8 @@ rly_stock:
 | ================= arrow keys -- move the highlight while the window is open =================
 | ARROW_A (@ 0x4004b970) replaces 8 bytes: lea -12(%sp),%sp ; movem.l %d2-%d3/%a2,(%sp)
 | ARROW_B (@ 0x400491a0) replaces 6 bytes: move.l %d2,-(%sp) ; movea.l 8(%sp),%a0
-| Closed -> replay the displaced prologue and fall through (behaviourally invisible).
+| When the window is closed both replay the displaced prologue and fall straight
+| through -- behaviourally invisible.
 
     .global rl_arr_a
 rl_arr_a:                              | UP / RIGHT -- previous item (wrapping)
@@ -274,20 +283,17 @@ rl_draw:
     move.l  %d0,G_TICKS
     rts
 
-| ---- rl_parts: FUN_4004aab4(0..3) + the stock RELOAD PART UI refresh ----
-    .global rl_parts
-rl_parts:
+| ---- rl_part: FUN_4004aab4([0x80000003]) -- reload the one Part the active
+|      pattern uses -- + the stock RELOAD PART UI refresh ----
+    .global rl_part
+rl_part:
     lea     -8(%sp),%sp
     movem.l %d2-%d3,(%sp)
     moveq   #0,%d2
-rlp_loop:
+    move.b  CUR_PART,%d2               | the Part the sounding pattern is assigned to
     move.l  %d2,-(%sp)
     jsr     PARTRELD                   | FUN_4004aab4(part) -- ignore d0 (0 = never saved)
     addq.l  #4,%sp
-    addq.l  #1,%d2
-    moveq   #4,%d3
-    cmp.l   %d3,%d2
-    blt.b   rlp_loop
 
     moveq   #1,%d0
     move.l  %d0,RDRAW
@@ -307,16 +313,12 @@ rlp_loop:
 
 rl_menu_tbl:
     .long   rl_msg_seq
-    .long   rl_msg_parts
-    .long   rl_msg_whole
+    .long   rl_msg_ps
 rl_msg_seq:
-    .asciz "RLD SEQ"
+    .asciz "SEQ DATA"
     .align 2
-rl_msg_parts:
-    .asciz "RLD PARTS"
-    .align 2
-rl_msg_whole:
-    .asciz "RLD WHOLE"
+rl_msg_ps:
+    .asciz "PART + SEQ DATA"
     .align 2
 
 | ================= picker auto-close tick -- jsr detour @ 0x400522ca =================
