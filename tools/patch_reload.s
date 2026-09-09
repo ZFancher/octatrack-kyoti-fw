@@ -98,7 +98,7 @@ rlc_notrel:
     bne.w   rlc_stock
     tst.l   ARR_ACT
     bne.w   rlc_stock
-    tst.b   RUNNING
+    tst.l   RUNNING                    | longword (=1 when playing) -- tst.b reads the 0 MSB (big-endian)
     beq.w   rlc_stock                  | MVP: only while playing
     tst.b   G_KIND
     bne.b   rlc_swallow                | a reload already queued -> just swallow

@@ -299,7 +299,7 @@ def cmd_patched(rt):
     rt.uc.mem_write(PTN_HELD, struct.pack(">I", 1))
     faulted = None
     try:
-        d0 = rt.call_as_main(NO_HANDLER, args=(NO_KEYCODE, 1), budget=6_000_000)
+        d0 = rt.call_as_main(NO_HANDLER, args=(NO_KEYCODE, 1), budget=20_000_000)
         print(f"combo      : NO handler(kc={NO_KEYCODE:#x}, press) -> d0={d0:#x}")
     except Exception as e:
         faulted = f"{type(e).__name__}: {e}"
