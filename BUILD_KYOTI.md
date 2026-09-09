@@ -13,8 +13,9 @@ build is byte-for-byte reproducible from the stock file.
 > only what has run on hardware — `build_trigscale_only.py`, `build_mutemode.py`
 > (softmute **V6b**, `OT` / `OT+FX`), `build_softmute.py`. This branch's
 > `build_mutemode.py` is softmute **V7** (the `OT+FX` cut extended to SOLO), and
-> it adds the DT mode, **DIRECT JUMP**, and the side-chain builds below — all
-> emulator-verified, none flashed. See *Hardware-test status*.
+> it adds the DT mode, **DIRECT JUMP**, **RELOAD FROM PROJECT**, and the
+> side-chain builds below — all emulator-verified, none flashed. See
+> *Hardware-test status*.
 
 ## What you get
 
@@ -30,6 +31,7 @@ build is byte-for-byte reproducible from the stock file.
 | `python3 tools/build_sidechain.py` | `140C_KYOTI` | Bug 1 fix + a `KEY` parameter on the COMPRESSOR page — **menu only, DSP untouched** (does nothing audible; proves the control surface) |
 | `python3 tools/build_sidechain2.py` | `140C_KYOTI` | + the DSP hooks: same-DSP-core side-chain — a compressor keys off a chosen track (even muted). **SPATIALIZER is donated** for the code space and removed from the FX menu |
 | `python3 tools/build_sidechain3.py` | `140C_KYOTI` | Bug 1 fix + the full side-chain **menu scaffolding** (`KEY` `KFLT` `KGAIN` `MON`), **no DSP** |
+| `python3 tools/build_reload.py` | `140C_KYOTI` | Bug 1 fix + **RELOAD FROM PROJECT**: `[PTN]`+`[NO]` opens a picker (`RLD SEQ` / `RLD PARTS` / `RLD WHOLE`, tap to cycle), `[PTN]`+`[YES]` reloads the active pattern's sequence and/or its 4 Parts from the card's last SAVE BANK — **without stopping playback** |
 
 All mods are **OFF by default** (`MUTE MODE = OT`; `KEY = OFF`, stored per Part).
 A freshly flashed unit is indistinguishable from stock until you opt in. An OS
@@ -53,6 +55,7 @@ cross-reference. See [`CREDITS.md`](CREDITS.md).
 | **DIRECT JUMP** (`build_directjump.py`) | **emulator only** — the hooks are stub-tested; `FUN_400a1eea` has instructions Unicorn can't run. Never flashed |
 | side-chain `KEY` menu + formatter (`build_sidechain.py`, `build_sidechain3.py`) | **emulator only**, never flashed |
 | side-chain DSP hooks (`build_sidechain2.py`) | hooks **emulator-verified** under dsp56kEmu; the audio result is untested |
+| **RELOAD FROM PROJECT** picker + SEQ worker (`build_reload.py`) | the picker and the SEQ worker are **emulator-verified end to end** (`emu_reload.py --combo` + `--patched`, full-firmware emulator with a mounted card); the parse against a real card + the picker rendering are a hardware test. Never flashed |
 
 The ColdFire emulator (Unicorn, real image bytes) proves control-flow and the
 DSP frame-word edits; the DSP emulator (dsp56kEmu) runs the actual DSP56300
@@ -118,8 +121,8 @@ Pass a custom version string as the first argument if you want
 `sysex/` carries the **Bug-1 fix** captured hunk-by-hunk as JSON (load address +
 expected original bytes + replacement bytes) and applies it with
 `sysex/apply_patch.py` — no cross-assembler required. See
-[`sysex/README.md`](sysex/README.md). The MUTE MODE, DIRECT JUMP and side-chain
-work is build-from-source only.
+[`sysex/README.md`](sysex/README.md). The MUTE MODE, DIRECT JUMP, side-chain and
+RELOAD FROM PROJECT work is build-from-source only.
 
 ## Flashing
 

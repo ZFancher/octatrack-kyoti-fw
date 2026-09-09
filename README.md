@@ -126,6 +126,35 @@ Write-up: [`NOTES.md`](NOTES.md) "Session 17" (+ "Session 36"); DSP source
 `tools/patch_sc_dsp.asm` / `patch_sc_dsp3.asm`; emulators `tools/emu_sidechain.py`,
 `tools/emu_sc_dsp.py`, `tools/emu_sc_dsp3.py`.
 
+### RELOAD FROM PROJECT — reload a pattern from the CF card without stopping playback  ·  *emulator-validated, not flashed*
+
+Stock 1.40C can only reload from the card at whole-**bank** granularity, and doing
+so stops the audio. This adds a per-pattern reload, seamlessly. Adapted from the
+Digitone's RELOAD FROM PROJ.
+
+**`[PTN]` + `[NO]`** (while the sequencer is playing) opens a 3-item picker —
+`RLD SEQ` / `RLD PARTS` / `RLD WHOLE` — each further `[PTN]`+`[NO]` tap cycles the
+highlight; **`[PTN]` + `[YES]`** executes it (the picker also auto-closes after
+~1.5 s). All reload from the card's last **SAVE BANK** snapshot:
+
+| item | what it does | how |
+|---|---|---|
+| **RLD SEQ** | the active pattern's sequence data (trigs, p-locks, length, scale, trig conditions, microtiming, the pattern→part link) | an async job on the storage task parses that one pattern from `bankNN.strd` with the firmware's own per-pattern chunk parser, copies it into the live blob, and fires the sequencer's own no-stop reload flag. Nothing else is touched — no other pattern, no Part, no other bank, no disk write. |
+| **RLD PARTS** | all 4 Parts, to their last saved state | the stock RELOAD PART path, run ×4 (`FUN_4004aab4`) |
+| **RLD WHOLE** | both | |
+
+Guards are the stock ones: a never-saved bank shows *"THIS BANK HAS NEVER BEEN
+SAVED! NOTHING TO RELOAD!"*; a never-saved Part shows *"SAVE PART FIRST!"*. No
+confirmation prompt (the two-key combo is the intent).
+
+`tools/patch_reload.s` — four hooks (the `[NO]` and `[YES]` key handlers, a
+per-frame tick for the picker auto-close, and the storage task's bank-reload
+case). `python3 tools/build_reload.py` → `140C_KYOTI`. Write-up:
+[`NOTES.md`](NOTES.md) "Session 42"; emulator `tools/emu_reload.py` — `--combo`
+(the whole picker, single-stepped) and `--patched` (the SEQ worker end to end in
+the full-firmware emulator) both pass; the one-pattern parse against a real CF
+card and the picker rendering are a **hardware** test. **Never flashed.**
+
 ### Backlog — scoped, not built
 
 - **Auto-remove an emptied trigless lock.** When a LIVE-REC `[NO]`+knob erase
@@ -147,11 +176,13 @@ Write-up: [`NOTES.md`](NOTES.md) "Session 17" (+ "Session 36"); DSP source
 | **DIRECT JUMP** pattern-change mode | `build_directjump*.py` | **emulator only** (stub-level), never flashed |
 | side-chain `KEY` menu + formatter | `build_sidechain.py` / `build_sidechain3.py` | **emulator only**, never flashed |
 | side-chain DSP hooks | `build_sidechain2.py` / `build_sidechain3.py` | hooks **emulator-verified** (dsp56kEmu); audio path untested, never flashed |
+| **RELOAD FROM PROJECT** — picker + SEQ / PARTS / WHOLE | `build_reload.py` | picker + the SEQ worker **emulator-verified end to end** (`emu_reload.py`); the parse vs a real card is a hardware test, never flashed |
 
 `OT` mode is byte-for-byte stock, and every mod is `OFF` by default. The soft
-paths and DIRECT JUMP are validated in a ColdFire emulator (Unicorn, real image
-bytes) — control-flow + frame-word edits, not the audio engine; the side-chain
-DSP runs in dsp56kEmu. Nothing here proves how anything *sounds* on the unit.
+paths, DIRECT JUMP and RELOAD FROM PROJECT are validated in a ColdFire emulator
+(Unicorn, real image bytes — RELOAD in a full-firmware emulator with a mounted
+card), control-flow + frame-word edits, not the audio engine; the side-chain DSP
+runs in dsp56kEmu. Nothing here proves how anything *sounds* on the unit.
 Flash at your own risk; keep the official `.syx` on hand
 ([`FLASHING.md`](FLASHING.md)).
 
@@ -221,7 +252,7 @@ Elektron ships a ZIP with **two transports of the same OS** — a `.bin` and a
 ```
 START_HERE.md        onboarding + current frontier (read first)
 README.md            this — what the firmware is, and lineage
-BUILD_KYOTI.md       roll-your-own build guide (Bug 1 fix, MUTE MODE, side-chain)
+BUILD_KYOTI.md       roll-your-own build guide (Bug 1 fix, MUTE MODE, DIRECT JUMP, side-chain, RELOAD)
 CREDITS.md           lineage and acknowledgements
 ARCHITECTURE.md      consolidated architecture (hardware, OS, memory map, container)
 COVERAGE.md          what firmware subsystems are mapped vs untouched
