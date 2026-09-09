@@ -240,6 +240,45 @@ passes audio through.
 > Power-cycle after the flash before judging audio — an OS upgrade doesn't clear
 > the DSP state RAM (see §6 (a-bis)).
 
+### 4.7  RELOAD FROM PROJECT — SEQ DATA  (`build_reload.py` — emulator combo only, never flashed)
+
+`[PTN]` + `[NO]` (while the sequencer is **playing**) reloads the **active
+pattern's sequence data** (trigs, p-locks, length, scale, trig conditions,
+microtiming, the pattern→part link) from the CF card's last **SAVE BANK**
+snapshot — without stopping playback. The async file work rides the storage
+task; the active pattern re-homes through the sequencer's own no-stop reload
+path. Nothing but that one pattern's data changes — no other pattern, no Part,
+no other bank.
+
+Setup: a project on the card with **at least one SAVE BANK** done. Pick a bank,
+**SAVE BANK** it, then note pattern N's trigs.
+
+1. Play pattern N. Edit its trigs / turn some p-locks — make it obviously
+   different. Do **not** SAVE BANK again.
+2. Hold **[PTN]**, tap **[NO]** → a brief **"RELOAD SEQ"** toast. Within ~1 s
+   the pattern's sequence reverts to the saved state **with no audible gap** in
+   playback. The SELECT PATTERN chooser must **not** pop on the [PTN] release.
+3. Your **Parts / sounds** are untouched (only the sequence reverted).
+4. Switch to a **different pattern** in the same bank that you *also* edited —
+   its edits must still be there (only the pattern you triggered the reload on
+   reverts).
+5. On a bank you have **never** SAVE BANK'd (or a freshly created project),
+   `[PTN]`+`[NO]` shows the stock **"THIS BANK HAS NEVER BEEN SAVED! NOTHING TO
+   RELOAD!"** dialog and changes nothing.
+6. With the sequencer **stopped**, `[PTN]`+`[NO]` does nothing (stock `[NO]`).
+7. Higher pattern numbers take slightly longer to land (the worker parses past
+   the earlier patterns) — up to ~1 s for pattern 16. Still no audio gap.
+
+> **If it misbehaves:** the risk is a storage-task hang (a save/load or the
+> reload appears to freeze). Power-cycle — it recovers. To fully revert, reflash
+> stock 1.40C (§5). The feature writes only pattern N's live slab; it never
+> touches disk.
+> The `FUN_4008cebc` one-pattern parse and the storage-case rejoin are
+> **hardware-first** — `emu_reload.py` verified the combo (`--combo`) and the
+> revert mechanism (`--slice`), but not the full worker. Details + the remaining
+> checks: `NOTES.md` "Session 42".
+> ALL PARTS (`FUN_4004aab4` ×4) and WHOLE PATTERN are phase 2, not in this build.
+
 ---
 
 ## 5. Reverting to the official firmware
