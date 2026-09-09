@@ -5744,3 +5744,70 @@ schedule-dismiss the toast; else fall through to stock.** No `FUN_400a10c8`
 pre-step and no `FUN_400238a4` re-sync are ever invoked → no audio stop.
 `tools/patch_reload.s` + `build_reload.py` next session; then `emu_reload.py
 --patched` (post the real combo, let the real worker run).
+
+### Session 42 continued (same day) — build attempt 1, scratch-bank design REJECTED, redesigned
+
+**`patch_reload.s` v1 (scratch bank) — built, but the design is wrong.** The
+worker deserialised `bankNN.strd` into bank `S=(curbank+8)&15`'s resident blob
+(`FUN_4008ded0` into a whole-bank region), sliced pattern P out, then "restored"
+bank S from `bankS.work`. **User rejected it (correctly): plenty of people keep
+real work on bank S; a feature that reverts one pattern must never risk another
+bank's data.** Also caught: a fabricated "~0.01% torn-read odds" — retracted, the
+window is real and needs a real answer, not a hand-wave. `emu_reload.py --slice`
+proved the *mechanism* (slab-copy + `0x46c8028a` → seamless revert, bystander
+patterns safe); `--strd` proved the async job path runs; `--patched` v1/v2 hit a
+combo bug: **`tst.b 0x800065b8` read the always-0 MSB of the big-endian LONGWORD
+transport state** (every firmware access is `.l`) → the "only while playing" gate
+always bailed. Fixed → `tst.l`. Also dropped a cargo-culted `NO_DISABLE` gate.
+
+**The simpler decomposition (user's push):**
+
+- **ALL PARTS** = **`FUN_4004aab4(0); (1); (2); (3);`** — the exact stock
+  "RELOAD PART" (behind `"PART %d RELOADED"` / `"SAVE PART FIRST!"`), disassembled
+  this session: copies the saved part slot → live, **in both the blob
+  (`+0x9504a` → `+0x8ed80`, `0x18b2` B) and the working copy `0x100a4ece`**, sets
+  every dirty flag (`+0x95048` bit, `0x100b145e`, `+0x9b332`, `0x100f8598`), and
+  re-applies to the engine if it's the current part (`FUN_40009848` +
+  `FUN_400972fc` ×8). Returns 0 for a never-saved part. Stock "SAVE ALL PARTS"
+  (`0x4002dcd0`) already loops it 0..3. **Pure RAM, no file I/O, no scratch, runs
+  in the key handler.** The per-part "saved" flags at `blob + 0x9b312[part]` are
+  set by both `FUN_4004a908` (SAVE PART) and `FUN_4008ded0` (deserialiser, from
+  the file) → works on a freshly-loaded project.
+
+- **SEQ DATA** = still a card read (patterns have **no** in-RAM saved copy — only
+  parts have the 4+4 slot layout), but targeted. `FUN_4008ded0` is built from a
+  **per-pattern chunk parser `FUN_4008cebc(fh, destSlab, verWord)`** (called 16×,
+  `dest = bankbase + i*0x8ed8`) + a per-part parser (`FUN_4008be2c`, 4×+4× at
+  `+0x8ed80` / `+0x9504a`). Bank-file header (hexdump): `FORM····DPS1BANK` +
+  `0x10` 4 B + **`0x14` 2-byte version word** (`FUN_4008cebc` arg3 — VARIES:
+  DEMO 0x16, PRJ_01/CASCADE 0x15) + `0x16` `PTRN`. `FUN_4008cebc` reads its
+  chunk's `PTRN`/`TRAC` tags itself and does **not** self-validate the rolling
+  checksum `0x460fab5c` (only `FUN_4008ded0`'s whole-file tail does). Disk PTRN
+  stride measured `0x8EE8` (≠ OctaLib's `0x8EEC`) → **don't seek by offset;
+  parse sequentially** and discard patterns 0..P-1. Scratch = `0x460a8f60`
+  (loader's 64 KB buffer, idle while our worker holds the task): 28 KB open
+  buffer + 36 KB pattern scratch. **No other bank, no `.work` touched.**
+
+- **WHOLE PATTERN** = ALL PARTS + SEQ DATA.
+
+**Guards (RE'd):** `.strd` files are **not created until the first SAVE BANK**
+(fresh projects have none). Stock RELOAD BANK opens `bankNN.strd`, gets ENOENT
+(`-12`), and shows `"THIS BANK HAS NEVER BEEN SAVED! NOTHING TO RELOAD!"`
+(`0x400b988c` via `FUN_40023bf4`). **Our SEQ worker gets this for free:** on
+open-fail, exit the 0x14 case with `d0 = -12` → the done-dance (`FUN_40023bf4`)
+shows that stock dialog. No new strings, no dialog code. ALL PARTS: count
+`FUN_4004aab4` successes → "N PARTS RELOADED" / reuse `"SAVE PART FIRST!"`.
+**No confirm prompt** — matches stock PART RELOAD; the two-key combo is the
+intent (user's call, agreed).
+
+**`patch_reload.s` v2 (SEQ DATA, the `FUN_4008cebc` discard-loop) — BUILT.**
+784-word cave, `OCTATRACK_OS1.40C_RELOAD.{syx,bin}` 571 B vs stock, Bug-1 fix
+byte-identical. Combo hook: `[PTN]`+`[NO]`, `tst.l RUNNING`, toast via
+`FUN_4005a2b8`. Worker: open (28 KB buf) → 22-B header read → verWord =
+`hdr[0x14..0x15]` → `FUN_4008cebc` ×(P+1) into `SCRATCH` (`0x460aff60`) →
+`FUN_40020898` SCRATCH→live slab → `0x46c8028a` if P active → rejoin
+`0x400858a8` (`d0=-12` on ENOENT → stock "never saved"). `0x460fab5c`
+saved/restored via a cave word. `emu_reload.py --patched` rewritten (P=0 so the
+discard loop is empty; calls `rl_combo` directly; checks arm + post + worker
+reverts P to `.strd` + bystander Q survives + `0x46c8028a` + no fault) — running.
+Old `emu_reload.py --strd` (whole-bank stock path) kept as a sanity check.

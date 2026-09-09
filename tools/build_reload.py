@@ -10,28 +10,41 @@ DATA from the CF card (bankNN.strd) without stopping the sequencer.
                          to build_trigscale_only.py / build_directjump.py.
   2. patch_reload     -- two detours:
                            rl_combo @0x4005e25c  the NO handler.  [PTN]+[NO] press
+                                                 (playing, no arranger, no popup)
                                                  -> arm {G_KIND=1, G_PAT=active},
                                                  post the type-0x14 storage job
-                                                 (FUN_40022778(1<<curbank)), flash
-                                                 "RELOAD SEQ", swallow NO.  Any
-                                                 other NO press replays the
-                                                 displaced prologue.
+                                                 (FUN_40022778(1<<curbank)), toast
+                                                 "RELOAD SEQ" (FUN_4005a2b8),
+                                                 swallow NO.  Any other NO press
+                                                 replays the displaced prologue.
                            rl_job  @0x40085864  the storage task's type-0x14 case.
-                                                 When G_KIND: load bankNN.strd into
-                                                 a scratch bank region, memcpy the
-                                                 one pattern slab into the live
-                                                 blob, restore the scratch bank,
-                                                 set 0x46c8028a (seamless reload),
-                                                 rejoin the case's clean exit.
-                                                 Inert when G_KIND == 0.
+                                                 When G_KIND: open bankNN.strd
+                                                 (28 KB of the loader's own 64 KB
+                                                 buffer), read the header, parse
+                                                 patterns 0..P sequentially with
+                                                 the firmware's own per-pattern
+                                                 parser FUN_4008cebc (0..P-1
+                                                 discarded to a 36 KB scratch,
+                                                 pattern P kept), memcpy P -> the
+                                                 live slab, set 0x46c8028a, rejoin
+                                                 the case's exit.  Open ENOENT ->
+                                                 exit with d0 = -12 so the stock
+                                                 "THIS BANK HAS NEVER BEEN SAVED!"
+                                                 dialog shows for free.  Inert
+                                                 when G_KIND == 0; a re-entrant
+                                                 real RELOAD BANK is unaffected
+                                                 (worker latches + clears G_KIND).
 
-  No PERSONALIZE entry (no menu-array surgery), no persistent state (a one-shot
-  action), so no 'ANDY' shadow / pea 0x64->0x70.
+  No scratch BANK is used (an earlier design borrowed one -- rejected: it put a
+  bystander bank's data at risk).  Nothing but pattern P's live slab is written.
+  No PERSONALIZE entry, no persistent state -> no 'ANDY' shadow / pea 0x64->0x70.
 
-  UNFLASHED / UNVERIFIED: hooks are static + isolation-checked only.  The worker
-  runs on FUN_4008445c and calls the same file primitives the stock type-6 case
-  (FUN_400905d4) uses.  Needs `tools/emu_reload.py --patched` then a hardware pass.
-  MVP: SEQ DATA only, active pattern only, transport running only.
+  UNFLASHED / UNVERIFIED: hooks are static + isolation-checked.  The worker runs
+  on FUN_4008445c and calls the same file primitives (FUN_40016864 / FUN_40016564
+  / FUN_4008cebc / FUN_4001677c) the stock deserialiser uses on that task.  Needs
+  `tools/emu_reload.py --patched` then a hardware pass.
+  MVP: SEQ DATA only, active pattern only, transport running.  ALL PARTS (=
+  FUN_4004aab4(0..3), pure RAM) + WHOLE PATTERN + the 3-way picker are phase 2.
 
 Usage:   python3 tools/build_reload.py [VERSTR]      (default VERSTR = "140C_KYOTI")
 Outputs: out/mainos_reload.bin, out/elek_reload.bin,

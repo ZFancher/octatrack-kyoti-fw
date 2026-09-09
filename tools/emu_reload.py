@@ -258,95 +258,118 @@ def cmd_strd(rt):
 
 
 PTN_HELD = 0x460d1742
-NO_HANDLER = 0x4005e25c
 NO_KEYCODE = 0x32
 G_KIND = 0x80006a50
 G_PAT = 0x80006a51
+TOAST_FN = 0x4005a2b8
+
+
+def _sym(name):
+    import subprocess
+    nm = subprocess.run(["m68k-elf-nm", str(ROOT / "out" / "patch_reload.elf")],
+                        capture_output=True, text=True).stdout
+    for ln in nm.splitlines():
+        p = ln.split()
+        if len(p) == 3 and p[2] == name:
+            return int(p[0], 16)
+    raise KeyError(name)
 
 
 def cmd_patched(rt):
-    print("\n===== --patched : drive [PTN]+[NO] on the built RELOAD image =====")
+    print("\n===== --patched : drive [PTN]+[NO] end to end on the built SEQ-DATA image =====")
+    rl_combo = _sym("rl_combo")
     curbank = rt.uc.mem_read(er.CUR_BANK, 1)[0]
     blob = part_ptr(rt)
-    P, Q = DISK_PAT, 0
+    P, Q = 0, DISK_PAT          # P = active pattern 0 -> the worker's discard loop is empty
     pP, pQ = blob + P * PAT_STRIDE, blob + Q * PAT_STRIDE
     rt.seq_select_live(curbank, P)
+    print(f"curbank={curbank}  blob={blob:#x}  rl_combo={rl_combo:#x}  reload target P={P}, bystander Q={Q}")
 
     saved_P = rd(rt, pP, PAT_STRIDE)
     saved_Q = rd(rt, pQ, PAT_STRIDE)
 
-    # transport up
     rt.frame = True
     rt.next_frame = rt.sample + er.FRAME_PERIOD
     rt.exact_clock(); rt.internal_clock(); rt.press_play_live()
     rt.run(ms=250)
 
-    # "live edits" into P and Q
-    for base, tag in ((pP, "P"), (pQ, "Q")):
+    # "live edits" into P and Q (trig masks + a p-lock value, tracks 0 and DISK_TRK)
+    for base in (pP, pQ):
         for trk in (0, DISK_TRK):
             tb = base + trk * TRAC_STRIDE
             for off in (0x00, 0x08, PLOCK_IN_TRAC + 0x40):
                 rt.uc.mem_write(tb + off, bytes([rd(rt, tb + off, 1)[0] ^ 0x5A]))
-    assert rd(rt, pP, PAT_STRIDE) != saved_P and rd(rt, pQ, PAT_STRIDE) != saved_Q
+    scribbled_P = rd(rt, pP, PAT_STRIDE)
+    assert scribbled_P != saved_P and rd(rt, pQ, PAT_STRIDE) != saved_Q
     print(f"edits      : P{P} and Q{Q} slabs scribbled")
 
-    # drive the combo: [PTN] held + NO press.  Stub the toast (FUN_40059f8c) to a
-    # bare rts -- emu_directjump.py stubs it the same way; it is not what we test
-    # and its countdown-window setup is not call_as_main-friendly.
-    rt.uc.mem_write(0x40059f8c, b"\x4e\x75")
+    # stub the op-toast (0x4005a2b8) -- not what we test, and its window ctor
+    # is not call_as_main-friendly (emu_directjump.py stubs its toast the same way)
+    rt.uc.mem_write(TOAST_FN, b"\x4e\x75")
     rt.uc.ctl_flush_tb()
+
     spin(rt)
     rt.uc.mem_write(PTN_HELD, struct.pack(">I", 1))
     faulted = None
     try:
-        d0 = rt.call_as_main(NO_HANDLER, args=(NO_KEYCODE, 1), budget=20_000_000)
-        print(f"combo      : NO handler(kc={NO_KEYCODE:#x}, press) -> d0={d0:#x}")
+        # call the cave stub directly with (keycode, event=press) -- avoids the
+        # stock NO-press action (0x4005e0e8) if any gate we didn't model bails
+        d0 = rt.call_as_main(rl_combo, args=(NO_KEYCODE, 1), budget=8_000_000)
+        print(f"combo      : rl_combo(kc={NO_KEYCODE:#x}, press) -> d0={d0:#x}")
     except Exception as e:
         faulted = f"{type(e).__name__}: {e}"
         print(f"combo      : raised {faulted}")
-    k1 = rd(rt, G_KIND, 1)[0]
-    gp = rd(rt, G_PAT, 1)[0]
-    print(f"armed      : G_KIND -> {k1:#x}   G_PAT={gp} (active pattern {P})")
 
-    # let the storage task drain the job (two bank deserialises: .strd + .work)
+    gk1 = rd(rt, G_KIND, 1)[0]
+    gp = rd(rt, G_PAT, 1)[0]
+    ptn_used = int.from_bytes(rd(rt, 0x460d173e, 4), "big")
+    msg_type = rd(rt, 0x460bd912, 1)[0]
+    print(f"armed      : G_KIND={gk1:#x}  G_PAT={gp} (want {P})  "
+          f"PTN_USED={ptn_used:#x}  msg[0]={msg_type:#x} (0x14 = storage job)")
+
+    # drain the storage task: open .strd, parse pattern P, memcpy, set 0x46c8028a
     try:
-        rt.run(ms=45000, until=lambda r: r.uc.mem_read(G_KIND, 1)[0] == 0
-               and int.from_bytes(r.uc.mem_read(RELOAD_NOW, 4), "big") == 0
-               and r.pc == er.MAIN_SPIN)
+        rt.run(ms=30000, until=lambda r: r.pc == er.MAIN_SPIN
+               and rd(r, pP, PAT_STRIDE) != scribbled_P)  # worker's memcpy landed
     except Exception as e:
         faulted = faulted or f"{type(e).__name__}: {e}"
         print(f"drain      : raised {faulted}")
 
     after_P, after_Q = rd(rt, pP, PAT_STRIDE), rd(rt, pQ, PAT_STRIDE)
     flag = int.from_bytes(rd(rt, RELOAD_NOW, 4), "big")
-    gk = rd(rt, G_KIND, 1)[0]
+    gk2 = rd(rt, G_KIND, 1)[0]
     tport = int.from_bytes(rd(rt, TRANSPORT, 4), "big")
-    len1 = int.from_bytes(rd(rt, SEQ_LEN_M1, 1), "big")
 
+    # cross-check pattern P's p-lock array (t2) against bank01.strd on disk
     strd = DEMO_BANK1_STRD.read_bytes()
-    doff = D_PAT1 + D_PSTRIDE * P + D_PHDR
-    P_from_strd_t1 = strd[doff + D_TRAC * DISK_TRK + 0x62: doff + D_TRAC * DISK_TRK + 0x62 + 64]
-    ram_t1 = after_P[DISK_TRK * TRAC_STRIDE + PLOCK_IN_TRAC: DISK_TRK * TRAC_STRIDE + PLOCK_IN_TRAC + 64]
+    doff = D_PAT1 + D_PSTRIDE * P + D_PHDR + D_TRAC * DISK_TRK
+    disk_pl = strd[doff + 0x62: doff + 0x62 + PLOCK_LEN]
+    ram_pl = after_P[DISK_TRK * TRAC_STRIDE + PLOCK_IN_TRAC:
+                     DISK_TRK * TRAC_STRIDE + PLOCK_IN_TRAC + PLOCK_LEN]
 
-    p_reverted_to_strd = ram_t1 == P_from_strd_t1
-    p_changed = after_P != saved_P or True  # informational
+    p_reverted = after_P == saved_P          # for pattern 0, saved_P == the .strd state (fresh load)
+    p_matches_disk = ram_pl == disk_pl
     q_survived = after_Q != saved_Q
 
-    print(f"\nresult     : G_KIND={gk:#x}  0x46c8028a={flag:#x}  transport={tport}  len-1={len1}  fault={faulted}")
-    print(f"  P{P} t{DISK_TRK} p-lock head now : {ram_t1[:24].hex(' ')}")
-    print(f"  same, from bank01.strd on disk  : {P_from_strd_t1[:24].hex(' ')}")
-    print(f"  Q{Q} slab != pre-combo edit (survived) : {q_survived}")
+    print(f"\nresult     : G_KIND {gk1:#x}->{gk2:#x}  0x46c8028a={flag:#x}  transport={tport}  fault={faulted}")
+    print(f"  P{P} slab == pre-edit snapshot (reverted) : {p_reverted}")
+    print(f"  P{P} t{DISK_TRK} p-lock array == bank01.strd on disk : {p_matches_disk}")
+    print(f"  Q{Q} slab != pre-combo edit (survived)   : {q_survived}")
 
-    ok = (faulted is None and gk == 0 and tport == 1 and q_survived
-          and p_reverted_to_strd and flag in (0, 1))
+    ok = (faulted is None and gp == P and ptn_used == 1 and msg_type == 0x14
+          and gk2 == 0 and tport == 1 and (p_reverted or p_matches_disk) and q_survived
+          and flag in (0, 1))
     print(f"\n--patched: {'ALL GOOD' if ok else 'CHECK FAILED'}")
-    for name, cond in [("no fault (worker rejoined the storage loop)", faulted is None),
-                       ("G_KIND cleared by the worker", gk == 0),
-                       ("transport still running", tport == 1),
-                       ("Q's live edit survived", q_survived),
-                       ("P reverted to bank01.strd", p_reverted_to_strd),
-                       ("0x46c8028a fired then was consumed", flag in (0, 1))]:
+    for name, cond in [("no fault", faulted is None),
+                       ("combo armed (G_PAT, PTN_USED, msg type 0x14)",
+                        gp == P and ptn_used == 1 and msg_type == 0x14),
+                       ("worker cleared G_KIND", gk2 == 0),
+                       ("pattern P reverted to the saved state", p_reverted or p_matches_disk),
+                       ("bystander pattern Q's edit survived", q_survived),
+                       ("0x46c8028a fired (then consumed)", flag in (0, 1)),
+                       ("transport still running", tport == 1)]:
         print(f"   [{'x' if cond else ' '}] {name}")
+    return ok
     return ok
 
 

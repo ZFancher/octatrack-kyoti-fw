@@ -1,12 +1,12 @@
 | SPDX-License-Identifier: MIT
 | SPDX-FileCopyrightText: 2026 Zac-Kyoti
 |
-| patch_reload -- "RELOAD FROM PROJECT" (NOTES.md "Session 42"), MVP.
+| patch_reload -- "RELOAD FROM PROJECT" (NOTES.md "Session 42"), MVP = SEQ DATA.
 |
-|   [PTN] + [NO]   reloads the ACTIVE pattern's SEQUENCE DATA (trigs, p-locks,
-|                  length, scale, trig conditions, microtiming, the pattern->part
-|                  link) from the CF card's last SAVE BANK snapshot (bankNN.strd)
-|                  -- WITHOUT stopping the sequencer.  Flashes "RELOAD SEQ".
+|   [PTN] + [NO]  (while playing)  reloads the ACTIVE pattern's SEQUENCE DATA
+|                 (trigs, p-locks, length, scale, trig conditions, microtiming,
+|                 the pattern->part link) from the CF card's last SAVE BANK
+|                 snapshot (bankNN.strd) -- WITHOUT stopping the sequencer.
 |
 | Stock 1.40C only reloads from the card at whole-BANK granularity, and doing so
 | cuts audio (the confirm pre-step FUN_400a10c8 + the end re-sync FUN_400238a4).
@@ -14,29 +14,39 @@
 | and the active pattern re-homes through FUN_400a1eea's own no-stop reload block
 | (the 0x46c8028a "reload now" flag).
 |
-| MVP scope: SEQ DATA only, active pattern only, transport running only.  The
-| 3-way picker (WHOLE PATTERN / ALL PARTS / SEQ DATA) + stopped transport + a
-| non-active target pattern are phase 2.
+| MVP scope: SEQ DATA only, active pattern only, transport running.  ALL PARTS
+| (= FUN_4004aab4(0..3), pure RAM), WHOLE PATTERN, the 3-way picker, and stopped
+| transport are phase 2.
 |
 | ---- the combo ----
 | PTN handler FUN_5a044 press sets 0x460d1742 = 1 ("PTN held"); nothing else
 | reads it -> [PTN]+X is a free chord (DIRECT JUMP's [PTN]+[YES] is the sibling).
-| We hook the NO handler 0x4005e25c (keycode 0x32).  On a NO PRESS with [PTN]
-| held (no arranger / no modal popup / YES-NO not disabled / transport running)
-| we arm + post the job and swallow the key; else the displaced prologue is
-| replayed and the stock handler resumes.
+| Hook the NO handler 0x4005e25c (keycode 0x32).  NO PRESS + [PTN] held + no
+| arranger + no modal popup + transport running -> arm + post the storage job +
+| swallow.  Otherwise replay the displaced prologue and let stock NO resume.
 |
 | ---- the worker (runs on the storage task FUN_4008445c -- may block on I/O) ----
-| Hook the type-0x14 case entry 0x40085864.  When G_KIND != 0:
-|   1..4  load <proj>/bankNN.strd (NN = curbank+1) into a SCRATCH bank region
-|         scratch = 0x400e21e0 + ((curbank+8)&15) * 0x9b340   (a non-current bank)
-|   5     memcpy one pattern slab:  scratch + P*0x8ed8 -> live blob + P*0x8ed8
-|         (0x8ed8 B).  Other patterns' unsaved edits live in their own slabs -> safe.
-|   6     restore the scratch bank: re-load <proj>/bank(S+1).work into it.
-|   7     if P == active pattern (0x800065be):  move.l #1, 0x46c8028a
-|         -> FUN_400a1eea adopts the patched slab on the next step tick, no stop.
-|   8     rejoin the 0x14 case's clean exit (0x400858a8) so the overlay dismisses
-|         and the storage task returns to its dequeue loop.
+| Hook the type-0x14 storage case entry 0x40085864.  When G_KIND != 0:
+|   1  FUN_40016864 open "<proj>/bankNN.strd" "r"  (28 KB of the loader's own
+|      64 KB buffer 0x460a8f60; the storage task holds the CPU so borrowing it
+|      is safe).  d0 < 0  ->  d0 = -12  ->  rejoin the case's exit with that
+|      result, so the done-dance (FUN_40023bf4) shows the STOCK "THIS BANK HAS
+|      NEVER BEEN SAVED! NOTHING TO RELOAD!" dialog for free.
+|   2  read the 22-byte bank-file header; version word = header[0x14..0x15].
+|   3  parse patterns 0..P sequentially with the firmware's OWN per-pattern
+|      chunk parser FUN_4008cebc(fh, scratch, verWord) -- 0..P-1 discarded into
+|      scratch (0x460a8f60 + 0x7000, 0x8ed8 B), pattern P kept there.  No stride
+|      math, no seek: the sequential parse keeps the rolling checksum consistent
+|      (FUN_4008cebc does not self-validate it -- only FUN_4008ded0's whole-file
+|      tail does, which we never run).  0x460fab5c saved/restored around it.
+|   4  FUN_4001677c close.
+|   5  FUN_40020898  copy scratch -> the live slab
+|      (0x400e21e0 + curbank*0x9b340 + P*0x8ed8, 0x8ed8 B).  One memcpy; the
+|      inconsistent window is < 1 step and 0x46c8028a re-homes the pattern on
+|      the next tick anyway.  Nothing else's data is touched.
+|   6  if P == active pattern (0x800065be):  move.l #1, 0x46c8028a
+|   7  rejoin the 0x14 case's clean exit (0x400858a8) -> overlay dismisses,
+|      storage task returns to its dequeue loop.
 | FUN_400a10c8 (pre-step) and FUN_400238a4 (re-sync) are NEVER reached -> no cut.
 
     .equ G_KIND,    0x80006a50          | 0 = idle, 1 = SEQ-DATA reload requested (byte)
@@ -45,14 +55,13 @@
 |   ---- stock symbols ----
     .equ PTN_HELD,  0x460d1742
     .equ PTN_USED,  0x460d173e
-    .equ NO_DISABLE,0x800000b8
     .equ POPUP,     0x460e5cd0
     .equ ARR_ACT,   0x460d1aec
-    .equ RUNNING,   0x800065b8
-    .equ ACT_PAT,   0x800065be
-    .equ CUR_BANK,  0x80000002
-    .equ RELOAD_NOW,0x46c8028a
-    .equ SHOW_MSG,  0x40059f8c          | FUN_40059f8c(text, ticks, enable, on_timeout)
+    .equ RUNNING,   0x800065b8          | transport state -- LONGWORD (=1 playing)
+    .equ ACT_PAT,   0x800065be          | sequencer's active pattern (byte)
+    .equ CUR_BANK,  0x80000002          | current bank (byte)
+    .equ RELOAD_NOW,0x46c8028a          | step engine polls this at 0x400a2530
+    .equ TOAST,     0x4005a2b8          | FUN_4005a2b8(dur, text) -- the "PART %d RELOADED" toast
     .equ NO_REL,    0x4005e276          | NO handler: release-cleanup entry
     .equ NO_PRESS,  0x4005e262          | NO handler: press path after the displaced 2 insns
     .equ JOB_POST,  0x40022778          | FUN_40022778(mask) -> post the type-0x14 storage job
@@ -62,13 +71,15 @@
     .equ PROJDIR,   0x40025230          | (0,0) -> char* "<set>/<project>"
     .equ SPRINTF,   0x40013a08
     .equ FOPEN,     0x40016864          | (fh, path, mode, buf, size) buffered open, d0<0 = fail
+    .equ FREAD,     0x40016564          | (fh, buf, count) buffered read, d0<=0 = eof/err
     .equ FCLOSE,    0x4001677c          | (fh)
-    .equ DESER,     0x4008ded0          | (fh, destRegion, 0) deserialise a bank file, d0<0 = fail
+    .equ PARSEPAT,  0x4008cebc          | (fh, destSlab, verWord) parse one PTRN chunk, d0<0 = fail
     .equ FWMEMCPY,  0x40020898          | (dst, src, len)
     .equ FMT_STRD,  0x400b86d8          | "%s/bank%02d.strd"
-    .equ FMT_WORK,  0x400b86c7          | "%s/bank%02d.work"
     .equ MODE_R,    0x400b3289          | "r"
-    .equ OPEN_BUF,  0x460a8f60          | the 64 KB buffer the stock loader uses
+    .equ OPEN_BUF,  0x460a8f60          | the loader's 64 KB buffer (idle while we hold the task)
+    .equ SCRATCH,   0x460aff60          | = OPEN_BUF + 0x7000 ; 0x8ed8 B pattern scratch (fits in 64 KB)
+    .equ CKSUM,     0x460fab5c          | the deserialiser's rolling checksum (word)
     .equ BLOB,      0x400e21e0
     .equ BANKSTRIDE,0x9b340
     .equ PATSTRIDE, 0x8ed8
@@ -76,7 +87,7 @@
     .text
 
 | ================= combo: [PTN] + [NO]  (hook @ 0x4005e25c) =================
-| Detour replaces the first 6 bytes of the NO handler:
+| Detour replaces 6 bytes:
 |     0x4005e25c  202f 0008   move.l 8(%sp),%d0     ; event (1 press / 0 release / 2 hold)
 |     0x4005e260  6714        beq.s  0x4005e276      ; release -> cleanup
 | with `jmp rl_combo`.  Stack on entry: 0(sp)=ret, 4(sp)=keycode, 8(sp)=event.
@@ -91,14 +102,12 @@ rlc_notrel:
     cmp.l   %d0,%d1
     bne.w   rlc_stock                  | hold (2) or other -> stock press path
     tst.l   PTN_HELD
-    beq.w   rlc_stock
-    tst.l   NO_DISABLE
-    bne.w   rlc_stock
+    beq.w   rlc_stock                  | [PTN] not held -> stock
     tst.l   POPUP
-    bne.w   rlc_stock
+    bne.w   rlc_stock                  | a modal dialog is up -> stock
     tst.l   ARR_ACT
-    bne.w   rlc_stock
-    tst.l   RUNNING                    | longword (=1 when playing) -- tst.b reads the 0 MSB (big-endian)
+    bne.w   rlc_stock                  | arranger -> stock
+    tst.l   RUNNING
     beq.w   rlc_stock                  | MVP: only while playing
     tst.b   G_KIND
     bne.b   rlc_swallow                | a reload already queued -> just swallow
@@ -116,12 +125,10 @@ rlc_notrel:
     jsr     JOB_POST                   | FUN_40022778(mask)
     addq.l  #4,%sp
 
-    clr.l   -(%sp)                     | on_timeout = 0
-    pea     1                          | enable = 1
-    pea     0x2c                       | ticks (~0.7 s)
+    pea     0x44                       | duration -- same as stock "PART %d RELOADED"
     pea     rl_msg
-    jsr     SHOW_MSG
-    lea     16(%sp),%sp
+    jsr     TOAST                      | FUN_4005a2b8(dur, text) -- non-blocking op-toast
+    addq.l  #8,%sp
 
 rlc_swallow:
     moveq   #1,%d0
@@ -129,7 +136,7 @@ rlc_swallow:
     rts                                | swallow the NO key
 
 rlc_stock:
-    jmp     NO_PRESS                   | resume at 0x4005e262 (d0 still = event, unused there)
+    jmp     NO_PRESS                   | resume at 0x4005e262 (d0 = event, unused there)
 
 rl_msg:
     .asciz "RELOAD SEQ"
@@ -154,135 +161,143 @@ rlj_ours:
     movem.l %d2-%d7/%a2-%a5,(%sp)
 
     moveq   #0,%d5
-    move.b  G_PAT,%d5                  | d5 = target pattern (latched)
-    clr.b   G_KIND                     | consume the request now -- a re-entrant 0x14 job
-                                       | (e.g. a real RELOAD BANK) must NOT see it set
+    move.b  G_PAT,%d5                  | d5 = target pattern P (latched)
+    clr.b   G_KIND                     | consume now -- a re-entrant 0x14 (real RELOAD BANK)
+                                       | must NOT see it set
+    move.w  CKSUM,%d0                  | stash the deserialiser's rolling checksum in the cave
+    move.w  %d0,rl_cksum               | (memory-authoritative -- survives every firmware call)
 
-    moveq   #0,%d7
-    move.b  CUR_BANK,%d7               | d7 = curbank
-    move.l  %d7,%d6
-    addq.l  #8,%d6
-    andi.l  #15,%d6                    | d6 = S = (curbank+8)&15
-
-    move.l  #BANKSTRIDE,%d0
-    move.l  %d6,%d1
-    muls.l  %d0,%d1
-    move.l  #BLOB,%a5
-    add.l   %d1,%a5                    | a5 = scratch region
-    move.l  %d7,%d1
-    muls.l  %d0,%d1
-    move.l  #BLOB,%a4
-    add.l   %d1,%a4                    | a4 = live blob base (current bank)
-
-|   --- 1..4: bank(curbank+1).strd -> scratch ---
-    move.l  %d7,%d0
-    addq.l  #1,%d0
-    move.l  #FMT_STRD,%d1
-    move.l  %a5,%a0
-    jsr     rl_loadbank
+|   --- 1: open <proj>/bank(curbank+1).strd ---
+    jsr     rl_openstrd                | -> d0 = open result (fh in rl_fh, path built)
     tst.l   %d0
-    bmi.b   rlj_fail
+    bpl.b   rlj_opened
+    moveq   #-12,%d0                   | ENOENT -> the done-dance shows the stock
+    bra.w   rlj_exit                   | "THIS BANK HAS NEVER BEEN SAVED!" dialog
 
-|   --- 5: memcpy the slab  scratch + P*stride -> live + P*stride ---
+rlj_opened:
+|   --- 2: 22-byte header -> version word in d6 ---
+    move.l  #22,-(%sp)
+    pea     rl_hdrbuf
+    pea     rl_fh
+    jsr     FREAD
+    lea     12(%sp),%sp
+    tst.l   %d0
+    ble.w   rlj_readfail
+    moveq   #0,%d6
+    move.b  rl_hdrbuf+0x14,%d6
+    lsl.l   #8,%d6
+    moveq   #0,%d0
+    move.b  rl_hdrbuf+0x15,%d0
+    or.l    %d0,%d6                    | d6 = version word
+
+|   --- 3: parse patterns 0..P (0..P-1 discarded), all into SCRATCH ---
+    moveq   #0,%d4                     | i
+rlj_ploop:
+    move.l  %d6,-(%sp)                 | verWord
+    pea     SCRATCH
+    pea     rl_fh
+    jsr     PARSEPAT                   | FUN_4008cebc(fh, SCRATCH, verWord)
+    lea     12(%sp),%sp
+    tst.l   %d0
+    bmi.w   rlj_readfail
+    addq.l  #1,%d4
+    cmp.l   %d5,%d4
+    ble.b   rlj_ploop                  | while i <= P
+
+|   --- 4: close ---
+    pea     rl_fh
+    jsr     FCLOSE
+    addq.l  #4,%sp
+
+|   --- 5: SCRATCH -> live slab (blob + curbank*stride + P*0x8ed8) ---
+    moveq   #0,%d0
+    move.b  CUR_BANK,%d0
+    move.l  #BANKSTRIDE,%d1
+    muls.l  %d1,%d0
+    move.l  #BLOB,%a4
+    add.l   %d0,%a4
     move.l  %d5,%d0
     move.l  #PATSTRIDE,%d1
-    muls.l  %d1,%d0                    | d0 = P * 0x8ed8
-    move.l  %a4,%d2
-    add.l   %d0,%d2                    | dst = live + P*stride
-    move.l  %a5,%d3
-    add.l   %d0,%d3                    | src = scratch + P*stride
+    muls.l  %d1,%d0
+    add.l   %d0,%a4                    | a4 = live slab for P
     move.l  #PATSTRIDE,-(%sp)
-    move.l  %d3,-(%sp)
-    move.l  %d2,-(%sp)
-    jsr     FWMEMCPY                   | FUN_40020898(dst, src, len)
+    pea     SCRATCH
+    move.l  %a4,-(%sp)
+    jsr     FWMEMCPY                   | memcpy(liveslab, SCRATCH, 0x8ed8)
     lea     12(%sp),%sp
 
-|   --- 6: restore the scratch bank from bank(S+1).work (best-effort) ---
-    move.l  %d6,%d0
-    addq.l  #1,%d0
-    move.l  #FMT_WORK,%d1
-    move.l  %a5,%a0
-    jsr     rl_loadbank
-
-|   --- 7: seamless reload iff P is the active pattern ---
+|   --- 6: seamless reload iff P is the active pattern ---
     move.l  %d5,%d0
     move.b  ACT_PAT,%d1
     cmp.b   %d1,%d0
-    bne.b   rlj_done
+    bne.b   rlj_ok
     moveq   #1,%d0
     move.l  %d0,RELOAD_NOW
 
-rlj_done:
-rlj_fail:
+rlj_ok:
+    moveq   #1,%d0                     | result ok
+rlj_exit:
+    move.w  rl_cksum,%d1               | restore the deserialiser's rolling checksum
+    move.w  %d1,CKSUM
     movem.l (%sp),%d2-%d7/%a2-%a5
     lea     40(%sp),%sp
-    moveq   #1,%d0                     | result ok (rlj_fail: nothing was half-written to live)
-    jmp     JOB14_EXIT
+    jmp     JOB14_EXIT                 | rejoin the 0x14 case's done-dance -> loop
+                                       | (d0 >= 0 -> "done", d0 = -12 -> stock warning)
 
-| ---- rl_loadbank(d0 = bank number 1-based, d1 = fmt string, a0 = dest region) ----
-|   opens "<proj>/bankNN.<work|strd>" "r" and deserialises the bank into (a0).
-|   returns d0 = deser result (<0 on any failure).  Preserves d2-d7/a2-a5.
-    .global rl_loadbank
-rl_loadbank:
+rlj_readfail:
+    pea     rl_fh
+    jsr     FCLOSE                     | live slab untouched (parse writes SCRATCH only)
+    addq.l  #4,%sp
+    moveq   #-1,%d0
+    bra.b   rlj_exit
+
+| ---- rl_openstrd:  d0 = open result; uses CUR_BANK, builds rl_pathbuf, fills rl_fh ----
+|   preserves d2-d7/a2-a5.
+    .global rl_openstrd
+rl_openstrd:
     lea     -40(%sp),%sp
     movem.l %d2-%d7/%a2-%a5,(%sp)
-    move.l  %a0,%a2                    | a2 = dest
-    move.l  %d0,%a4                    | a4 = bank number (int in an addr reg -- just stored/pushed)
-    move.l  %d1,%a3                    | a3 = fmt
 
     clr.l   -(%sp)
     clr.l   -(%sp)
-    jsr     PROJDIR                    | FUN_40025230(0,0) -> d0 = char* project dir
+    jsr     PROJDIR                    | d0 = char* project dir
     addq.l  #8,%sp
 
-    move.l  %a4,-(%sp)                 | bank number
+    moveq   #0,%d1
+    move.b  CUR_BANK,%d1
+    addq.l  #1,%d1                     | bank number (1-based)
+    move.l  %d1,-(%sp)
     move.l  %d0,-(%sp)                 | project dir
-    move.l  %a3,-(%sp)                 | fmt
+    move.l  #FMT_STRD,-(%sp)
     pea     rl_pathbuf
-    jsr     SPRINTF                    | sprintf(rl_pathbuf, fmt, projdir, banknum)
+    jsr     SPRINTF                    | sprintf(rl_pathbuf, "%s/bank%02d.strd", dir, bank)
     lea     16(%sp),%sp
 
-    lea     rl_fh,%a0                  | zero the handle struct (64 B)
+    lea     rl_fh,%a0                  | zero the 64-byte handle struct
     moveq   #16,%d0
-rlb_zero:
+rlo_zero:
     clr.l   (%a0)+
     subq.l  #1,%d0
-    bne.b   rlb_zero
+    bne.b   rlo_zero
 
-    move.l  #0x10000,-(%sp)
+    move.l  #0x7000,-(%sp)             | open buffer size (28 KB of OPEN_BUF)
     pea     OPEN_BUF
     pea     MODE_R
     pea     rl_pathbuf
     pea     rl_fh
     jsr     FOPEN                      | FUN_40016864(fh, path, "r", buf, size)
     lea     20(%sp),%sp
-    tst.l   %d0
-    bmi.b   rlb_fail
 
-    clr.l   -(%sp)                     | arg2 = 0
-    move.l  %a2,-(%sp)                 | arg1 = dest
-    pea     rl_fh                      | arg0 = fh
-    jsr     DESER                      | FUN_4008ded0(fh, dest, 0)
-    lea     12(%sp),%sp
-    move.l  %d0,%d2                    | d2 = deser result (preserved by our movem)
-
-    pea     rl_fh
-    jsr     FCLOSE
-    addq.l  #4,%sp
-
-    move.l  %d2,%d0
-    movem.l (%sp),%d2-%d7/%a2-%a5
-    lea     40(%sp),%sp
-    rts
-
-rlb_fail:
-    moveq   #-1,%d0
     movem.l (%sp),%d2-%d7/%a2-%a5
     lea     40(%sp),%sp
     rts
 
     .align 2
+rl_cksum:
+    .space 4
 rl_pathbuf:
     .space 128
 rl_fh:
     .space 64
+rl_hdrbuf:
+    .space 32
