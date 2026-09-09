@@ -178,6 +178,15 @@ threw a line-F exception. Their rule: caves live in **`0x400d2000..0x400d8000`**
 at `0x400d7400`+ — safely inside. Do not chase more cave space in the `0x4010xxxx`
 tail.
 
+**The real way past ~4 KB of cave: append a runtime.** ems-octakit reclaims a
+multi-MB slice of the flex sample pool (4 two-byte constant patches in the
+audio-page allocator, `0x40096f80–0x40097130`), appends an aPLib-packed blob to
+the OS image, and hooks boot (~10 guarded splices) to unpack ~128 KB of linked
+ColdFire code + MB of work RAM into it at `0x45d0dde0`. Hardware-proven. Full
+mechanism + addresses + the cost (Octakit: 18.4 s of sample time; a KYOTI-sized
+carve: sub-second) in [`octakit-abi.md`](octakit-abi.md) "The append-a-runtime
+architecture". It buys **ColdFire** space only — nothing for the DSP.
+
 ## octamax (upstream) — the pipeline we inherited
 
 `sysex/apply_patch.py`, the guarded code-cave detour method, the

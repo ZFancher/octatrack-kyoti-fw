@@ -460,6 +460,12 @@ A new toggle that must persist: (1) put its word in `0x800000d4..df`, (2) have
 `move.l %d0,<shadow>`. Checksum is automatic. Range `0x70` ends at `0x800000df`,
 one short of `0x800000e0` — do **not** widen further. See `tools/patch_mutemode.s`.
 
+> **Need real space, not just a scratch word?** ems-octakit reclaims a multi-MB
+> slice of the flex sample pool and appends an unpacked runtime there
+> (`0x45d0dde0`, ~128 KB ColdFire code + MB of RAM) — 4 constant patches in the
+> audio-page allocator `0x40096f80–0x40097130` + ~10 boot splices. ColdFire only,
+> costs sample time. `kb/octakit-abi.md` "The append-a-runtime architecture".
+
 ---
 
 ## To import next (from `refs/`)

@@ -23,6 +23,13 @@ agent that fetches the refs and appends new commits here.
 
 ## Distilled
 
+- 2026-09-09  ems-octakit@ec70dda  the append-a-runtime architecture — reclaim a flex-pool
+              slice (4 constant patches @0x40096f80–0x40097130; cost 18.4 s / 3.6 %),
+              append an aPLib-packed ~128 KB ColdFire runtime at 0x45d0dde0, ~10 boot
+              splices (0x4000050c / 0x40020870 / 0x4000f97c / 0x40013304 / …). ColdFire
+              space only — nothing for the DSP. From link.ld + loader.S + firmware.json.
+              [ kb/octakit-abi.md "The append-a-runtime architecture", kb/techniques.md,
+                kb/memory-map.md ]
 - 2026-09-08  octamax@7d9debc  DESIGN_SLICEVIEW.md — SLICE PLAYHEAD RE (octamax's own
               feature, not ported): voice-struct field map @0x800049d8 (+8/+23/+32/+36/
               +48/+52/+68), FUN_40007960 position engine, slice table SETTINGS+312+n*12
