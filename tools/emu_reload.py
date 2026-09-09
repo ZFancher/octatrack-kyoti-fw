@@ -29,8 +29,21 @@ via `tools/emu_rtos.py`).
            which is why the real build MUST use the storage task, not a
            synchronous cave.)
 
+  --combo  single-step rl_combo (the [PTN]+[NO] hook) in isolation, gates forced,
+           no scheduler underneath.  Fast + decisive: does it arm G_KIND/G_PAT,
+           post the storage job (FUN_40022778), suppress the chooser, swallow NO.
+
+  --patched  boot out/mainos_reload.bin and drive [PTN]+[NO] END TO END: combo ->
+           storage-task worker (open bankNN.strd, FUN_4008cebc-parse pattern P,
+           memcpy the slab, 0x46c8028a) -> the pattern reverts to the saved
+           state, a bystander pattern is untouched, no fault, transport runs.
+           Halts the stock whole-bank deser on entry so the worker's effect is
+           seen in isolation (that deser is the emu's 10 MB load finishing, not
+           anything [PTN]+[NO] triggers).
+
     python3 tools/emu_reload.py --slice
-    python3 tools/emu_reload.py --strd
+    python3 tools/emu_reload.py --combo
+    python3 tools/emu_reload.py --patched
     python3 tools/emu_reload.py --slice --strd      # one boot, both
 
 Needs `python3 tools/refs/sync.py` + the EMAC-patched Unicorn
@@ -293,15 +306,48 @@ def cmd_patched(rt):
     rt.exact_clock(); rt.internal_clock(); rt.press_play_live()
     rt.run(ms=250)
 
-    # "live edits" into P and Q (trig masks + a p-lock value, tracks 0 and DISK_TRK)
-    for base in (pP, pQ):
+    # "live edits" into P and Q -- scribble BOTH the cold blob AND the live
+    # working copy 0x1001614e (a real UI edit lands in both; scribbling only the
+    # blob lets a blob<-live sync during the long drain revert it)
+    LIVE_COPY = 0x1001614e
+    for pat in (P, Q):
         for trk in (0, DISK_TRK):
-            tb = base + trk * TRAC_STRIDE
-            for off in (0x00, 0x08, PLOCK_IN_TRAC + 0x40):
-                rt.uc.mem_write(tb + off, bytes([rd(rt, tb + off, 1)[0] ^ 0x5A]))
+            for base in (blob + pat * PAT_STRIDE, LIVE_COPY + pat * PAT_STRIDE):
+                tb = base + trk * TRAC_STRIDE
+                for off in (0x00, 0x08, PLOCK_IN_TRAC + 0x40):
+                    rt.uc.mem_write(tb + off, bytes([rd(rt, tb + off, 1)[0] ^ 0x5A]))
     scribbled_P = rd(rt, pP, PAT_STRIDE)
     assert scribbled_P != saved_P and rd(rt, pQ, PAT_STRIDE) != saved_Q
-    print(f"edits      : P{P} and Q{Q} slabs scribbled")
+    print(f"edits      : P{P} and Q{Q} scribbled (blob + live copy)")
+
+    # watch pattern Q's blob slab -- if anything reverts it, log the PC
+    qw = []
+    hq = rt.uc.hook_add(er.eb.UC_HOOK_MEM_WRITE, lambda u, a, ad, sz, v, x:
+                        qw.append((u.reg_read(er.eb.UC_M68K_REG_PC), ad, v)),
+                        begin=pQ, end=pQ + PAT_STRIDE - 1)
+    # log entry to the deserialiser / per-pattern parser / stock reload workers
+    fx = []
+    NAMES = {0x400d749a: "rl_job", 0x4008cebc: "FUN_4008cebc(parse-one-pat)",
+             0x4008ded0: "FUN_4008ded0(deser-whole-bank)", 0x400905d4: "FUN_400905d4(load-worker)",
+             0x4008f0b0: "FUN_4008f0b0(strd->work)", 0x40016864: "FUN_40016864(open)"}
+    deser_seen = [False]
+    hf = []
+    for a, nm in NAMES.items():
+        def mk(nm):
+            def cb(u, ad, sz, x):
+                # the stock whole-bank deser reverts everything -- halt on its
+                # first instruction so the worker's effect is seen in isolation
+                if nm == "FUN_4008ded0(deser-whole-bank)":
+                    if not deser_seen[0]:
+                        deser_seen[0] = True
+                        fx.append((nm, 0, 0))
+                    u.emu_stop()
+                    return
+                fx.append((nm, u.reg_read(er.eb.UC_M68K_REG_A7),
+                           u.reg_read(er.eb.UC_M68K_REG_A2)))
+            return cb
+        hf.append(rt.uc.hook_add(er.eb.UC_HOOK_CODE, mk(nm), begin=a, end=a))
+    rt.uc.ctl_flush_tb()
 
     # stub the op-toast (0x4005a2b8) -- not what we test, and its window ctor
     # is not call_as_main-friendly (emu_directjump.py stubs its toast the same way)
@@ -334,15 +380,40 @@ def cmd_patched(rt):
     print(f"armed      : G_KIND={gk1:#x}  G_PAT={gp} (want {P})  "
           f"PTN_USED={ptn_used:#x}  msg[0]={msg_type:#x} (0x14 = storage job)")
 
-    # drain the storage task: open .strd, parse pattern P, memcpy, set 0x46c8028a
-    try:
-        rt.run(ms=30000, until=lambda r: r.pc == er.MAIN_SPIN
-               and rd(r, pP, PAT_STRIDE) != scribbled_P)  # worker's memcpy landed
-    except Exception as e:
-        faulted = faulted or f"{type(e).__name__}: {e}"
-        print(f"drain      : raised {faulted}")
+    # drain in SHORT bursts.  Snapshot the instant the worker's memcpy lands (pP
+    # changes); or bail if the stock whole-bank deser tries to run -- it's
+    # halted-on-entry so it writes nothing, but its attempt means the emu's
+    # initial 10 MB load is still finishing (NOT something [PTN]+[NO] triggers:
+    # the worker never posts a type-6 job).
+    after_P = after_Q = None
+    for _ in range(300):
+        try:
+            rt.run(ms=100)
+        except Exception as e:
+            faulted = faulted or f"{type(e).__name__}: {e}"
+            print(f"drain      : raised {faulted}")
+            break
+        landed = rd(rt, pP, PAT_STRIDE) != scribbled_P
+        if landed or deser_seen[0]:
+            after_Q = rd(rt, pQ, PAT_STRIDE)     # Q, before anything else can touch it
+            if landed:
+                rt.run(ms=200)                   # let the step engine consume 0x46c8028a
+            after_P = rd(rt, pP, PAT_STRIDE)
+            break
+    if after_P is None:
+        after_P, after_Q = rd(rt, pP, PAT_STRIDE), rd(rt, pQ, PAT_STRIDE)
 
-    after_P, after_Q = rd(rt, pP, PAT_STRIDE), rd(rt, pQ, PAT_STRIDE)
+    rt.uc.hook_del(hq)
+    for h in hf:
+        rt.uc.hook_del(h)
+    ran = [nm for nm, _, _ in fx]
+    n_parse = ran.count("FUN_4008cebc(parse-one-pat)")
+    n_deser = ran.count("FUN_4008ded0(deser-whole-bank)")
+    # the stock whole-bank deser is halted on entry (emu_stop) so it never loops;
+    # if it never even tried to run, all the better
+    worker_isolated = n_parse == P + 1        # exactly one FUN_4008cebc per pattern 0..P
+    print(f"  fn entries: rl_job={ran.count('rl_job')} open={ran.count('FUN_40016864(open)')} "
+          f"FUN_4008cebc={n_parse} (want {P + 1})  stock-deser-blocked={n_deser > 0}")
     flag = int.from_bytes(rd(rt, RELOAD_NOW, 4), "big")
     gk2 = rd(rt, G_KIND, 1)[0]
     tport = int.from_bytes(rd(rt, TRANSPORT, 4), "big")
@@ -364,16 +435,17 @@ def cmd_patched(rt):
     print(f"  Q{Q} slab != pre-combo edit (survived)   : {q_survived}")
 
     ok = (faulted is None and gp == P and ptn_used == 1 and msg_type == 0x14
-          and gk2 == 0 and tport == 1 and (p_reverted or p_matches_disk) and q_survived
-          and flag in (0, 1))
+          and gk2 == 0 and tport == 1 and p_matches_disk and q_survived
+          and flag in (0, 1) and worker_isolated)
     print(f"\n--patched: {'ALL GOOD' if ok else 'CHECK FAILED'}")
-    for name, cond in [("no fault", faulted is None),
+    for name, cond in [("no fault (worker rejoined the storage loop)", faulted is None),
                        ("combo armed (G_PAT, PTN_USED, msg type 0x14)",
                         gp == P and ptn_used == 1 and msg_type == 0x14),
                        ("worker cleared G_KIND", gk2 == 0),
-                       ("pattern P reverted to the saved state", p_reverted or p_matches_disk),
-                       ("bystander pattern Q's edit survived", q_survived),
-                       ("0x46c8028a fired (then consumed)", flag in (0, 1)),
+                       (f"worker ran exactly {P + 1}x FUN_4008cebc (no stray parses)", worker_isolated),
+                       ("pattern P's p-lock array == bank01.strd", p_matches_disk),
+                       ("bystander pattern Q untouched by the worker", q_survived),
+                       ("0x46c8028a fired then was consumed", flag in (0, 1)),
                        ("transport still running", tport == 1)]:
         print(f"   [{'x' if cond else ' '}] {name}")
     return ok

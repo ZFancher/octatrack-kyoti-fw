@@ -5818,24 +5818,37 @@ saved/restored via a cave word.
   (gates forced, no scheduler): gates pass → `G_KIND=1`, `G_PAT` = the active
   pattern, `PTN_USED=1` (chooser suppressed), `FUN_40022778` posted, toast
   fired, then `rts` (swallow). Every branch correct.
-- The full worker (`FUN_4008cebc` real parse + the `0x400858a8` rejoin) is a
-  **hardware test** — the Python `emu_rtos` is too slow to run it in a
-  reasonable loop (a single pattern-chunk parse on the storage task is minutes
-  of wall time), and `FUN_4008cebc` is RE'd thoroughly enough (it IS what
-  `FUN_4008ded0` calls 16× with `dest = bankbase + i*0x8ed8`; same args, file
-  positioned identically by the sequential parse) that HW is the right next
-  check. `--patched` (P=0 end-to-end) exists but `press_play_live` doesn't start
-  the transport on the patched image in the harness (an emu quirk, not a patch
-  bug — `--combo` forces `RUNNING`); not worth chasing.
+- **`--patched` — the FULL worker PASSES end to end.** Boots `mainos_reload.bin`,
+  loads the DEMO, forces `RUNNING` (harness doesn't start the transport on the
+  patched image — an emu quirk), scribbles pattern 0 (target) + pattern 10
+  (bystander) in both the blob and the live copy, drives `rl_combo(0x32, press)`,
+  drains the storage task. The whole chain runs: `rl_job` → `FUN_40016864` open
+  `bank01.strd` → **exactly one** `FUN_4008cebc` (P=0, empty discard loop) →
+  `FUN_40020898` into the live slab → `0x46c8028a` → rejoin `0x400858a8`.
+  Result: **no fault**; `G_KIND` armed then cleared; **pattern 0's p-lock array ==
+  `bank01.strd` on disk, byte-for-byte** (the parse landed correctly);
+  **pattern 10 untouched** (a write-hook on its slab caught only the *stock*
+  deserialiser's PCs `0x4009abca..` — the worker's writes go to `SCRATCH` +
+  pattern 0's slab, which don't overlap pattern 10); `0x46c8028a` fired and was
+  consumed by the running step engine; transport still `1`. (The stock
+  whole-bank deser that reverts everything in a long drain is the emu's 10 MB
+  initial load finishing / an autosave-reload — NOT `[PTN]`+`[NO]`, which never
+  posts a type-6 job; the test halts it on entry so the worker's effect is seen
+  in isolation.)
+- **Hardware-only from here:** `FUN_4008cebc` against a real CF card, the
+  discard loop for P > 0 (parse-and-discard patterns 0..P-1), `FUN_4005a2b8`
+  toast from the NO key handler, and reload timing.
 
 **Bugs found + fixed this session:** the scratch-bank design (retracted — put a
 bystander bank's data at risk, user caught it); a fabricated "~0.01% torn-read
 odds" (retracted); `tst.b` on the big-endian LONGWORD transport state
 `0x800065b8` (→ `tst.l`); a cargo-culted `NO_DISABLE` gate (dropped).
 
-**Where it stands:** RE + design complete. `patch_reload.s` v2 built + combo
-emu-clean. ~1–2 focused sessions + an MKI pass from flash-ready. Flash test:
-project with a saved bank, edit the active pattern's trigs/p-locks while
-playing, `[PTN]`+`[NO]` → "RELOAD SEQ" toast, pattern reverts to the saved
-state, no audio drop; on a never-saved bank → stock "THIS BANK HAS NEVER BEEN
-SAVED!" dialog. Then ALL PARTS (`FUN_4004aab4(0..3)`) + WHOLE + the 3-way picker.
+**Where it stands:** RE + design complete, `patch_reload.s` v2 built,
+**SEQ DATA emu-validated end to end** (`--combo` + `--patched`). Flash-ready —
+same posture as DIRECT JUMP (emu-clean, HW pass pending). FLASHING.md §4.7 has
+the HW test procedure. HW risk: a storage-task hang needing a power cycle
+(recoverable, flash stock to revert); the feature writes only pattern N's live
+slab, never disk. Queue: behind DT / SIDECHAIN2 / SIDECHAIN3 / DIRECTJUMP (all
+also unflashed). Phase 2: ALL PARTS (`FUN_4004aab4(0..3)`) + WHOLE + the 3-way
+picker.
