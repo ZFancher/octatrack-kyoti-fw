@@ -451,73 +451,120 @@ def cmd_patched(rt):
     return ok
 
 
-def cmd_combo(rt):
-    """Isolate rl_combo: single-step it on a private stack with the gates forced,
-    the scheduler NOT running underneath.  Decisive + fast."""
+G_KIND_A, G_PAT_A, G_MENU_A, G_SEL_A, G_TICKS_A = (0x80006a50, 0x80006a51,
+                                                  0x80006a52, 0x80006a53, 0x80006a54)
+POPUP2_FN, CLOSE_FN, POST_FN, PARTRELD_FN = 0x4005a0e0, 0x40056bc0, 0x40022778, 0x4004aab4
+REFRESH_FNS = (0x4004d948, 0x40032208, 0x4004d640, 0x400486cc, 0x4006dbe8, 0x40077b00, 0x4002f2f8)
+
+
+def _run_cave_fn(rt, addr, keycode, event, calls, budget=4000):
+    """Single-step a cave key-handler stub on a private stack (no scheduler).
+    Records which stubbed firmware fns it calls.  Returns 'end'."""
     eb = er.eb
-    rl_combo = _sym("rl_combo")
-    curbank = rt.uc.mem_read(er.CUR_BANK, 1)[0]
-    print(f"\n===== --combo : single-step rl_combo in isolation =====")
-    print(f"rl_combo={rl_combo:#x}  curbank={curbank}")
-
-    # stub FUN_40022778 (post) and 0x4005a2b8 (toast) to a bare rts; record entry
-    for a in (0x40022778, TOAST_FN):
-        rt.uc.mem_write(a, b"\x4e\x75")
-    rt.uc.ctl_flush_tb()
-
-    # force gates favourable
-    rt.uc.mem_write(0x460d1742, struct.pack(">I", 1))   # PTN held
-    rt.uc.mem_write(0x460e5cd0, struct.pack(">I", 0))   # no popup
-    rt.uc.mem_write(0x460d1aec, struct.pack(">I", 0))   # no arranger
-    rt.uc.mem_write(0x800065b8, struct.pack(">I", 1))   # transport = playing
-    rt.uc.mem_write(0x80006a50, b"\x00")                # G_KIND idle
-    rt.uc.mem_write(0x800065be, bytes([7]))             # active pattern = 7 (arbitrary)
-    rt.uc.mem_write(0x460d173e, struct.pack(">I", 0))   # PTN_USED clear
-
-    STK = 0x46cf0000
-    # return address = a mapped RAM word holding 0x4e75 (rts) so the harness halts
-    # cleanly when rl_combo does its swallowing rts
-    RET = 0x46cf0f00
+    STK, RET = 0x46cf0000, 0x46cf0f00
     rt.uc.mem_write(RET, b"\x4e\x75\x4e\x75")
     rt.uc.reg_write(eb.UC_M68K_REG_A7, STK)
-    rt.uc.mem_write(STK, struct.pack(">3I", RET, 0x32, 1))  # ret, keycode, event=press
-    rt.uc.reg_write(eb.UC_M68K_REG_PC, rl_combo)
-
-    NO_REL, NO_PRESS = 0x4005e276, 0x4005e262
-    trail = []
-    end = None
-    for _ in range(400):
+    rt.uc.mem_write(STK, struct.pack(">3I", RET, keycode, event))
+    rt.uc.reg_write(eb.UC_M68K_REG_PC, addr)
+    NO_REL, NO_PRESS, YES_RES = 0x4005e276, 0x4005e262, 0x4005e4d0
+    stub_lo, stub_hi = 0x40000000, 0x40200000
+    for _ in range(budget):
         pc = rt.uc.reg_read(eb.UC_M68K_REG_PC)
-        if pc in (RET, NO_REL, NO_PRESS) or not (0x400d7400 <= pc < 0x400d8000
-                                                 or pc in (0x40022778, TOAST_FN)):
-            end = pc
-            break
-        trail.append(pc)
+        if pc == RET:
+            return "rts"
+        if pc in (NO_REL, NO_PRESS, YES_RES):
+            return {NO_REL: "NO_REL", NO_PRESS: "NO_PRESS(gate bailed)", YES_RES: "YES_RESUME(gate bailed)"}[pc]
+        if not (0x400d7400 <= pc < 0x400d8000):
+            calls.append(pc)
+            # a stubbed firmware fn: skip it (as if it rts'd)
+            sp = rt.uc.reg_read(eb.UC_M68K_REG_A7)
+            ret = struct.unpack(">I", rt.uc.mem_read(sp, 4))[0]
+            rt.uc.reg_write(eb.UC_M68K_REG_A7, sp + 4)
+            rt.uc.reg_write(eb.UC_M68K_REG_PC, ret)
+            continue
         try:
             rt.uc.emu_start(pc, 0, count=1)
         except Exception as e:
-            end = f"exc@{pc:#x}: {e}"
-            break
+            return f"exc@{pc:#x}: {e}"
+    return "budget"
 
-    gk = rt.uc.mem_read(0x80006a50, 1)[0]
-    gp = rt.uc.mem_read(0x80006a51, 1)[0]
-    pu = int.from_bytes(rt.uc.mem_read(0x460d173e, 4), "big")
-    posted = 0x40022778 in trail
-    toasted = TOAST_FN in trail
-    endname = {NO_REL: "NO_REL (stock release)", NO_PRESS: "NO_PRESS (stock press -- gate bailed)",
-               RET: "returned (rts)"}.get(end, str(end) if not isinstance(end, int) else hex(end))
-    print(f"end        : {endname}")
-    print(f"trail tail : {[hex(x) for x in trail[-8:]]}")
-    print(f"result     : G_KIND={gk:#x} (want 1)  G_PAT={gp} (want 7)  PTN_USED={pu:#x} (want 1)  "
-          f"posted={posted}  toasted={toasted}")
-    swallowed = end == RET or (isinstance(end, str) and hex(RET) in end)
-    ok = gk == 1 and gp == 7 and pu == 1 and posted and swallowed
-    for name, cond in [("gates passed + G_KIND armed", gk == 1),
-                       ("G_PAT = active pattern", gp == 7),
-                       ("PTN chooser suppressed", pu == 1),
-                       ("FUN_40022778 (storage job) posted", posted),
-                       ("swallowed the NO key (rts)", swallowed)]:
-        print(f"   [{'x' if cond else ' '}] {name}")
+
+def cmd_combo(rt):
+    """Isolate the picker: single-step rl_combo (open + cycle) and rl_yes
+    (execute each selection) on a private stack, gates forced, no scheduler."""
+    eb = er.eb
+    rl_combo, rl_yes = _sym("rl_combo"), _sym("rl_yes")
+    print("\n===== --combo : single-step the [PTN]+[NO]/[YES] picker in isolation =====")
+    print(f"rl_combo={rl_combo:#x}  rl_yes={rl_yes:#x}")
+
+    # stub every firmware fn the picker calls -> bare rts (recorded by _run_cave_fn)
+    for a in (POPUP2_FN, CLOSE_FN, POST_FN, TOAST_FN, PARTRELD_FN, *REFRESH_FNS):
+        rt.uc.mem_write(a, b"\x4e\x75")
+    rt.uc.ctl_flush_tb()
+
+    def reset_gates(actpat=7):
+        rt.uc.mem_write(0x460d1742, struct.pack(">I", 1))   # PTN held
+        rt.uc.mem_write(0x460e5cd0, struct.pack(">I", 0))   # no popup
+        rt.uc.mem_write(0x460d1aec, struct.pack(">I", 0))   # no arranger
+        rt.uc.mem_write(0x800065b8, struct.pack(">I", 1))   # playing
+        rt.uc.mem_write(0x800065be, bytes([actpat]))
+        for a in (G_KIND_A, G_PAT_A, G_MENU_A, G_SEL_A):
+            rt.uc.mem_write(a, b"\x00")
+        rt.uc.mem_write(G_TICKS_A, struct.pack(">I", 0))
+        rt.uc.mem_write(0x460d173e, struct.pack(">I", 0))   # PTN_USED
+
+    def g(a, n=1):
+        return int.from_bytes(rt.uc.mem_read(a, n), "big")
+
+    ok = True
+
+    # --- [PTN]+[NO] x3 : open, then cycle SEQ->PARTS->WHOLE ---
+    reset_gates()
+    seq_trace = []
+    for i, want_sel in enumerate((0, 1, 2, 0)):
+        calls = []
+        end = _run_cave_fn(rt, rl_combo, 0x32, 1, calls)
+        seq_trace.append((end, g(G_MENU_A), g(G_SEL_A), POPUP2_FN in calls))
+        step_ok = (end == "rts" and g(G_MENU_A) == 1 and g(G_SEL_A) == want_sel
+                   and POPUP2_FN in calls and g(0x460d173e, 4) == 1)
+        ok &= step_ok
+        print(f"  NO tap {i}: end={end} G_MENU={g(G_MENU_A)} G_SEL={g(G_SEL_A)} "
+              f"(want {want_sel}) popup2={POPUP2_FN in calls}  {'ok' if step_ok else 'FAIL'}")
+
+    # --- [PTN]+[YES] for each selection ---
+    for sel, name, want_kind, want_parts, want_seqpost in (
+            (0, "SEQ",   1, False, True),
+            (1, "PARTS", 0, True,  False),
+            (2, "WHOLE", 1, True,  True)):
+        reset_gates(actpat=5)
+        rt.uc.mem_write(G_MENU_A, b"\x01")
+        rt.uc.mem_write(G_SEL_A, bytes([sel]))
+        calls = []
+        end = _run_cave_fn(rt, rl_yes, 0x31, 1, calls)
+        gk, gp, gm = g(G_KIND_A), g(G_PAT_A), g(G_MENU_A)
+        did_parts = PARTRELD_FN in calls
+        did_post = POST_FN in calls
+        did_close = CLOSE_FN in calls
+        n_partreld = calls.count(PARTRELD_FN)
+        step_ok = (end == "rts" and gm == 0 and did_close
+                   and gk == want_kind
+                   and did_parts == want_parts and (n_partreld == 4 if want_parts else True)
+                   and did_post == want_seqpost
+                   and (gp == 5 if want_seqpost else True)
+                   and g(0x460d173e, 4) == 1)
+        ok &= step_ok
+        print(f"  YES [{name}]: end={end} G_MENU={gm}->0 close={did_close} "
+              f"G_KIND={gk}(want {want_kind}) FUN_4004aab4x{n_partreld}(want {'4' if want_parts else '0'}) "
+              f"post={did_post}(want {want_seqpost}) G_PAT={gp}  {'ok' if step_ok else 'FAIL'}")
+
+    # --- gate: [PTN] not held -> stock ---
+    reset_gates()
+    rt.uc.mem_write(0x460d1742, struct.pack(">I", 0))
+    end = _run_cave_fn(rt, rl_combo, 0x32, 1, [])
+    g1 = end == "NO_PRESS(gate bailed)"
+    ok &= g1
+    print(f"  gate: [PTN] released -> {end}  {'ok' if g1 else 'FAIL'}")
+
     print(f"\n--combo: {'ALL GOOD' if ok else 'CHECK FAILED'}")
     return ok
 

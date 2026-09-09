@@ -3,48 +3,46 @@
 # SPDX-FileCopyrightText: 2026 Zac-Kyoti
 """
 RELOAD FROM PROJECT (NOTES.md "Session 42") -- stock 1.40C + the MIDI manual-trig
-fix + a [PTN]+[NO] front-panel combo that reloads the ACTIVE pattern's SEQUENCE
-DATA from the CF card (bankNN.strd) without stopping the sequencer.
+fix + a [PTN]+[NO] 3-item picker (RLD SEQ / RLD PARTS / RLD WHOLE); [PTN]+[YES]
+executes.  Reloads the active pattern's sequence data and/or the 4 Parts from
+the CF card's last SAVE BANK snapshot, without stopping the sequencer.
 
   1. patch_trigscale  -- MIDI manual-trig stall fix.  Byte-identical detour + cave
                          to build_trigscale_only.py / build_directjump.py.
-  2. patch_reload     -- two detours:
-                           rl_combo @0x4005e25c  the NO handler.  [PTN]+[NO] press
-                                                 (playing, no arranger, no popup)
-                                                 -> arm {G_KIND=1, G_PAT=active},
-                                                 post the type-0x14 storage job
-                                                 (FUN_40022778(1<<curbank)), toast
-                                                 "RELOAD SEQ" (FUN_4005a2b8),
-                                                 swallow NO.  Any other NO press
-                                                 replays the displaced prologue.
-                           rl_job  @0x40085864  the storage task's type-0x14 case.
-                                                 When G_KIND: open bankNN.strd
-                                                 (28 KB of the loader's own 64 KB
-                                                 buffer), read the header, parse
-                                                 patterns 0..P sequentially with
-                                                 the firmware's own per-pattern
-                                                 parser FUN_4008cebc (0..P-1
-                                                 discarded to a 36 KB scratch,
-                                                 pattern P kept), memcpy P -> the
-                                                 live slab, set 0x46c8028a, rejoin
-                                                 the case's exit.  Open ENOENT ->
-                                                 exit with d0 = -12 so the stock
-                                                 "THIS BANK HAS NEVER BEEN SAVED!"
-                                                 dialog shows for free.  Inert
-                                                 when G_KIND == 0; a re-entrant
-                                                 real RELOAD BANK is unaffected
-                                                 (worker latches + clears G_KIND).
+  2. patch_reload     -- four detours:
+       rl_combo @0x4005e25c  NO handler.  [PTN]+[NO] press (playing, no arranger,
+                             no popup) -> open the picker (bare-text popup
+                             FUN_4005a0e0: RLD SEQ / RLD PARTS / RLD WHOLE), or
+                             cycle the selection if already open.  Swallow NO.
+       rl_yes   @0x4005e4c8  YES handler.  [PTN]+[YES] with the picker open ->
+                             close it, then: PARTS/WHOLE -> FUN_4004aab4(0..3)
+                             (stock RELOAD PART x4) + the stock UI refresh, here
+                             in the key handler; SEQ/WHOLE -> arm {G_KIND=1,
+                             G_PAT=active} + post FUN_40022778(1<<curbank).
+                             Toast + swallow YES.  Otherwise replay the prologue.
+       rl_tick  @0x400522ca  the engine per-control-frame handler (same splice
+                             DIRECT JUMP v2 uses).  Counts G_TICKS down; at 0
+                             closes the picker (FUN_40056bc0) + clears G_MENU.
+       rl_job   @0x40085864  the storage task's type-0x14 case.  When G_KIND==1:
+                             open bankNN.strd (28 KB of the loader's own 64 KB
+                             buffer), read the 22-byte header, parse patterns
+                             0..P sequentially with the firmware's own per-
+                             pattern parser FUN_4008cebc (0..P-1 discarded to a
+                             36 KB scratch, pattern P kept), memcpy P -> the live
+                             slab, set 0x46c8028a, rejoin the case's exit.  Open
+                             ENOENT -> exit d0=-12 -> the stock "THIS BANK HAS
+                             NEVER BEEN SAVED!" dialog for free.  Inert when
+                             G_KIND==0; a re-entrant real RELOAD BANK is
+                             unaffected (worker latches + clears G_KIND).
 
   No scratch BANK is used (an earlier design borrowed one -- rejected: it put a
-  bystander bank's data at risk).  Nothing but pattern P's live slab is written.
-  No PERSONALIZE entry, no persistent state -> no 'ANDY' shadow / pea 0x64->0x70.
+  bystander bank's data at risk).  SEQ writes nothing but pattern P's live slab;
+  PARTS is the stock per-part reload path.  No PERSONALIZE entry, no persistent
+  state -> no 'ANDY' shadow / pea 0x64->0x70.
 
-  UNFLASHED / UNVERIFIED: hooks are static + isolation-checked.  The worker runs
-  on FUN_4008445c and calls the same file primitives (FUN_40016864 / FUN_40016564
-  / FUN_4008cebc / FUN_4001677c) the stock deserialiser uses on that task.  Needs
-  `tools/emu_reload.py --patched` then a hardware pass.
-  MVP: SEQ DATA only, active pattern only, transport running.  ALL PARTS (=
-  FUN_4004aab4(0..3), pure RAM) + WHOLE PATTERN + the 3-way picker are phase 2.
+  STATUS: SEQ DATA emu-validated end to end (emu_reload.py --combo + --patched).
+  PARTS/WHOLE + the picker: static + assembly checked; PARTS = the stock
+  FUN_4004aab4 path.  Needs a hardware pass (FLASHING.md 4.7).
 
 Usage:   python3 tools/build_reload.py [VERSTR]      (default VERSTR = "140C_KYOTI")
 Outputs: out/mainos_reload.bin, out/elek_reload.bin,
@@ -70,7 +68,9 @@ PATCHES = [
     ("patch_trigscale", 0x400d7b00, None,
      [(0x4009b6f2, "cave", "203c0000091a", 18, "jmp")]),
     ("patch_reload", 0x400d7400, None,
-     [(0x4005e25c, "rl_combo", "202f00086714", 6, "jmp"),   # NO handler: move.l 8(sp),d0 ; beq.s 0x4005e276
+     [(0x4005e25c, "rl_combo", "202f00086714", 6, "jmp"),      # NO handler: move.l 8(sp),d0 ; beq.s 0x4005e276
+      (0x4005e4c8, "rl_yes", "222f0004202f0008", 8, "jmp"),    # YES handler: move.l 4(sp),d1 ; move.l 8(sp),d0
+      (0x400522ca, "rl_tick", "45f946c7dfba", 6, "jsr"),       # per-frame handler: lea 0x46c7dfba,a2
       (0x40085864, "rl_job", "2d4afd762f2a0004", 8, "jmp")]),  # 0x14 case: move.l a2,-650(fp) ; move.l 4(a2),-(sp)
 ]
 
@@ -166,8 +166,9 @@ def main():
 
     print(f"\n  {OUT_SYX.name}  (MIDI DIN)  +  {OUT_BIN.name}  (CF card)")
     print(f"  version screen / SYSTEM STATUS -> OS VERSION will read:  {VERSTR}")
-    print("  [PTN] + [NO]  (while playing)  ->  reloads the active pattern's sequence data")
-    print("  from the CF card, no transport stop.  Flashes \"RELOAD SEQ\".")
+    print("  [PTN] + [NO]  (while playing)  ->  picker: RLD SEQ / RLD PARTS / RLD WHOLE")
+    print("                                    (tap [NO] again to cycle)")
+    print("  [PTN] + [YES]                  ->  execute the highlighted option, no transport stop")
     print("  Revert = flash downloads/extracted/OCTATRACK_OS1.40C.syx")
 
 
