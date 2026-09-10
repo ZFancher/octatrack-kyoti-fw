@@ -25,10 +25,10 @@ Only the *scoped* build of each — not the intermediates (`RELOAD2` not `RELOAD
 | RELOAD FROM PROJECT — hold `[PTN]` | `build_reload2.py` | `patch_reload2.s` |
 | QUANTIZE LIVE REC — `[REC]` + `[PLAY]`×2 | `build_qlrec.py` | `patch_qlrec.s` |
 
-QUANTIZE LIVE REC is a front-panel shortcut for the OS's global live-record-quantize
-setting (`0x800000ac`) — no menu surgery, no defsym, two `jmp` detours
-(`0x40061778` [PLAY] press, `0x4004883a` [REC] release) and one cave, none of it
-shared with the other six. Added to the merge in S48 (needed `FREE_START` lowered).
+QUANTIZE LIVE REC is a front-panel shortcut for the PERSONALIZE **QUANTIZE LIVE REC**
+row (`0x800000ac`) — no menu surgery, no defsym, two `jmp` detours (`0x40061778`
+[PLAY] press, `0x4004883a` [REC] release) and one cave, none of it shared with the
+other six. Added to the merge in S48 (needed `FREE_START` lowered).
 
 Combined build: **`build_merged.py`** → `out/OCTATRACK_OS1.40C_KYOTI_ALL.{syx,bin}`.
 

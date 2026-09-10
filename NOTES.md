@@ -6452,10 +6452,9 @@ Base = **stock 1.40C only** (no Bug-1 fix, no other Kyoti mods — standalone si
 README.md ("Bug 2" section + a QUANTIZE LIVE REC section — the latter was **missing entirely**
 — + HW-status rows), BUILD_KYOTI.md ("What you get" + HW-status rows for Bug-2 and QLREC),
 `reference/MERGE.md` (now "seven final-scoped mods": cave table, detour inventory, shared-state
-table, the `FREE_START`-lowered / descriptor-pointer-exemption notes). **QUANTIZE LIVE REC
-wording:** reworded away from "the PERSONALIZE row" — describe it as the OS's global
-live-record-quantize setting (`0x800000ac`, battery-shadowed); user says it is *not* a
-PERSONALIZE toggle (patch_qlrec.s / NOTES S46 still say "PERSONALIZE menu index 0" — reconcile).
+table, the `FREE_START`-lowered / descriptor-pointer-exemption notes). **QUANTIZE LIVE REC:
+user confirmed it IS the PERSONALIZE `QUANTIZE LIVE REC` row** (a momentary "not a PERSONALIZE
+toggle" was a miscommunication) — `patch_qlrec.s` / NOTES S46 "PERSONALIZE menu index 0" stands.
 
 ### Open / next
 - **HW confirm on the MKI**: create a real MIDI-track p-lock with no note (trigless), select
