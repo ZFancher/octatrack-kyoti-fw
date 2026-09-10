@@ -191,16 +191,17 @@ track-key-handler hook).
 
 ### QUANTIZE LIVE REC — a front-panel toggle for the live-record quantize  ·  *emulator only, not flashed*
 
-The OS's all-or-nothing **QUANTIZE LIVE REC** (the PERSONALIZE row — *not* the
-per-track 50 % TRIG QUANT in the TRACK TRIG MENU) has no shortcut. This adds one,
-Digitone-style: **hold `[REC]`, tap `[PLAY]` twice** to toggle it, with a
-"QUANT LIVE REC ON / OFF" toast that shows while `[REC]` is held and clears when
-you let go (no timer). The first `[REC]` + `[PLAY]` still starts live recording
-exactly as on stock — only every second press within the same `[REC]` hold flips
-the setting, and it is swallowed so the transport is untouched. The setting is a
-stock PERSONALIZE word that already lives inside the battery-backed `'ANDY'`
-block, so it survives a power cycle with no extra plumbing. Two detours, one cave:
-`tools/patch_qlrec.s`, `python3 tools/build_qlrec.py` → `140C_KYOTI`. Write-up:
+The OS's global **QUANTIZE LIVE REC** setting — the all-or-nothing "snap
+live-recorded trigs to the step grid", *not* the per-track 50 % TRIG QUANT in the
+TRACK TRIG MENU — has no shortcut. This adds one, Digitone-style: **hold `[REC]`,
+tap `[PLAY]` twice** to toggle it, with a "QUANT LIVE REC ON / OFF" toast that
+shows while `[REC]` is held and clears when you let go (no timer). The first
+`[REC]` + `[PLAY]` still starts live recording exactly as on stock — only every
+second press within the same `[REC]` hold flips the setting, and it is swallowed
+so the transport is untouched. The setting (`0x800000ac`) already has a
+battery-SRAM shadow, so the toggle persists across a power cycle with no extra
+plumbing. Two detours, one cave: `tools/patch_qlrec.s`,
+`python3 tools/build_qlrec.py` → `140C_KYOTI`. Write-up:
 [`NOTES.md`](NOTES.md) "Session 46"; emulator `tools/emu_qlrec.py`. **Never flashed.**
 
 ### Backlog — scoped, not built

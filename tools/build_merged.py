@@ -6,11 +6,12 @@ build_merged.py -- the combined OT Kyoti FW: every final-scoped mod in ONE image
 
     stock 1.40C
       + Bug-1 MIDI manual-trig fix           (patch_trigscale)
-      + pattern-LED "only p-locks -> shows empty" fix  (patch_pattern_led)
+      + Bug-2 pattern-LED "only p-locks -> shows empty" fix  (patch_pattern_led)
       + MUTE MODE  OT / OT+FX / DT            (patch_softmute + patch_mutemode, DT_MODE=1)
       + DIRECT JUMP  [PTN]+[YES]  (v3 overlay) (patch_directjump, DJ_V3=1)
       + SIDE-CHAIN compressor  KEY/KFLT/KGAIN/MON + DSP  (patch_sidechain + patch_sc_dsp3)
       + RELOAD FROM PROJECT  hold [PTN]  (2-item)  (patch_reload2, MERGE=1)
+      + QUANTIZE LIVE REC front-panel toggle  [REC]+[PLAY]x2  (patch_qlrec)
 
 This is the NO-FLASH merge-prep build (NOTES.md "Session 45").  It exists to prove the
 five mods compose -- caves relocated to disjoint slots, the one shared key handler
@@ -33,13 +34,14 @@ Cave conflict resolution
   footprint (COMPRESSOR descriptor + FX choosers) is a region no other mod touches.
 * MUTE MODE and DIRECT JUMP both need the 'ANDY' restore extended pea 0x64 -> pea 0x70
   at 3 sites -- identical, idempotent; done once here.
-* patch_pattern_led detours ONE site (FUN_4009a464 @ 0x4009a464) that no other mod
-  touches, its cave is position-independent, and it reads the stock function's own
-  hardcoded blob base -- so it is packed LAST (keeps every other stub's address, and
-  thus the SIDE-CHAIN descriptor's formatter pointers, byte-identical to standalone).
-  Heads-up: this leaves only ~26 B free below the pinned patch_trigscale -- the next
-  ColdFire cave added here will need the pre-trigscale zone widened (lower FREE_START
-  or relocate the PERSONALIZE arrays; see reference/MERGE.md).
+* patch_pattern_led (Bug-2) detours ONE site (FUN_4009a464) nothing else touches;
+  patch_qlrec detours two ([PLAY] press 0x40061778, [REC] release 0x4004883a) that
+  nothing else touches.  Neither shares a global with the other four.
+* FREE_START was lowered to 0x400d6500 in S48 to fit QLREC (the whole
+  0x400d64da..0x400d7c3c span is zero in stock).  patch_sidechain no longer lands at
+  0x400d7000, so the COMPRESSOR descriptor's per-slot formatter pointers now differ
+  from build_sidechain3.py -- their VALUES are still asserted against sc_syms; the
+  stray-byte check exempts those 4-byte pointer slots (section 8).
 
 Usage:   python3 tools/build_merged.py [VERSTR]        (default "KYOTI_V1.0")
 Outputs: out/mainos_merged.bin, out/elek_merged.bin,
@@ -64,7 +66,8 @@ OUT_BIN = ROOT / "out/OCTATRACK_KYOTI_ALL.bin"
 # and SYSTEM STATUS -> OS VERSION both read this.  Exactly 10 chars (ELEK field cap).
 VERSTR = sys.argv[1] if len(sys.argv) > 1 else "KYOTI_V1.0"
 
-FREE_START = 0x400d7000
+FREE_START = 0x400d6500                   # widened below the old 0x400d7000 in S48 (QLREC added);
+                                         # the whole 0x400d64da..0x400d7c3c span is zero in stock.
 TRIGSCALE_AT = 0x400d7b00                 # pinned -- byte-identical to build_trigscale_only.py
 FREE_END = 0x400d7c3c
 
@@ -97,10 +100,12 @@ CF_STUBS = [
         (0x400491a0, "rl_arr_b", "2f02206f0008",     6, "jmp"),
         (0x40085864, "rl_job",  "2d4afd762f2a0004", 8, "jmp"),
     ]),
-    # LAST in pack order: keeps every other stub's address (and so the SIDE-CHAIN
-    # descriptor's formatter pointers) byte-identical to the standalone builds.
     ("patch_pattern_led", None, [                        # grid-LED "has content" predicate
         (0x4009a464, "cave", "2f02202f0008", 6, "jmp"),  # FUN_4009a464 prologue -> cave
+    ]),
+    ("patch_qlrec", None, [                              # QUANTIZE LIVE REC front-panel toggle
+        (0x40061778, "qlr_play",   "4eb94009b5c0", 6, "jmp"),   # [PLAY] press
+        (0x4004883a, "qlr_recrel", "42b9460d1726", 6, "jmp"),   # [REC] release
     ]),
 ]
 
@@ -392,9 +397,10 @@ def main():
     dj = ROOT / "out/mainos_directjump.bin"
     sc = ROOT / "out/mainos_sidechain3.bin"
     pl = ROOT / "out/mainos_patternled.bin"
-    if all(p.exists() for p in (mm, dj, sc, pl)):
+    ql = ROOT / "out/mainos_qlrec.bin"
+    if all(p.exists() for p in (mm, dj, sc, pl, ql)):
         union = set()
-        for p in (mm, dj, sc, pl, ts):
+        for p in (mm, dj, sc, pl, ql, ts):
             b = p.read_bytes()
             union |= {i for i in range(len(b)) if b[i] != stock[i]}
         cave = set()
@@ -408,6 +414,14 @@ def main():
         for a, _ in REFS:
             det |= set(range(o(a), o(a) + 4))
         det |= set(range(o(COUNT_AT), o(COUNT_AT) + 2))
+        # the COMPRESSOR descriptor's per-slot formatter pointer (E+0x102+4*slot)
+        # points INTO patch_sidechain's cave -- its *value* is asserted against
+        # sc_syms in section 2, but its bytes diverge from build_sidechain3.py
+        # whenever the merge packs that cave at a different address (it does now
+        # that FREE_START moved).  Allow the 4-byte pointer slots to differ.
+        for slot, _n, _c, _d, fmt, _cur in sc3.SLOTS:
+            if isinstance(fmt, str):
+                det |= set(range(o(E + 0x102 + 4 * slot), o(E + 0x102 + 4 * slot) + 4))
         stray = [i for i in range(len(img)) if img[i] != stock[i] and i not in union
                  and i not in cave and i not in det]
         print(f"  changes outside {{feature diffs, relocated caves, detours}}: {len(stray)}")
@@ -432,6 +446,7 @@ def main():
     print("  [PTN]+[YES] (quick): DIRECT JUMP toggle    |    hold [PTN]: RELOAD picker")
     print("  COMPRESSOR FX page 2: RMS (gap) KEY KFLT KGAIN MON;  SPATIALIZER passes through")
     print("  A p-lock-only pattern (MIDI locks / audio trigless locks) now lights its grid LED")
+    print("  [REC] held + [PLAY] x2: toggles the global live-record quantize (QUANTIZE LIVE REC)")
     print("  Revert = flash downloads/extracted/OCTATRACK_OS1.40C.syx")
     print("\n  NOT hardware-tested as a combined image -- flash the per-feature builds first")
     print("  (FLASHING.md), in order, then this.  See reference/MERGE.md.")

@@ -1,7 +1,7 @@
 # MERGE.md — combining every final-scoped mod into one firmware
 
 **Status: no-flash merge prep (2026-09-10, `wip/mute-mode`).** `tools/build_merged.py`
-composes all six and `tools/emu_merged.py` verifies the integration points. The
+composes all seven and `tools/emu_merged.py` verifies the integration points. The
 combined image is **not hardware-tested**; the per-feature HW passes in `FLASHING.md`
 come first, in order, then this.
 
@@ -10,7 +10,7 @@ detour site, or a shared global changes.
 
 ---
 
-## The six final-scoped mods
+## The seven final-scoped mods
 
 Only the *scoped* build of each — not the intermediates (`RELOAD2` not `RELOAD`,
 `SIDECHAIN3` not `SIDECHAIN`/`2`, DIRECT JUMP **v3** — see "DIRECT JUMP: use v3").
@@ -23,11 +23,12 @@ Only the *scoped* build of each — not the intermediates (`RELOAD2` not `RELOAD
 | DIRECT JUMP — `[PTN]`+`[YES]` | `build_directjump_v3.py` (**v3**) | `patch_directjump.s` (`DJ_V3=1`) |
 | SIDE-CHAIN compressor | `build_sidechain3.py` | `patch_sidechain.s` + `patch_sc_dsp3.asm` + `sc_tables.py` |
 | RELOAD FROM PROJECT — hold `[PTN]` | `build_reload2.py` | `patch_reload2.s` |
+| QUANTIZE LIVE REC — `[REC]` + `[PLAY]`×2 | `build_qlrec.py` | `patch_qlrec.s` |
 
-QUANTIZE LIVE REC (`build_qlrec.py`) is **not** in the merge — it is a small
-independent PERSONALIZE-surface toggle (`patch_qlrec.s`, one cave, two detours at
-`0x40061778` / `0x4004883a`, none shared with the six). Adding it later is a clean
-extra `CF_STUBS` entry once the pre-`patch_trigscale` zone is widened (see below).
+QUANTIZE LIVE REC is a front-panel shortcut for the OS's global live-record-quantize
+setting (`0x800000ac`) — no menu surgery, no defsym, two `jmp` detours
+(`0x40061778` [PLAY] press, `0x4004883a` [REC] release) and one cave, none of it
+shared with the other six. Added to the merge in S48 (needed `FREE_START` lowered).
 
 Combined build: **`build_merged.py`** → `out/OCTATRACK_OS1.40C_KYOTI_ALL.{syx,bin}`.
 
@@ -41,38 +42,39 @@ Combined build: **`build_merged.py`** → `out/OCTATRACK_OS1.40C_KYOTI_ALL.{syx,
    8 bytes. Resolved by a trampoline (below). *Needs integration + retest.*
 2. **Cave base `0x400d7400`** — MUTE MODE, DIRECT JUMP, RELOAD2 each link there.
    Resolved by auto-packing (below). *Mechanical.*
-3. Space: everything fits `0x400d7000–0x400d7c3c` with only **~26 B** headroom below
-   the pinned `patch_trigscale` (Bug-2's 142 B cave went in as the last stub in S48).
-   The **next** ColdFire cave added to the merge needs the pre-`patch_trigscale` zone
-   widened — lower `FREE_START` below `0x400d7000` (the whole `0x400d64da–0x400d7c3c`
-   span is free) **and** keep `patch_sidechain` linked at `0x400d7000` (its address is
-   baked into the COMPRESSOR descriptor's formatter pointers, which the verify step
-   diffs byte-for-byte against `build_sidechain3.py`) — i.e. pin `patch_sidechain` the
-   way `patch_trigscale` is pinned, and pack the rest below it.
-4. Bug-2's `patch_pattern_led` is packed **last** on purpose: its cave is
-   position-independent and it detours one site (`0x4009a464`) nothing else touches,
-   so putting it after everything keeps every other stub's address — and therefore the
-   SIDE-CHAIN descriptor bytes — identical to the standalone builds.
-5. SIDE-CHAIN is nearly orthogonal — DSP address space + a descriptor region nothing
+3. Space: **`FREE_START` was lowered to `0x400d6500`** in S48 (Bug-2 then QLREC filled
+   the old `0x400d7000` zone). The whole `0x400d64da–0x400d7c3c` span is zero in stock;
+   the seven ColdFire caves now occupy `0x400d6500–0x400d70aa` (**~2.6 KB headroom**
+   below the pinned `patch_trigscale`).
+4. Consequence of (3): `patch_sidechain`'s cave no longer lands at `0x400d7000`, so the
+   COMPRESSOR descriptor's per-slot formatter pointers (`E+0x102+4*slot`) differ from
+   `build_sidechain3.py`. Their **values** are still asserted against `sc_syms` in
+   section 2; the stray-byte check (section 8) exempts those four-byte pointer slots.
+5. SIDE-CHAIN is otherwise orthogonal — DSP address space + a descriptor region nothing
    else touches.
-6. `patch_trigscale` is byte-identical in every build; it is the shared base.
+6. Bug-2 (`patch_pattern_led`) and QLREC (`patch_qlrec`) each detour only sites nothing
+   else touches (`0x4009a464`; `0x40061778` / `0x4004883a`) and share no global with the
+   other five.
+7. `patch_trigscale` is byte-identical in every build; it is the shared base.
 
 ---
 
 ## ColdFire cave allocation (as `build_merged.py` packs it)
 
-Free zone `0x400d7000 … 0x400d7c3c` (3132 B). Packed from the bottom;
-`patch_trigscale` pinned at `0x400d7b00` so its bytes match `build_trigscale_only.py`.
+Free zone `0x400d6500 … 0x400d7c3c` (~5.8 KB). Packed from the bottom;
+`patch_trigscale` pinned at `0x400d7b00` so its bytes match `build_trigscale_only.py`,
+and the relocated PERSONALIZE menu arrays go after it.
 
 | Cave | Addr | Size | Notes |
 |---|---|---|---|
-| `patch_sidechain` (CF: `key_fmt` / `kfilt_fmt`) | `0x400d7000` | 140 B | + descriptor & chooser edits outside the zone; address baked into the descriptor |
-| `patch_softmute` (`DT_MODE=1`) | `0x400d708c` | 368 B | |
-| `patch_mutemode` (`DT_MODE=1`) | `0x400d71fc` | 136 B | |
-| `patch_directjump` (`DJ_V3=1`) | `0x400d7284` | 490 B | `dj_toggle` reached via chain, not a detour |
-| `patch_reload2` (`MERGE=1`) | `0x400d7470` | 1512 B | TRK SEQ / PTN SEQ / PART + PTN SEQ (S47) |
-| `patch_pattern_led` | `0x400d7a58` | 142 B | Bug-2; packed last, position-independent |
-| — free — | `0x400d7ae6` | 26 B | **tight — widen the zone before the next cave** |
+| `patch_sidechain` (CF: `key_fmt` / `kfilt_fmt`) | `0x400d6500` | 140 B | + descriptor & chooser edits outside the zone; descriptor pointers track this addr |
+| `patch_softmute` (`DT_MODE=1`) | `0x400d658c` | 368 B | |
+| `patch_mutemode` (`DT_MODE=1`) | `0x400d66fc` | 136 B | |
+| `patch_directjump` (`DJ_V3=1`) | `0x400d6784` | 490 B | `dj_toggle` reached via chain, not a detour |
+| `patch_reload2` (`MERGE=1`) | `0x400d6970` | 1512 B | TRK SEQ / PTN SEQ / PART + PTN SEQ (S47) |
+| `patch_pattern_led` | `0x400d6f58` | 142 B | Bug-2 |
+| `patch_qlrec` | `0x400d6fe8` | 194 B | QUANTIZE LIVE REC |
+| — free — | `0x400d70aa` | ~2.6 KB | to the pin |
 | `patch_trigscale` | `0x400d7b00` | 62 B | **pinned** |
 | PERSONALIZE menu arrays ×3 (17 entries) | `0x400d7b40` | 204 B | relocated from `0x400b2a34/74/c0`; **placed after trigscale** (S47 -- RELOAD2 grew) |
 | — free — | `0x400d7c0c` | 48 B | |
@@ -97,6 +99,8 @@ these into another tool; read them from a build run.
 |---|---|---|---|---|
 | `0x4009b6f2` | Bug-1 | `cave` | jmp+6nop (18) | `move.l #0x91a,d0` … |
 | `0x4009a464` | Bug-2 | `cave` | jmp (6) | `move.l d2,-(sp) ; move.l 8(sp),d0` (cave replays both, then either returns 1 or `jmp 0x4009a46a` into the stock body) |
+| `0x40061778` | QLREC | `qlr_play` | jmp (6) | `jsr 0x4009b5c0` ([PLAY] press; cave replays it on the stock path, resumes `0x4006177e`) |
+| `0x4004883a` | QLREC | `qlr_recrel` | jmp (6) | `clr.l 0x460d1726` ([REC] release; cave replays it, then clears its own counter) |
 | `0x40004dc6` | MUTE MODE | `pre` | jmp (6) | `move.l 0x80000008,d5` |
 | `0x40005178` | MUTE MODE | `pre_v` | jmp (8) | `lea -0xc(sp),sp` … |
 | `0x400a4006` | DIRECT JUMP | `dj_a` | jsr (6) | `tst.b (0x8000667e).l` |
@@ -162,14 +166,15 @@ separate `DJ_V3` overlay switch.)
 
 ## Shared / adjacent state — all compatible
 
-| Concern | MUTE MODE | DIRECT JUMP | RELOAD2 | Verdict |
-|---|---|---|---|---|
-| PERSONALIZE word | `0x800000dc` | `0x800000d8` | — | distinct |
-| 'ANDY' SRAM shadow | `0x100fff6c` | `0x100fff68` | — | distinct, both in the extended `0x70` window |
-| `pea 0x64→0x70` ×3 | yes | yes | no | identical write, idempotent |
-| scratch RAM globals | `0x80006c66` | `0x80006a40–44` | `0x80006a50–55` | disjoint (QLREC, if merged: `0x80006a5c`/`0x60`) |
-| `[PTN]` flags | — | reads `0x460d1742` | detours PTN handler, replays prologue on non-hold | stock still sets `0x460d1742`; both set `PTN_USED 0x460d173e` |
-| PERSONALIZE menu | owns the surgery | no menu entry | no menu entry | only MUTE MODE |
+| Concern | MUTE MODE | DIRECT JUMP | RELOAD2 | QLREC | Verdict |
+|---|---|---|---|---|---|
+| runtime setting word | `0x800000dc` | `0x800000d8` | — | `0x800000ac` (stock — QLREC only flips it) | distinct; `0xac` is in the stock `0x64` restore span already |
+| SRAM shadow | `0x100fff6c` | `0x100fff68` | — | `0x100fff3c` (stock) | distinct |
+| `pea 0x64→0x70` ×3 | yes | yes | no | no (`0xac` < `0xd3`, in the stock span) | identical write, idempotent |
+| scratch RAM globals | `0x80006c66` | `0x80006a40–44` | `0x80006a50–55` | `0x80006a5c` / `0x80006a60` | disjoint |
+| `[PTN]` flags | — | reads `0x460d1742` | detours PTN handler, replays prologue on non-hold | — | stock still sets `0x460d1742`; both set `PTN_USED 0x460d173e` |
+| menu surgery | owns it | none | none | none | only MUTE MODE |
+| `[REC] held` `0x460d1726` | — | — | — | detours the release path, replays `clr.l` | stock still sets it on press |
 
 **Gesture split:** quick `[PTN]`+`[YES]` = DIRECT JUMP toggle; `[PTN]` **hold** =
 RELOAD picker. Confirm the hold feel on hardware (HW unknown, `FLASHING.md` §4.7).
@@ -222,14 +227,17 @@ python3 tools/emu_merged.py              # STATIC + DYNAMIC, expect "ALL GOOD"
 
 `build_merged.py` asserts: cave layout disjoint + inside the zone; every displaced-byte
 guard; no two detours at one site; Bug-1 bytes identical to `build_trigscale_only.py`;
-every change is one a standalone feature also makes (bar relocated caves / detours);
-round-trip + checksum through Elektron's tool. The SIDE-CHAIN DSP + descriptor bytes
-are byte-identical to `build_sidechain3.py`.
+every change is one a standalone feature also makes (bar relocated caves / detours /
+the four SIDE-CHAIN descriptor pointer slots, which track `patch_sidechain`'s address);
+round-trip + checksum through Elektron's tool. The SIDE-CHAIN DSP bytes are
+byte-identical to `build_sidechain3.py`.
 
 `emu_merged.py` also asserts the Bug-2 detour (`0x4009a464` → `patch_pattern_led:cave`,
-cave ends `jmp 0x4009a46a`) and `tools/emu_pattern_led.py --image out/mainos_merged.bin`
+cave ends `jmp 0x4009a46a`) and the two QLREC detours (`0x40061778` / `0x4004883a` →
+`patch_qlrec:qlr_play` / `qlr_recrel`). `tools/emu_pattern_led.py --image out/mainos_merged.bin`
 re-runs the full Bug-2 case set against the relocated cave in the combined image
-(ALL GOOD, S48).
+(ALL GOOD, S48); QLREC's cave logic is covered by `emu_qlrec.py` on the standalone
+(same bytes, re-linked).
 
 The per-feature `emu_*.py` still run against their **standalone** images (they assert
 `0x400d7400`-era cave addresses); `emu_merged.py` covers the merge-specific risk only.
@@ -241,9 +249,9 @@ asserted byte-identical to v1).
 ## Order of operations (when the MKI is back)
 
 1. Flash & sign off each feature standalone, in the `FLASHING.md` / `START_HERE.md`
-   order: **DT → SIDECHAIN2 → SIDECHAIN3 → DIRECTJUMP** (+ Bug-2 confirm, p-lock
-   Phase-0). DIRECT JUMP: flash **v3** (`build_directjump_v3.py`) — that is what the
-   merge carries; check the toast reads cleanly and `DJ_TOAST_DUR` feels right.
+   order: **DT → SIDECHAIN2 → SIDECHAIN3 → DIRECTJUMP** (+ Bug-2 confirm, QLREC confirm,
+   p-lock Phase-0). DIRECT JUMP: flash **v3** (`build_directjump_v3.py`) — that is what
+   the merge carries; check the toast reads cleanly and `DJ_TOAST_DUR` feels right.
 2. Only then flash `OCTATRACK_KYOTI_ALL.bin` and re-run each feature's HW checklist on
    the combined image, plus: the `[PTN]` gesture split (tap vs hold), MUTE MODE while
    the RELOAD picker is open, a DIRECT JUMP toggle immediately after a RELOAD.

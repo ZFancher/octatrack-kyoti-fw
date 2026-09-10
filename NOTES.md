@@ -6429,21 +6429,33 @@ before each probe (so "empty stays empty" is real, not a zero-fill artefact).
 `140C` version unchanged (`1.40C`), container round-trips (`payload ok, checksum ok`).
 Base = **stock 1.40C only** (no Bug-1 fix, no other Kyoti mods — standalone single fix).
 
-### Merge — DONE (S48)
-`build_merged.py` now carries it as a 6th `CF_STUBS` entry, **packed last** (position-independent
-cave, single detour at a site nothing else touches → keeps every other stub's address, so the
-SIDE-CHAIN descriptor's formatter pointers stay byte-identical to `build_sidechain3.py`). Lands
-at `0x400d7a58` (142 B) → **only 26 B free** below the pinned `patch_trigscale` — the next
-merge cave needs the zone widened (pin `patch_sidechain` at `0x400d7000` like trigscale, lower
-`FREE_START`). `emu_merged.py` asserts the detour + the `jmp 0x4009a46a` tail;
-`emu_pattern_led.py --image out/mainos_merged.bin` re-runs the full case set on the relocated
-cave — **ALL GOOD**. `changes outside {feature diffs, caves, detours}: 0`, round-trip + checksum OK.
-`reference/MERGE.md` updated (6 mods, cave table, detour inventory, the widen-the-zone note).
+### Merge — DONE (S48), and QUANTIZE LIVE REC (S46) folded in at the same time
+`build_merged.py` now composes **seven** mods (added `patch_pattern_led` **and** `patch_qlrec`).
+- **`FREE_START` lowered `0x400d7000` → `0x400d6500`** — Bug-2 + QLREC overflowed the old zone
+  (was 26 B free after Bug-2 alone). The whole `0x400d64da–0x400d7c3c` span is zero in stock.
+  Seven caves now occupy `0x400d6500–0x400d70aa`, ~2.6 KB free to the pinned `patch_trigscale`.
+- **Consequence:** `patch_sidechain`'s cave no longer lands at `0x400d7000`, so the COMPRESSOR
+  descriptor's per-slot formatter pointers (`E+0x102+4*slot`) differ from `build_sidechain3.py`.
+  Their *values* are still asserted vs `sc_syms`; the stray-byte check (section 8) now exempts
+  those 4-byte pointer slots (`for slot … if isinstance(fmt, str)`).
+- `patch_qlrec`: generic `CF_STUBS` entry, no defsym, two `jmp` detours (`0x40061778` [PLAY]
+  press, `0x4004883a` [REC] release), shares no global with the other six (`0x800000ac` is
+  stock and already inside the `0x64` restore span → no `pea 0x64→0x70` needed).
+- `emu_merged.py`: asserts the Bug-2 detour + `jmp 0x4009a46a` tail + both QLREC detours;
+  cave-zone check now `0x400d6500..`. `emu_pattern_led.py --image out/mainos_merged.bin`
+  re-runs the full Bug-2 set on the relocated cave — **ALL GOOD**. QLREC cave logic covered
+  by `emu_qlrec.py` on the standalone (same bytes, re-linked). `emu_merged.py` **ALL GOOD**.
+- `changes outside {feature diffs, caves, detours}: 0`, round-trip + checksum OK, Bug-1 bytes
+  byte-identical. `OCTATRACK_OS1.40C_KYOTI_ALL.{syx,bin}` = `KYOTI_V1.0`, 4041 B vs stock.
 
 ### Docs
-README.md ("Bug 2" section + QUANTIZE LIVE REC section — the latter was missing entirely —
-+ HW-status rows), BUILD_KYOTI.md ("What you get" + HW-status rows for Bug-2 and QLREC),
-reference/MERGE.md.
+README.md ("Bug 2" section + a QUANTIZE LIVE REC section — the latter was **missing entirely**
+— + HW-status rows), BUILD_KYOTI.md ("What you get" + HW-status rows for Bug-2 and QLREC),
+`reference/MERGE.md` (now "seven final-scoped mods": cave table, detour inventory, shared-state
+table, the `FREE_START`-lowered / descriptor-pointer-exemption notes). **QUANTIZE LIVE REC
+wording:** reworded away from "the PERSONALIZE row" — describe it as the OS's global
+live-record-quantize setting (`0x800000ac`, battery-shadowed); user says it is *not* a
+PERSONALIZE toggle (patch_qlrec.s / NOTES S46 still say "PERSONALIZE menu index 0" — reconcile).
 
 ### Open / next
 - **HW confirm on the MKI**: create a real MIDI-track p-lock with no note (trigless), select
