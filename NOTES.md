@@ -6166,3 +6166,107 @@ persistence) is v1's recipe verbatim.
   unaffected).
 - v1 (`build_directjump.py`) + v2 kept for the standalone line until v3 flashes.
   `emu_directjump.py` still covers dj_a/b/c (run after `build_directjump.py`).
+
+## Session 46 (2026-09-09, `wip/mute-mode`) — QUANTIZE LIVE REC front-panel toggle: `[REC]` + double-`[PLAY]` (built, emu-clean, NOT flashed)
+
+Surface the PERSONALIZE **QUANTIZE LIVE REC** row (the OT's all-or-nothing live-record
+quantize — *not* the per-track 50% TRIG QUANT) to the panel, Digitone-style:
+**hold `[REC]`, tap `[PLAY]` twice** to toggle, with a "QUANT LIVE REC ON / OFF"
+toast that shows while `[REC]` is held and clears when it is released (**no timer** —
+user's call).
+
+### RE (against `out/raw/section_3_MAIN_OS.bin`, base `0x40000400`)
+
+- **`QUANTIZE LIVE REC` = `0x800000ac`** (runtime word), PERSONALIZE menu **index 0**.
+  Getter `0x40068ce0` (returns OFF-glyph `0x400b5e8e` / ON-glyph `0x400b5e90` — same
+  checkbox glyphs Session 9 noted), setter `0x40068ca0`. **Plain boolean**, 0 = OFF.
+- **Persistence is entirely stock.** `0x800000ac` is `+0x3c` inside the stock `0x64`
+  `'ANDY'`-restore span (`0x80000070..0xd3`) → restored on boot with **no build
+  change** (unlike MUTE MODE `0xdc` / DIRECT JUMP `0xd8`, which sit past `0xd3` and
+  needed `pea 0x64→0x70`). The stock setter writes both `0x800000ac` and shadow
+  `0x100fff3c` (= `0x100fff00 + 0xac − 0x70`), then the dispatcher re-checksums via
+  `jmp 0x4001f23c @ 0x40069074`. Our toggle bypasses the dispatcher, so it mirrors the
+  setter (write both words) **and** `jsr FUN_4001f23c` itself.
+- **Panel PLAY/REC/STOP go through the 26-byte keymap, codes `0x28`/`0x29`/`0x27`** —
+  *not* the `0x400d2d54[27..29]` jump table (that path is the MIDI/DIN "RECEIVE
+  TRANSPORT" remote, gated on setting `0x80000029`; `0x4000a200`'s first insn is
+  `tstb 0x80000029; beq rts`, and the `0x40001998` dispatcher only covers keycodes
+  16–32). KB's hedge on that table was right. octabam's `emu_rtos` drives the remote
+  path because its harness has `0x80000029` set.
+  | key | keymap code | handler | notes |
+  |---|---|---|---|
+  | STOP | `0x27` | `0x4004aca4` | clears `0x460d172a` (live-rec) |
+  | **PLAY** | `0x28` | `0x40061778` | press only (flags word `0` → no hold/repeat events) |
+  | **REC** | `0x29` | `0x40048774` | press **and** release |
+- **`0x460d1726` = "REC held"** (longword). Set to 1 at the end of *every* REC press
+  (`0x40048830`), cleared on REC release (`0x4004883a: clr.l 0x460d1726; rts`). No
+  other handler distinguishes it → a clean held-modifier flag. Also reachable as
+  `is_key_held(code)` = `FUN_4003171c` → `*(u32*)(0x46c7d8ee + code*24)` (the runtime
+  key-state table, base `0x46c7d8de`, stride 24, `+16` = held flag; populated for
+  every keycode ≤ 63 by `set_key_state 0x40031734`, the sole per-key dispatcher, from
+  the T1/T2 keymap). REC has no hold/repeat (`flags` = 0) so `0x40061778` fires once
+  per physical PLAY press, event 1 only — the press counter is safe.
+- **`0x40061778` (PLAY) already branches on `0x460d1726`**: REC held → start LIVE REC
+  (`0x460d172a = 1`); not held → plain transport toggle. First insn is
+  `jsr 0x4009b5c0` (the "project ready?" gate → "WAIT" toast). We detour that 6 B and
+  resume the stock path at `0x4006177e`.
+- **Persistent toast:** `FUN_4005a2b8(text, dur)` with **`dur = 0`** takes the
+  `0x4005a334` branch → no auto-close countdown; handle in `0x460d1e70`. Close with
+  **`0x40056bec()`** (no args, no-op if none open). (`dur > 0` = the self-timing
+  "PART n RELOADED" path DIRECT JUMP v3 uses.)
+
+### Design (2 detours, 1 cave @ `0x400d7400`, 200 B)
+
+| Site | 6 B displaced | → |
+|---|---|---|
+| `0x40061778` | `jsr 0x4009b5c0` | `jmp qlr_play` |
+| `0x4004883a` | `clr.l 0x460d1726` | `jmp qlr_recrel` |
+
+`qlr_play`: REC not held → replay `jsr 0x4009b5c0` + `jmp 0x4006177e`. REC held →
+`++G_CNT`; press 1 → stock (stock starts live rec — Digitone parity); even press
+(2,4,…) → `0x800000ac ^= 1`, write shadow, `jsr FUN_4001f23c`, `FUN_4005a2b8(msg, 0)`,
+set `G_OURS`, `rts` (swallow — transport untouched); odd press ≥ 3 → `rts` (swallow,
+leave transport alone). `qlr_recrel`: `clr.l 0x460d1726` (displaced) + `clr.l G_CNT` +
+if `G_OURS` → `jsr 0x40056bec` + `clr.b G_OURS`. Scratch: `G_CNT` `0x80006a5c` (long),
+`G_OURS` `0x80006a60` (byte) — disjoint from MUTE MODE `0x80006c66` / DIRECT JUMP
+`0x80006a40-44` / RELOAD2 `0x80006a50-53`.
+
+### Tooling (`tools/`, committed)
+
+- **`patch_qlrec.s`** — `qlr_play` + `qlr_recrel`, strings `"QUANT LIVE REC ON"` (17) /
+  `"QUANT LIVE REC OFF"` (18) — kept ≤ 18 up front (`FUN_4005a2b8` window = `textpx+15`;
+  the full "QUANTIZE LIVE REC OFF" at 21 ch overruns 128 px).
+- **`build_qlrec.py`** — base = stock + Bug-1 fix (`patch_trigscale` @ `0x400d7b00`);
+  `patch_qlrec` 194 B @ `0x400d7400`; 2 detours (guarded). Asserts `0x800000ac` is
+  inside the stock restore span (no `pea 0x64` widen), Bug-1 bytes identical.
+  → `out/OCTATRACK_OS1.40C_QLREC.{syx,bin}` (`140C_KYOTI`, 247 B vs stock).
+  Round-trip + checksum OK.
+- **`emu_qlrec.py`** — isolation-runs both cave routines on the assembled bytes (OS
+  calls stubbed to `rts`): press-1 → stock; press-2 → flip 0→1 + shadow + cksum +
+  `NOTIFY("…ON", 0)` + swallow; press-3 → swallow only; press-4 → flip 1→0 +
+  `NOTIFY("…OFF")`; REC-not-held → stock resume; `qlr_recrel` clears both flags and
+  closes the toast iff `G_OURS`. **ALL GOOD.**
+
+### HW-verify (when the MKI is back) / open
+
+1. **Toast width** — strings are `"QUANT LIVE REC ON/OFF"` (17/18 ch), chosen to fit
+   (`FUN_4005a2b8` window = `textpx + 15`; the full "QUANTIZE LIVE REC OFF" at 21 ch
+   overruns 128 px). Eyeball it on HW anyway.
+2. **First `[REC]`+`[PLAY]` still starts live recording** (stock, intended). Confirm
+   that feels right; the toggle gesture inherently enters live-rec.
+3. **Odd presses ≥ 3 are swallowed** while `[REC]` stays held — so you can't stop
+   live-rec with `[REC]`+`[PLAY]` again without releasing `[REC]` first. Confirm
+   acceptable.
+4. PLAY key has no auto-repeat (`flags` = 0) — verify no repeated press events under a
+   long hold.
+5. Persistence: toggle ON via the combo, power-cycle, PERSONALIZE row still checked;
+   and toggling in the menu still reflects via the combo path.
+6. **Merge:** not in `build_merged.py` yet. When added — no detour-site or ANDY-word
+   collision (`0x800000ac` is stock, distinct from `0xd8`/`0xdc`); scratch words
+   `0x80006a5c`/`0x60` need a `MERGE.md` row; cave packs like the others. The
+   persistent-toast handle `0x460d1e70` is `FUN_4005a2b8`'s own (distinct from
+   RELOAD2's picker `0x460d1e64` and DIRECT JUMP v3 which self-times) — but a stock
+   "PART n RELOADED" up when you release `[REC]` would be closed early by
+   `0x40056bec` (minor; `G_OURS` already gates it to the case where we opened one).
+
+NOT flashed (user away from the MKI). Committed to `wip/mute-mode` (this commit), not pushed.

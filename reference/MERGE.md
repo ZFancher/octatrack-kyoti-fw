@@ -148,7 +148,7 @@ separate `DJ_V3` overlay switch.)
 | PERSONALIZE word | `0x800000dc` | `0x800000d8` | — | distinct |
 | 'ANDY' SRAM shadow | `0x100fff6c` | `0x100fff68` | — | distinct, both in the extended `0x70` window |
 | `pea 0x64→0x70` ×3 | yes | yes | no | identical write, idempotent |
-| scratch RAM globals | `0x80006c66` | `0x80006a40–44` | `0x80006a50–53` | disjoint |
+| scratch RAM globals | `0x80006c66` | `0x80006a40–44` | `0x80006a50–53` | disjoint (QLREC, if merged: `0x80006a5c`/`0x60`) |
 | `[PTN]` flags | — | reads `0x460d1742` | detours PTN handler, replays prologue on non-hold | stock still sets `0x460d1742`; both set `PTN_USED 0x460d173e` |
 | PERSONALIZE menu | owns the surgery | no menu entry | no menu entry | only MUTE MODE |
 

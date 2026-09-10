@@ -193,6 +193,8 @@ adds `0x1c..0x1f`); selector structs `{table_ptr, 0x400c085a}` at `0x400c090c` /
 |---|---|---|---|---|---|
 | trig 1–16 | `0x00–0x0f` | `0x40060ce0` | **PTN** | `0x2e` | `FUN_4005a044` |
 | track keys | `0x10–0x17` | `0x40040250` → mute `FUN_40083ab4` | **BANK** | `0x2f` | `0x4007af80` |
+| **STOP** | `0x27` | `0x4004aca4` | **PLAY** | `0x28` | `0x40061778` (press only) |
+| **REC** | `0x29` | `0x40048774` (press + release) | | | |
 | param-page | `0x22–0x26` | `FUN_4005578c` (via `0x400a7280={0,2,1,3,4}`) | **PAGE** | `0x1b` | `FUN_4004ffc4` |
 | MKII MAIN MENU | `0x1c` | `0x40064d78` → `FUN_40064c18` | **YES** | `0x31` | `0x4005e4c8` |
 | **arrow UP** | `0x34` | `0x4004b970` | **NO** | `0x32` | `0x4005e25c` |
@@ -223,7 +225,9 @@ release → opens SELECT PATTERN (`FUN_40059f8c(0x400b484e, 0xf0, 1, 0x40043418)
 
 | Addr | Conf | What |
 |---|---|---|
-| `0x400d2d54` | L | keycode-indexed jump table octabam labelled physical-key (REC `0x4000a274` / PLAY `0x4000a200` / STOP `0x4000a1e0` at `[27..29]`); our disasm shows the neighbours are clock/tick stubs, so treat the "physical-key" label as unconfirmed — the 26-byte keymap above is the reliable one. |
+| `0x400d2d54` | C | keycode-indexed jump table; `[27..29]` = `0x4000a274`/`0x4000a200`/`0x4000a1e0`. **This is the MIDI/DIN "RECEIVE TRANSPORT" remote path, not the panel** — each entry's first insn is `tstb 0x80000029; beq rts` (`0x80000029` = the RECEIVE TRANSPORT setting), and the `0x40001998` dispatcher only indexes keycodes 16–32. Panel PLAY/REC/STOP = keymap codes `0x28`/`0x29`/`0x27` (above). octabam's `emu_rtos` drives this path because its harness has `0x80000029` set. |
+| `0x460d1726` | C | **"REC held"** (longword) — set to 1 at the end of every `[REC]` press (`0x40048830`), cleared on `[REC]` release (`0x4004883a`). No other handler distinguishes it → `[REC]`+X is a free chord. `0x40061778` (PLAY) already reads it: held → start LIVE REC, else transport toggle. (QUANTIZE LIVE REC toggle, NOTES Session 46.) |
+| `0x46c7d8de` | C | runtime key-state table, stride **24**, one record per keycode ≤ 63, populated from the T1/T2 keymap by `set_key_state 0x40031734` (the sole per-key dispatcher: `set_key_state(code,event)` → calls the record's press/release handler with `(code@4, event@8)`). Record `+16` = held flag → `is_key_held(code)` = `FUN_4003171c` = `*(u32*)(0x46c7d8ee + code*24)`. `+8` (u16, from the keymap `flags` field) = hold/repeat delay; `0` ⇒ press fires once, no auto-repeat (true for all of trig / track / PLAY / REC / PTN / BANK; nonzero only for the arrows). |
 | `0x80000000` | C | current audio track (byte; UI mirror `0x100b14cc`). `0x80000012 != 0` = MIDI mode (page resolution adds +8). FUNC is **not** a plain keymap record — its held-flag was not located (Session 21). |
 | `_DAT_460e5cd0` | C | `!= 0` ⇒ a `FUN_4006d57c` dialog is open (that ctor bails on it at entry). Gate a new global combo on `== 0`. |
 
@@ -234,6 +238,7 @@ release → opens SELECT PATTERN (`FUN_40059f8c(0x400b484e, 0xf0, 1, 0x40043418)
 | `FUN_4006d57c(title,nLines,lines,3,handler)` | **blocking** YES/NO dialog (needs a keypress); sets `0x460e5cd0` |
 | `FUN_40059f8c(text, ticks, enable, on_timeout)` | auto-dismiss window, h=30px — **hardcodes `0x460d1e54 = 4` countdown boxes** (drawn by `0x40037cc8`, gated `0x460d1e5c != 0`), handle in `0x460d1e5c` (SELECT-BANK/PTN global, but the "in SELECT BANK" test also needs `0x460d1e60 == 0x4007b408`). Tick `FUN_40056ab8` (0 locatable callers but HW-confirmed live) → expiry `FUN_40056a70` (SELECT-close **then** jmp `0x460d1e60`, so the `on_timeout` cb fires only if `0x460d1e5c != 0`). **DIRECT JUMP v1's toggle** (`ticks 0x28` ≈ 0.66 s). |
 | `FUN_4005a0e0(text)` | **bare text popup**, h=18px, own handle `0x460d1e64`, font `0x400ba862`, ctor `FUN_4005829c(w, 0x12, 0,0, 0xa, FUN_40056bc0)`, close cb `FUN_40056bc0`, **no timeout**. DEAD CODE in stock (0 callers). **DIRECT JUMP v2** revives it + `dj_tick2` (a frame countdown spliced at `0x400522ca` inside the per-frame fn `@0x40052200`) for a box-free auto-dismiss toast. |
+| `FUN_4005a2b8(text, dur)` | the OS notification (= ems-octakit `GK_STOCK_NOTIFICATION_SHOW`, stock's "PART n RELOADED"). `dur > 0` → self-timing, no handle to manage (**DIRECT JUMP v3**, `patch_reload2` `rl_yes`). **`dur ≤ 0` → persistent** (the `0x4005a334` branch, no countdown); handle `0x460d1e70`, close explicitly with **`0x40056bec()`** (no args, no-op if none open). Window auto-sizes to `textpx + 15`, h=18px. **QUANTIZE LIVE REC** (NOTES Session 46) uses `dur = 0`, closed on `[REC]` release. |
 | `FUN_4005829c(x,y,w,h,?,close_cb)` | bare window ctor; `FUN_40012f30` measures text, `FUN_40057008`/`FUN_40013904` draw. |
 | `FUN_400808bc` | non-modal overlay example ("RELOADING BANK"), handle `0x460f790c`, explicit close. |
 | `FUN_4001f23c` | recompute + store the `'ANDY'` block checksum (`0x100fff00`, over `0x100fff04`+252 B, `+=514`). Self-contained, no args, `rts`. Call this after writing an ANDY shadow from **outside** the PERSONALIZE dispatcher (which does it via `jmp 0x4001f23c @ 0x40069074`). |
