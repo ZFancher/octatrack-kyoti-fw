@@ -140,32 +140,39 @@ it has **no timeout** — it stays until you answer it. While it is open
 `[YES]`/`[NO]` act only on the picker. All items reload from the card's last
 **SAVE BANK** snapshot:
 
-| item (3-item build) | what it does | how |
-|---|---|---|
-| **RLD SEQ** | the active pattern's sequence data (trigs, p-locks, length, scale, trig conditions, microtiming, the pattern→part link) | an async job on the storage task parses that one pattern from `bankNN.strd` with the firmware's own per-pattern chunk parser, copies it into the live blob, and fires the sequencer's own no-stop reload flag. Nothing else is touched — no other pattern, no Part, no other bank, no disk write. |
-| **RLD PARTS** | all 4 Parts, to their last saved state | the stock RELOAD PART path, run ×4 (`FUN_4004aab4`) |
-| **RLD WHOLE** | both | |
+The **SEQ-focused build** (`tools/patch_reload2.s`, `python3 tools/build_reload2.py`
+→ `OCTATRACK_OS1.40C_RELOAD2.{syx,bin}`) — the window opens with **TRK SEQ**
+highlighted, so `[PTN]`-hold then `[YES]` is a complete gesture:
 
-Guards are the stock ones: a never-saved bank shows *"THIS BANK HAS NEVER BEEN
-SAVED! NOTHING TO RELOAD!"*; a never-saved Part shows *"SAVE PART FIRST!"*. No
-confirmation prompt.
+| item | what it does |
+|---|---|
+| **TRK SEQ** | the sequence data of the **one currently-addressed track** — audio track if you are on the audio pages, MIDI track if on the MIDI pages. Everything for that track (regular + recorder trigs, trigless trigs, trigless locks and their locked values, swing/slide, micro-timing, trig conditions, its step count). The other 7 tracks, the pattern length/scale, and the pattern→Part link are all left alone. |
+| **PTN SEQ** | the whole active pattern's sequence data — all 8 audio + all 8 MIDI tracks + length + scale. The pattern's Part **assignment is preserved** (a sequence reload never re-points the pattern at a different Part). |
+| **PART + PTN SEQ** | faithful restore: PTN SEQ *including* the Part link, then that saved Part is made current on the engine. The pattern comes back exactly as the card has it. |
 
-`tools/patch_reload.s` — six hooks (the `[PTN]` key handler for the hold, the
-`[NO]` and `[YES]` handlers, two arrow key handlers, and the storage task's
-bank-reload case). `python3 tools/build_reload.py` → `140C_KYOTI`. Write-up:
-[`NOTES.md`](NOTES.md) "Session 42" + "Session 43" + "Session 44"; emulator
-`tools/emu_reload.py` — `--combo` (the whole picker, single-stepped) and
-`--patched` (the SEQ worker end to end in the full-firmware emulator) both pass;
-the hold-event feel, whether an arrow reaches the picker on hardware, the parse
-against a real CF card and the picker rendering are a **hardware** test.
-**Never flashed.**
+The 3-item build `tools/patch_reload.s` (`python3 tools/build_reload.py`) has
+**PTN SEQ** / **ALL PARTS** (all 4 Parts, `FUN_4004aab4` ×4) / **PARTS + PTN SEQ**
+instead.
 
-**Scaled-down build** (`tools/patch_reload2.s`, `python3 tools/build_reload2.py`
-→ `OCTATRACK_OS1.40C_RELOAD2.{syx,bin}`): same window, a 2-item picker —
-**`SEQ DATA`** (= `RLD SEQ`) and **`PART + SEQ DATA`** (that, plus the one Part
-the pattern is assigned to, via `FUN_4004aab4`). No `ALL PARTS`. A separate
-image; `build_reload.py`'s 3-item menu is unchanged. `tools/emu_reload2.py
---combo` + `--patched` pass. [`NOTES.md`](NOTES.md) "Session 43".
+Both: an async job on the storage task parses the target pattern from `bankNN.strd`
+with the firmware's own per-pattern chunk parser, copies it into the live blob, and
+fires the sequencer's own no-stop reload flag. No other pattern, no other bank, no
+disk write. Guards are the stock ones: a never-saved bank shows *"THIS BANK HAS
+NEVER BEEN SAVED! NOTHING TO RELOAD!"*. No confirmation prompt.
+
+Six hooks (the `[PTN]` key handler for the hold, the `[NO]` and `[YES]` handlers,
+two arrow key handlers, and the storage task's bank-reload case). Write-up:
+[`NOTES.md`](NOTES.md) "Session 42"–"44" + "Session 47"; emulator
+`tools/emu_reload.py` / `emu_reload2.py` — `--combo` (the whole picker,
+single-stepped), `--patched` (the whole-pattern SEQ worker end to end), and
+`--trk` (per-track slice: only the addressed track reverts) pass. The hold-event
+feel, whether an arrow/track key reaches the picker on hardware, `FUN_40009094`
+from the storage task while playing, and the parse against a real CF card are a
+**hardware** test. **Never flashed.**
+
+A **power move** — hold `[PTN]` + tap a `[TRACK]` key for immediate per-track
+reload, no picker — is scoped but not built (the chord is free; it needs a
+track-key-handler hook).
 
 ### Backlog — scoped, not built
 
@@ -188,7 +195,7 @@ image; `build_reload.py`'s 3-item menu is unchanged. `tools/emu_reload2.py
 | **DIRECT JUMP** pattern-change mode | `build_directjump*.py` | **emulator only** (stub-level), never flashed |
 | side-chain `KEY` menu + formatter | `build_sidechain.py` / `build_sidechain3.py` | **emulator only**, never flashed |
 | side-chain DSP hooks | `build_sidechain2.py` / `build_sidechain3.py` | hooks **emulator-verified** (dsp56kEmu); audio path untested, never flashed |
-| **RELOAD FROM PROJECT** — modal picker + SEQ / PARTS / WHOLE | `build_reload.py` (3-item) / `build_reload2.py` (2-item: SEQ DATA / PART + SEQ DATA) | modal picker + the SEQ worker **emulator-verified end to end** (`emu_reload.py` / `emu_reload2.py`); the parse vs a real card and whether arrows reach the picker on HW are hardware tests, never flashed |
+| **RELOAD FROM PROJECT** — modal picker | `build_reload2.py` (TRK SEQ / PTN SEQ / PART + PTN SEQ) / `build_reload.py` (PTN SEQ / ALL PARTS / PARTS + PTN SEQ) | modal picker + the SEQ worker **emulator-verified end to end** (`emu_reload.py` / `emu_reload2.py` — `--combo` / `--patched` / `--trk`); the parse vs a real card, `FUN_40009094` from the storage task, and whether arrows/track keys reach the picker on HW are hardware tests, never flashed |
 
 `OT` mode is byte-for-byte stock, and every mod is `OFF` by default. The soft
 paths, DIRECT JUMP and RELOAD FROM PROJECT are validated in a ColdFire emulator

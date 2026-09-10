@@ -11,10 +11,17 @@ COMBO_ITEMS to the 2-item picker.  All the logic (cmd_combo modal test,
 
   --combo    single-step the Session-44 OT-native picker: hold [PTN] opens
              (rl_ptn) -> arrows move G_SEL -> rl_yes executes / rl_no cancels.
-  --patched  boot out/mainos_reload2.bin and drive rl_yes end to end (SEQ worker).
+             3 items: TRK SEQ (kind 3) / PTN SEQ (kind 1) / PART + PTN SEQ (kind 2).
+  --patched  boot out/mainos_reload2.bin and drive rl_yes end to end -- PTN SEQ
+             (the whole-pattern worker; PATCHED_GSEL=1 selects item 1).
+  --trk      TRK SEQ (item 0): the worker copies back EXACTLY the addressed
+             track's region -- the other tracks + Part link are left alone.
+             Run it WITHOUT --combo (which permanently stubs FUN_40022778, the
+             storage-job post the worker needs); --trk alone or with --patched.
 
     python3 tools/emu_reload2.py --combo
-    python3 tools/emu_reload2.py --patched
+    python3 tools/emu_reload2.py --trk
+    python3 tools/emu_reload2.py --patched --trk
 """
 import pathlib
 import subprocess
@@ -26,11 +33,13 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 _ELF = ROOT / "out" / "patch_reload2.elf"
 
 erl.RELOAD_IMAGE = ROOT / "out" / "mainos_reload2.bin"
+erl.PATCHED_GSEL = 1        # patch_reload2 item 1 = PTN SEQ (item 0 is TRK SEQ)
 
-# the 2-item picker: (G_SEL, label, want_G_KIND, want_FUN_4004aab4_calls, want_seq_job_post)
+# the 3-item picker: (G_SEL, label, want_G_KIND, want_FUN_4004aab4_calls, want_seq_job_post)
 erl.COMBO_ITEMS = [
-    (0, "SEQ DATA",        1, 0, True),
-    (1, "PART + SEQ DATA", 1, 1, True),
+    (0, "TRK SEQ",        3, 0, True),
+    (1, "PTN SEQ",        1, 0, True),
+    (2, "PART + PTN SEQ", 2, 0, True),
 ]
 
 

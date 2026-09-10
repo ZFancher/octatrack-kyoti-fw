@@ -242,71 +242,72 @@ passes audio through.
 
 ### 4.7  RELOAD FROM PROJECT  (`build_reload.py` / `build_reload2.py` — emulator only, never flashed)
 
-> Two images. `build_reload.py` = a 3-item picker (`RLD SEQ` / `RLD PARTS` /
-> `RLD WHOLE`). `build_reload2.py` = a scaled-down **2-item** picker — `SEQ DATA`
-> (= `RLD SEQ`) and `PART + SEQ DATA` (= `RLD SEQ` plus the one Part the pattern
-> is assigned to, not all 4). For that build, read "`SEQ DATA`" for `RLD SEQ`,
-> skip the `RLD PARTS` step, and read "`PART + SEQ DATA`" for `RLD WHOLE` (it
-> reverts the pattern's own Part + its sequence; a Part another pattern uses is
-> untouched unless it's the same one). Also check the `PART + SEQ DATA` label
-> isn't clipped at the screen edge.
+> Two images. `build_reload2.py` (the SEQ-focused one) = a 3-item picker
+> **`TRK SEQ`** / **`PTN SEQ`** / **`PART + PTN SEQ`**, window opens on `TRK SEQ`.
+> `build_reload.py` = a 3-item picker **`PTN SEQ`** / **`ALL PARTS`** (all 4
+> Parts, stock RELOAD PART x4) / **`PARTS + PTN SEQ`**.  For `build_reload.py`
+> substitute `ALL PARTS` where a step below says `TRK SEQ`, and `PARTS + PTN SEQ`
+> where it says `PART + PTN SEQ`.  Check the `PART + PTN SEQ` label isn't clipped.
 >
 > **Session 44 HW checks (both builds):** does holding `[PTN]` ~0.5 s feel right,
-> and does a quick tap still open SELECT PATTERN?  Do the arrow keys reach the
-> picker while the `FUN_4005a0e0` popup is up (if not, the fallback is a hook in
-> the event dispatcher `FUN_40061b60`)?
+> and does a quick tap still open SELECT PATTERN?  Do the arrow keys — and a
+> `[TRACK]` key press — reach the picker while the `FUN_4005a0e0` popup is up (if
+> not, the fallback is a hook in the event dispatcher `FUN_40061b60`)?
 
 **Hold `[PTN]` ~0.5 s** (while the sequencer is **playing**) opens a picker
-**window** — the OS's own hold event, the same one `[PAGE]`-hold uses:
+**window** — the OS's own hold event, the same one `[PAGE]`-hold uses.
+`build_reload2.py`:
 
-    RLD SEQ   -- the active pattern's sequence data (trigs, p-locks, length,
-                 scale, trig conditions, microtiming, the pattern->part link)
-    RLD PARTS -- all 4 Parts  (= stock RELOAD PART x4)
-    RLD WHOLE -- both
+    TRK SEQ        -- sequence data of the ONE currently-addressed track (audio
+                      track on the audio pages, MIDI track on the MIDI pages):
+                      trigs, recorder trigs, trigless trigs/locks, swing/slide,
+                      micro-timing, trig conditions, its step count.  Nothing else.
+    PTN SEQ        -- the whole active pattern's sequence data.  The pattern's
+                      Part ASSIGNMENT is preserved.
+    PART + PTN SEQ -- PTN SEQ including the Part link, then that saved Part is
+                      applied to the engine (FUN_40009094).
 
 A quick `[PTN]` tap is unchanged (SELECT PATTERN). The window is a **sticky menu
 with no timeout** — the **arrow keys** move the highlight; `[YES]` executes it
 and closes the window; `[NO]` closes it and runs nothing. While it is open
 `[YES]`/`[NO]` do only picker things. All reloads are from the CF card's last
-**SAVE BANK** snapshot and do **not** stop playback: SEQ rides the storage task
-and re-homes through the sequencer's own no-stop reload path; PARTS is the stock
-live per-part reload.
+**SAVE BANK** snapshot and do **not** stop playback: the SEQ work rides the
+storage task and re-homes through the sequencer's own no-stop reload path.
 
 Setup: a project on the card with **at least one SAVE BANK** done. Pick a bank,
 **SAVE BANK** it, then note pattern N's trigs + a Part's filter/level.
 
-1. Play pattern N. Edit its trigs / p-locks AND tweak a Part (filter, FX, level).
-   Do **not** SAVE BANK again.
-2. Hold `[PTN]` ~0.5 s -> window opens on **RLD SEQ**.  Release `[PTN]` -- the
-   window stays.  The SELECT PATTERN chooser must **not** pop on release.  A
-   *quick* `[PTN]` tap must still open SELECT PATTERN as normal.
-3. Press `[YES]` -> within ~1 s the sequence reverts, **no audible gap**; the
-   Part tweak is still there; the window closes.
-4. Re-edit.  Hold `[PTN]`, then **arrow down** to **RLD PARTS**, `[YES]`
-   -> all 4 Parts revert; the sequence edits are still there.
-5. Hold `[PTN]`, arrow to **RLD WHOLE**, `[YES]` -> both revert.  Arrow keys
-   should wrap; `[NO]` at any point closes the window and reverts nothing.
-6. Switch to a **different pattern** in the same bank that you also edited -- its
-   sequence edits must still be there (only the pattern you reloaded reverts).
-7. On a bank you have **never** SAVE BANK'd, choosing RLD SEQ / RLD WHOLE shows
-   the stock **"THIS BANK HAS NEVER BEEN SAVED! NOTHING TO RELOAD!"** dialog;
-   RLD PARTS on a never-saved Part shows **"SAVE PART FIRST!"**.
-8. Open the window and leave it -- it should **stay open** indefinitely (no
-   timeout); `[NO]` closes it.
-9. With the sequencer **stopped**, holding `[PTN]` does nothing extra (stock
-   SELECT PATTERN on release).
+1. Play pattern N. On **track 3** edit some trigs / a p-lock. On **track 5** edit
+   different trigs. Do **not** SAVE BANK again.
+2. Select **track 3**.  Hold `[PTN]` ~0.5 s -> window opens on **`TRK SEQ`**.
+   Release `[PTN]` -- the window stays; the SELECT PATTERN chooser must **not**
+   pop on release.  A *quick* `[PTN]` tap must still open SELECT PATTERN.
+3. `[YES]` -> within ~1 s **track 3** reverts, **no audible gap**; **track 5's
+   edits are still there**; toast reads `T3 SEQ`; window closes.
+4. Repeat on a **MIDI** track (be on the MIDI pages) -> toast reads `MT<n> SEQ`;
+   only that MIDI track reverts.
+5. Re-edit.  Hold `[PTN]`, **arrow** to **`PTN SEQ`**, `[YES]` -> the whole
+   pattern's sequence reverts; any Part you tweaked is untouched.
+6. **Re-assign** pattern N to a different Part.  Hold `[PTN]`, arrow to
+   **`PART + PTN SEQ`**, `[YES]` -> the pattern comes back on its **saved** Part.
+7. Switch to a **different pattern** you also edited -- its edits must still be
+   there (only the pattern/track you reloaded reverts).
+8. On a bank **never** SAVE BANK'd, any item shows the stock **"THIS BANK HAS
+   NEVER BEEN SAVED! NOTHING TO RELOAD!"** dialog.
+9. Open the window and leave it -- it **stays open** (no timeout); `[NO]` closes.
+10. Sequencer **stopped** -> holding `[PTN]` does nothing extra.
 
-> **If it misbehaves:** the SEQ risk is a storage-task hang (a save/load or the
-> reload appears to freeze).  Power-cycle -- it recovers.  To fully revert,
-> reflash stock 1.40C (§5).  SEQ writes only pattern N's live slab, never
-> disk; PARTS is the stock per-part reload path.
-> emu-validated: `emu_reload.py` / `emu_reload2.py` `--combo` (the whole modal
-> picker: open + arrows + execute + cancel) and `--patched` (the SEQ worker end
-> to end).  Not exercised on real hardware: whether an arrow reaches the picker
-> while the popup is up (if not, the fallback is a hook in the event dispatcher
-> `FUN_40061b60`); `FUN_4008cebc` vs a real card; the SEQ discard loop for
-> pattern > 0; the picker render + auto-close; timing.  Details: `NOTES.md`
-> "Session 42" + "Session 43".
+> **If it misbehaves:** the risk is a storage-task hang (a save/load or the
+> reload appears to freeze).  Power-cycle -- it recovers.  Reflash stock 1.40C
+> (§5) to fully revert.  The worker writes only pattern N's live slab (`TRK SEQ`:
+> only one track's region within it), never disk.
+> emu-validated: `emu_reload.py` / `emu_reload2.py` `--combo` (the modal picker),
+> `--patched` (the whole-pattern SEQ worker end to end), `--trk` (the per-track
+> slice touches nothing else).  Not exercised on real hardware: whether an arrow
+> or `[TRACK]` key reaches the picker while the popup is up (fallback: a hook in
+> `FUN_40061b60`); `FUN_4008cebc` vs a real card; `FUN_40009094` from the storage
+> task while playing (part LED/name refresh); the SEQ discard loop for pattern
+> > 0; timing.  Details: `NOTES.md` "Session 42"–"44" + "Session 47".
 
 ---
 

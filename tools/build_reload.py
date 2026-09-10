@@ -3,8 +3,8 @@
 # SPDX-FileCopyrightText: 2026 Zac-Kyoti
 """
 RELOAD FROM PROJECT (NOTES.md "Session 42" / "Session 43") -- stock 1.40C + the
-MIDI manual-trig fix + a stay-open 3-item picker window (RLD SEQ / RLD PARTS /
-RLD WHOLE).  Reloads the active pattern's sequence data and/or the 4 Parts from
+MIDI manual-trig fix + a stay-open 3-item picker window (PTN SEQ / ALL PARTS /
+PARTS + PTN SEQ).  Reloads the active pattern's sequence data and/or the 4 Parts from
 the CF card's last SAVE BANK snapshot, without stopping the sequencer.
 
   UX (Session 44 -- OT-native):
@@ -29,10 +29,10 @@ the CF card's last SAVE BANK snapshot, without stopping the sequencer.
        rl_no    @0x4005e25c  NO handler.  [NO] with the window open -> close it,
                              execute nothing, swallow.  Otherwise -> stock.
        rl_yes   @0x4005e4c8  YES handler.  [YES] with the window open -> close
-                             it, then: PARTS/WHOLE -> FUN_4004aab4(0..3) (stock
+                             it, then: ALL PARTS / PARTS + PTN SEQ -> FUN_4004aab4(0..3) (stock
                              RELOAD PART x4) + the stock UI refresh, here in the
-                             key handler; SEQ/WHOLE -> arm {G_KIND=1,
-                             G_PAT=active} + post FUN_40022778(1<<curbank).
+                             key handler; PTN SEQ / PARTS + PTN SEQ -> arm
+                             {G_KIND=1, G_PAT=active} + post FUN_40022778(1<<curbank).
                              Toast + swallow.  Window closed -> replay the stock
                              prologue (DJ's [PTN]+[YES] toggle is untouched --
                              rl_yes only acts while G_MENU==1).
@@ -47,20 +47,23 @@ the CF card's last SAVE BANK snapshot, without stopping the sequencer.
                              0..P sequentially with the firmware's own per-
                              pattern parser FUN_4008cebc (0..P-1 discarded to a
                              36 KB scratch, pattern P kept), memcpy P -> the live
-                             slab, set 0x46c8028a, rejoin the case's exit.  Open
+                             slab (restoring the live slab+0x8e57 Part-link byte
+                             afterwards -- a sequence reload never re-points the
+                             pattern at a different Part), set 0x46c8028a, rejoin
+                             the case's exit.  Open
                              ENOENT -> exit d0=-12 -> the stock "THIS BANK HAS
                              NEVER BEEN SAVED!" dialog for free.  Inert when
                              G_KIND==0; a re-entrant real RELOAD BANK is
                              unaffected (worker latches + clears G_KIND).
 
   No scratch BANK is used (an earlier design borrowed one -- rejected: it put a
-  bystander bank's data at risk).  SEQ writes nothing but pattern P's live slab;
-  PARTS is the stock per-part reload path.  No PERSONALIZE entry, no persistent
-  state -> no 'ANDY' shadow / pea 0x64->0x70.
+  bystander bank's data at risk).  PTN SEQ writes nothing but pattern P's live
+  slab; ALL PARTS is the stock per-part reload path.  No PERSONALIZE entry, no
+  persistent state -> no 'ANDY' shadow / pea 0x64->0x70.
 
-  STATUS: SEQ DATA emu-validated end to end (emu_reload.py --combo + --patched).
-  PARTS/WHOLE + the picker: static + assembly checked; PARTS = the stock
-  FUN_4004aab4 path.  Needs a hardware pass (FLASHING.md 4.7).
+  STATUS: PTN SEQ emu-validated end to end (emu_reload.py --combo + --patched).
+  ALL PARTS / PARTS + PTN SEQ + the picker: static + assembly checked; parts =
+  the stock FUN_4004aab4 path.  Needs a hardware pass (FLASHING.md 4.7).
 
   HW-only from Session 42, plus (Session 44):
     - the OS hold-event threshold + feel for [PTN] (same mechanism as [PAGE]-hold);
@@ -193,7 +196,7 @@ def main():
     print(f"\n  {OUT_SYX.name}  (MIDI DIN)  +  {OUT_BIN.name}  (CF card)")
     print(f"  version screen / SYSTEM STATUS -> OS VERSION will read:  {VERSTR}")
     print("  Hold [PTN] ~0.5 s  (while playing)  ->  opens the picker window (sticky, no timeout)")
-    print("  arrows                             ->  move the highlight: RLD SEQ / RLD PARTS / RLD WHOLE")
+    print("  arrows                             ->  move the highlight: PTN SEQ / ALL PARTS / PARTS + PTN SEQ")
     print("  [YES]                              ->  execute the highlight + close, no transport stop")
     print("  [NO]                               ->  close the window, execute nothing")
     print("  Revert = flash downloads/extracted/OCTATRACK_OS1.40C.syx")

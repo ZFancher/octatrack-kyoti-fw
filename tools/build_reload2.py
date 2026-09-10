@@ -2,31 +2,39 @@
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2026 Zac-Kyoti
 """
-RELOAD FROM PROJECT -- scaled-down variant (NOTES.md "Session 43").
+RELOAD FROM PROJECT -- scaled-down / SEQ-focused variant (NOTES.md "Session 43"
+/ "44" / "47").
 
-A trimmed sibling of build_reload.py.  build_reload.py (Session 42: SEQ / ALL
-PARTS / WHOLE PATTERN, patch_reload.s) is UNCHANGED and still builds.  This one
-builds a SEPARATE image from patch_reload2.s:
+A trimmed sibling of build_reload.py.  build_reload.py (SEQ / ALL PARTS / WHOLE
+PATTERN, patch_reload.s) still builds.  This one builds a SEPARATE image from
+patch_reload2.s:
 
-  stock 1.40C + the MIDI manual-trig fix + a stay-open 2-item picker window.
+  stock 1.40C + the MIDI manual-trig fix + a stay-open 3-item picker window.
 
   UX (Session 44 -- OT-native):
     Hold [PTN] ~0.5 s  opens a sticky picker window (the OS's own hold event, as
-                       used by [PAGE]-hold).  A quick [PTN] tap is unchanged.
-    arrows      UP/RIGHT -> SEQ DATA ; DOWN/LEFT -> PART + SEQ DATA (wrapping).
+                       used by [PAGE]-hold).  It opens with TRK SEQ highlighted
+                       -> [PTN]-hold then [YES] is a complete gesture, no arrows.
+                       A quick [PTN] tap is unchanged.
+    arrows      UP/RIGHT prev / DOWN/LEFT next (wrapping):
+                       TRK SEQ / PTN SEQ / PART + PTN SEQ.
     [YES]       execute the highlight, close the window.
     [NO]        close the window, execute nothing.
     No timeout -- like every stock menu, the window stays until you answer it.
     While it is open [YES]/[NO] act ONLY on the picker.
 
-  SEQ DATA        -- reload the active pattern's sequence data from bankNN.strd
-                     (identical mechanism to build_reload.py's "SEQ").
-  PART + SEQ DATA -- the above, plus the one Part the pattern is assigned to
-                     (0x80000003, the "current part mirror"), via the stock
-                     RELOAD PART path FUN_4004aab4(part).
+  TRK SEQ        -- reload the sequence data of the ONE currently-addressed track
+                    (audio track if on the audio pages, MIDI track if on the MIDI
+                    pages -- 0x80000000 / 0x80000012).  Everything for that track
+                    (trigs, recorder trigs, trigless trigs/locks + p-lock values,
+                    swing/slide, micro-timing, trig conditions, step count); the
+                    other 7 tracks + pattern length/scale + the Part link untouched.
+  PTN SEQ        -- reload the whole active pattern's sequence data from
+                    bankNN.strd.  The Part ASSIGNMENT is preserved (masked out).
+  PART + PTN SEQ -- faithful restore: PTN SEQ including the Part link, then apply
+                    that saved Part to the engine (FUN_40009094).
 
-  Dropped vs build_reload.py: "ALL PARTS" (the FUN_4004aab4(0..3) loop) and the
-  "PARTS only -> skip the SEQ post" branch.
+  Dropped vs build_reload.py: "ALL PARTS" (the FUN_4004aab4(0..3) loop).
 
   1. patch_trigscale  -- MIDI manual-trig stall fix.  Byte-identical detour + cave
                          to build_trigscale_only.py / build_reload.py.
@@ -41,11 +49,11 @@ builds a SEPARATE image from patch_reload2.s:
        rl_no    @0x4005e25c  NO handler.  [NO] with the window open -> close it,
                              execute nothing, swallow.  Otherwise -> stock.
        rl_yes   @0x4005e4c8  YES handler.  [YES] with the window open -> close
-                             it, then: PART + SEQ DATA -> FUN_4004aab4 on the
-                             pattern's own Part + the stock UI refresh; both
-                             options -> arm {G_KIND=1, G_PAT=active} + post
-                             FUN_40022778(1<<curbank).  Toast + swallow.  Window
-                             closed -> replay the stock prologue (DJ's
+                             it, then arm the worker: TRK SEQ -> rl_arm_trk
+                             {G_KIND=3, G_TRK/G_TMIDI from 0x80000000/0x12};
+                             PTN SEQ -> G_KIND=1; PART + PTN SEQ -> G_KIND=2 --
+                             all post FUN_40022778(1<<curbank).  Toast + swallow.
+                             Window closed -> replay the stock prologue (DJ's
                              [PTN]+[YES] toggle is untouched -- rl_yes only acts
                              while G_MENU==1).
        rl_arr_a @0x4004b970  UP/RIGHT key handler (keycodes 0x34/0x21).  Window
@@ -58,20 +66,26 @@ builds a SEPARATE image from patch_reload2.s:
                              buffer), read the 22-byte header, parse patterns
                              0..P sequentially with the firmware's own per-
                              pattern parser FUN_4008cebc (0..P-1 discarded to a
-                             36 KB scratch, pattern P kept), memcpy P -> the live
-                             slab, set 0x46c8028a, rejoin the case's exit.  Open
-                             ENOENT -> exit d0=-12 -> the stock "THIS BANK HAS
-                             NEVER BEEN SAVED!" dialog for free.  Inert when
-                             G_KIND==0; a re-entrant real RELOAD BANK is
-                             unaffected (worker latches + clears G_KIND).
+                             36 KB scratch, pattern P kept), then per G_KIND:
+                             1 -> memcpy the whole 0x8ed8 slab, restore the live
+                             Part-link byte (slab+0x8e57); 2 -> memcpy the whole
+                             slab (Part link included) + FUN_40009094(bank,part);
+                             3 -> memcpy only the selected track's region
+                             (audio slab+t*0x91a len 0x91a / MIDI slab+0x48d0+
+                             t*0x8b0 len 0x8b0).  Set 0x46c8028a, rejoin the
+                             case's exit.  Open ENOENT -> exit d0=-12 -> the
+                             stock "THIS BANK HAS NEVER BEEN SAVED!" dialog for
+                             free.  Inert when G_KIND==0; a re-entrant real
+                             RELOAD BANK is unaffected (worker latches + clears
+                             G_KIND).
 
-  No scratch BANK is used.  SEQ DATA writes nothing but pattern P's live slab;
-  the Part reload is the stock per-part reload path.  No PERSONALIZE entry, no
-  persistent state -> no 'ANDY' shadow / pea 0x64->0x70.
+  No scratch BANK is used.  The worker writes nothing but pattern P's live slab
+  (TRK SEQ: nothing but the one track's region within it).  No PERSONALIZE entry,
+  no persistent state -> no 'ANDY' shadow / pea 0x64->0x70.
 
-  STATUS: SEQ DATA emu-validated end to end (emu_reload2.py --combo + --patched).
-  PART + SEQ DATA + the picker: static + assembly checked; the Part reload = the
-  stock FUN_4004aab4 path.  Needs a hardware pass (FLASHING.md 4.7).
+  STATUS: PTN SEQ emu-validated end to end (emu_reload2.py --combo + --patched).
+  TRK SEQ + PART + PTN SEQ + the picker: static + assembly checked, --combo drives
+  the arming.  Needs a hardware pass (FLASHING.md 4.7).
 
   HW-only from Session 42, plus (Session 44):
     - the OS hold-event threshold + feel for [PTN] (same mechanism as [PAGE]-hold);
@@ -204,8 +218,8 @@ def main():
 
     print(f"\n  {OUT_SYX.name}  (MIDI DIN)  +  {OUT_BIN.name}  (CF card)")
     print(f"  version screen / SYSTEM STATUS -> OS VERSION will read:  {VERSTR}")
-    print("  Hold [PTN] ~0.5 s  (while playing)  ->  opens the picker window (sticky, no timeout)")
-    print("  arrows                             ->  UP/RIGHT SEQ DATA / DOWN/LEFT PART + SEQ DATA")
+    print("  Hold [PTN] ~0.5 s  (while playing)  ->  picker window (sticky, no timeout), TRK SEQ highlighted")
+    print("  arrows                             ->  TRK SEQ / PTN SEQ / PART + PTN SEQ")
     print("  [YES]                              ->  execute the highlight + close, no transport stop")
     print("  [NO]                               ->  close the window, execute nothing")
     print("  Revert = flash downloads/extracted/OCTATRACK_OS1.40C.syx")

@@ -6272,3 +6272,94 @@ if `G_OURS` → `jsr 0x40056bec` + `clr.b G_OURS`. Scratch: `G_CNT` `0x80006a5c`
 NOT flashed (user away from the MKI). Committed + **pushed** to `origin/wip/mute-mode`
 (the same push carried the previously-unpushed Session 37/38/45 commits — the branch is
 now in sync).
+
+
+## Session 47 (2026-09-09, `wip/mute-mode`) — RELOAD2: per-track SEQ reload + faithful PART restore + renamed picker (built, emu-checked, NOT flashed)
+
+**Confirmed to the user first:** RELOAD2's sequence reload IS a complete recall of
+the pattern slab. `rl_job` runs `FUN_4008cebc` — the firmware's OWN per-pattern chunk
+parser, the exact routine `FUN_4008ded0`/RELOAD BANK calls 16× — then memcpy's the
+whole `0x8ed8` RAM slab (8 audio TRAC + 8 MIDI MTRA + trailer). Everything comes back:
+regular trigs, the three trig-type layers (trigless/one-shot + the trigless-lock bit),
+recorder trigs REC1/2/3, swing/slide, micro-timing (`+0x49` + aux `+0x862`), trig
+conditions, per-track step count (`+0x59`), the full 64×32 p-lock array (`+0x62`),
+MIDI trigs+locks, pattern length/scale (`slab+0x8e52/54`), part link (`slab+0x8e57`).
+Source = `bankNN.strd` (last SAVE BANK / SAVE PROJECT). Emu-validated end to end
+(`emu_reload2.py --patched`); the `#2` working p-lock view rebuilds from `#1` as the
+playhead sweeps (S38), seamless.
+
+### The build (this session)
+
+**RAM slab geometry pinned** (from `FUN_4009a670`, the load-time bounds clamp — walks
+8 audio tracks stride `0x91a`, then 8 MIDI stride `0x8b0`, then pattern fields;
+`NOTES.md` L1067): audio track *t* at `slab + t*0x91a` (len `0x91a`); MIDI track *t* at
+`slab + 0x48d0 + t*0x8b0` (len `0x8b0`, `0x48d0 = 8*0x91a`); part link `slab+0x8e57`
+(1 byte, in the trailer past both track regions). `8*0x91a + 8*0x8b0 = 0x8e50` = where
+the pattern fields start — exact. No emu dump needed; `emu_reload2.py --trk` re-checks it.
+
+**`patch_reload2.s` — 3-item picker, window opens on TRK SEQ (item 0, least
+destructive; [PTN]-hold then [YES] is a complete gesture, no arrows):**
+
+| item | `G_KIND` | `rl_job` action |
+|---|---|---|
+| `TRK SEQ` | 3 | memcpy ONLY the currently-addressed track's region (audio `t*0x91a` / MIDI `0x48d0+t*0x8b0`) out of the parsed slab. Track from `0x80000000`; audio-vs-MIDI from `0x80000012`. Nothing else moves — other 7 tracks, both track types, pattern length/scale, part link all untouched. |
+| `PTN SEQ` | 1 | memcpy the whole `0x8ed8` slab, then **restore the live `slab+0x8e57` byte** — a sequence reload must not silently re-point the pattern at a different Part. |
+| `PART + PTN SEQ` | 2 | memcpy the whole slab INCLUDING `slab+0x8e57` (assignment reverts to saved), then read it → `0x80000003` + `FUN_40009094(bank, savedPart)` ("apply a Part by event" — the parts-switch path, proven safe on the storage task by stock `FUN_400905d4`'s post-deserialise tail) + `RDRAW=1`. Part params come from that Part's live slot (= its saved state unless SAVE PART'd since — matches stock "reload part"). |
+
+- New scratch: `G_TRK 0x80006a54` / `G_TMIDI 0x80006a55` (RELOAD2 range now `0x80006a50–55`).
+- `rl_yes` item 0 → `rl_arm_trk` (factored out, reads the track globals, arms `G_KIND=3`,
+  posts). Items 1/2 → `G_KIND = selection index` (1 or 2), post. Toast: `T<n> SEQ` /
+  `MT<n> SEQ` (sprintf) for TRK SEQ, `PTN SEQ` / `PART + PTN SEQ` static otherwise.
+- Detour sites, `.ifdef MERGE` trampoline, all 6 hooks: **unchanged**. `FUN_4004aab4`
+  (old `rl_part`) + the 7 key-context UI-refresh fns: **removed** — the Part work moved
+  to `rl_job` on the storage task.
+- **Power move ([PTN] + [TRACK], not built — kept open):** the chord IS available —
+  track keys are keycodes `0x10..0x17` (dispatch `0x40040250` → `FUN_40083ab4` mute) and
+  NO stock handler reads the `[PTN]`-held flag `0x460d1742`. To add: detour the track-key
+  handler, on `0x460d1742 != 0` set `0x80000000 = keycode-0x10`, `jsr rl_arm_trk`, set
+  `0x460d173e = 1`, `rts` (swallow — don't mute). `rl_arm_trk` is the entry point.
+  Needs its own displaced-byte guard + a HW check. Documented in the `.s` header.
+
+**`patch_reload.s` (RELOAD, the 3-item build) — kept, minimally touched:** picker
+strings renamed `PTN SEQ` / `ALL PARTS` / `PARTS + PTN SEQ`; `rl_job` now also masks
+`slab+0x8e57` (kept byte-aligned with RELOAD2's PTN SEQ core). ALL PARTS / WHOLE logic
+unchanged (still the `FUN_4004aab4(0..3)` loop in the key handler).
+
+**`build_merged.py`:** RELOAD2's cave grew ~1194→~1494 B and pushed the PERSONALIZE menu
+arrays past the pinned `patch_trigscale` @ `0x400d7b00`. Fix: the packer now places the
+menu arrays (pure data, 204 B) *after* trigscale at `0x400d7b40` (254 B free there), so
+the growing stub region stays clear of the pin. Merged image re-packs + re-verifies
+clean ("changes outside {feature diffs, relocated caves, detours}: 0"). `reference/MERGE.md`
+updated (cave table, scratch range, headroom ~220 B).
+
+**emu — all three modes validated:**
+- `emu_reload2.py --combo` **ALL GOOD** — picker opens on TRK SEQ, arrows wrap the 3
+  items, `[YES]` per item arms `G_KIND` 3/1/2 + posts, `[NO]` cancels, closed → stock.
+- `emu_reload2.py --patched` **ALL GOOD** (`PATCHED_GSEL=1` → PTN SEQ) — `rl_job` runs
+  once, one `FUN_4008cebc`, pattern 0's p-lock array reverts == `bank01.strd` byte-for-byte,
+  bystander pattern untouched, `G_KIND` cleared, transport running. Confirms the Part-link
+  mask + the whole-pattern path.
+- New `emu_reload.py cmd_trk` (`--trk`, patch_reload2 only): scribbles a p-lock-array
+  window of every audio + MIDI track + the part-link byte of P and a bystander Q, arms
+  **TRK SEQ track 3** via `call_as_main(rl_arm_trk)`, drains the worker, asserts **only
+  audio track 3's window reverts to `bank01.strd`** and every other track / MIDI track /
+  the part link / pattern Q stay scribbled. Runs `worker: rl_job=1 FUN_4008cebc=1 G_KIND
+  cleared`; all ten content checks pass.
+- **Harness notes:** (1) don't stub `sprintf` (`0x40013a08`) — `rl_openstrd` uses it and a
+  bare-`rts` stub wedges the storage task. (2) arm via `rl_arm_trk` not the full `rl_yes` —
+  `rl_yes`'s TRK SEQ path runs a real `sprintf` (the `T3 SEQ` toast) that opens a window
+  where the posted worker starts *inside* `call_as_main` and the borrowed idle slot never
+  returns to `MAIN_SPIN` (harness limit, not a firmware issue; the `rl_yes → rl_arm_trk`
+  route is covered by `--combo`).
+
+### HW-only (adds to Session 42/43/44's list)
+- `FUN_4009a670`'s slab geometry vs a real card parse (audio `0x91a` / MIDI `0x48d0`+`0x8b0`).
+- `FUN_40009094(bank, part)` from the storage task with the transport running (stock only
+  does it post-stop or post-deserialise) — glitch? part LED / name refresh timing.
+- PART + PTN SEQ when the reassigned Part *was* edited before reassigning: those edits
+  ride along (we apply from the live slot, not a per-part `.strd` re-parse). Acceptable
+  gap; documented. Stock PART → RELOAD or `patch_reload.s`'s ALL PARTS covers it.
+- Which track a `[TRACK]` key press reaches while the `FUN_4005a0e0` popup is up (retarget
+  while the picker is open) — same class as the arrow-key HW unknown.
+
+NOT flashed. Committed + pushed to `origin/wip/mute-mode`.

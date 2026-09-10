@@ -35,7 +35,9 @@ Combined build: **`build_merged.py`** → `out/OCTATRACK_OS1.40C_KYOTI_ALL.{syx,
    8 bytes. Resolved by a trampoline (below). *Needs integration + retest.*
 2. **Cave base `0x400d7400`** — MUTE MODE, DIRECT JUMP, RELOAD2 each link there.
    Resolved by auto-packing (below). *Mechanical.*
-3. Space: everything fits `0x400d7000–0x400d7c3c` with **~526 B** headroom.
+3. Space: everything fits `0x400d7000–0x400d7c3c` with **~220 B** headroom (RELOAD2
+   grew in S47; the PERSONALIZE menu arrays moved to *after* `patch_trigscale` so
+   the growing stub region stays clear of the pin).
 4. SIDE-CHAIN is nearly orthogonal — DSP address space + a descriptor region nothing
    else touches.
 5. `patch_trigscale` is byte-identical in every build; it is the shared base.
@@ -53,11 +55,11 @@ Free zone `0x400d7000 … 0x400d7c3c` (3132 B). Packed from the bottom;
 | `patch_softmute` (`DT_MODE=1`) | `0x400d708c` | 368 B | |
 | `patch_mutemode` (`DT_MODE=1`) | `0x400d71fc` | 136 B | |
 | `patch_directjump` (`DJ_V3=1`) | `0x400d7284` | 490 B | `dj_toggle` reached via chain, not a detour |
-| `patch_reload2` (`MERGE=1`) | `0x400d7478` | ~1194 B | ~4 B smaller than standalone (chained `rly_stock`) |
-| PERSONALIZE menu arrays ×3 (17 entries) | `0x400d7924` | 204 B | relocated from `0x400b2a34/74/c0` |
-| — free — | `0x400d79f0` | 272 B | |
+| `patch_reload2` (`MERGE=1`) | `0x400d7478` | ~1494 B | TRK SEQ / PTN SEQ / PART + PTN SEQ (S47) |
+| — free — | ~`0x400d7a50` | ~176 B | |
 | `patch_trigscale` | `0x400d7b00` | 62 B | **pinned** |
-| — free — | `0x400d7b3e` | 254 B | |
+| PERSONALIZE menu arrays ×3 (17 entries) | `0x400d7b40` | 204 B | relocated from `0x400b2a34/74/c0`; **now placed after trigscale** (S47 -- RELOAD2 grew) |
+| — free — | `0x400d7c0c` | 48 B | |
 
 Addresses shift if any cave's size changes — `build_merged.py` re-packs and re-asserts
 every run (disjoint, inside the zone, every displaced-byte guard). Do not hand-copy
@@ -148,7 +150,7 @@ separate `DJ_V3` overlay switch.)
 | PERSONALIZE word | `0x800000dc` | `0x800000d8` | — | distinct |
 | 'ANDY' SRAM shadow | `0x100fff6c` | `0x100fff68` | — | distinct, both in the extended `0x70` window |
 | `pea 0x64→0x70` ×3 | yes | yes | no | identical write, idempotent |
-| scratch RAM globals | `0x80006c66` | `0x80006a40–44` | `0x80006a50–53` | disjoint (QLREC, if merged: `0x80006a5c`/`0x60`) |
+| scratch RAM globals | `0x80006c66` | `0x80006a40–44` | `0x80006a50–55` | disjoint (QLREC, if merged: `0x80006a5c`/`0x60`) |
 | `[PTN]` flags | — | reads `0x460d1742` | detours PTN handler, replays prologue on non-hold | stock still sets `0x460d1742`; both set `PTN_USED 0x460d173e` |
 | PERSONALIZE menu | owns the surgery | no menu entry | no menu entry | only MUTE MODE |
 
@@ -184,11 +186,20 @@ line until v3 has a hardware pass; `build_merged.py` takes v3.
 
 ---
 
+## Version string — the merged build is `KYOTI_V1.0`
+
+The combined image is the shipping build, so it carries its own branding, **not** the
+`140C_KYOTI` used by the per-feature test images. Boot splash and **SYSTEM STATUS → OS
+VERSION** must both read **`KYOTI_V1.0`** (exactly 10 chars — the ELEK version field cap;
+`build_merged.py` errors if it overflows). `build_merged.py` defaults to it; the optional
+CLI arg still overrides for a one-off. Bump on a real release (`KYOTI_V1.1`, …); keep the
+per-feature builds on `140C_KYOTI` so a flash log makes it obvious which image is on the unit.
+
 ## Build & verify
 
 ```
 python3 tools/build_directjump.py        # v1 stub -- emu_merged / v3 diff against it
-python3 tools/build_merged.py            # -> out/OCTATRACK_OS1.40C_KYOTI_ALL.{syx,bin}
+python3 tools/build_merged.py            # -> out/OCTATRACK_OS1.40C_KYOTI_ALL.{syx,bin}, OS VERSION = KYOTI_V1.0
 python3 tools/emu_merged.py              # STATIC + DYNAMIC, expect "ALL GOOD"
 ```
 

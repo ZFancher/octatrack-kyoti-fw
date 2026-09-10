@@ -31,8 +31,8 @@ build is byte-for-byte reproducible from the stock file.
 | `python3 tools/build_sidechain.py` | `140C_KYOTI` | Bug 1 fix + a `KEY` parameter on the COMPRESSOR page — **menu only, DSP untouched** (does nothing audible; proves the control surface) |
 | `python3 tools/build_sidechain2.py` | `140C_KYOTI` | + the DSP hooks: same-DSP-core side-chain — a compressor keys off a chosen track (even muted). **SPATIALIZER is donated** for the code space and removed from the FX menu |
 | `python3 tools/build_sidechain3.py` | `140C_KYOTI` | Bug 1 fix + the full side-chain **menu scaffolding** (`KEY` `KFLT` `KGAIN` `MON`), **no DSP** |
-| `python3 tools/build_reload.py` | `140C_KYOTI` | Bug 1 fix + **RELOAD FROM PROJECT**: **hold `[PTN]`** opens a sticky picker window (`RLD SEQ` / `RLD PARTS` / `RLD WHOLE`, arrows move the highlight), `[YES]` executes + closes / `[NO]` cancels, no timeout — reloads the active pattern's sequence and/or its 4 Parts from the card's last SAVE BANK **without stopping playback** |
-| `python3 tools/build_reload2.py` | `140C_KYOTI` | RELOAD FROM PROJECT, **scaled down**: same gesture, 2-item picker `SEQ DATA` / `PART + SEQ DATA` (`PART + SEQ DATA` reloads only the Part the pattern is assigned to, not all 4). Separate image; `build_reload.py`'s 3-item menu unchanged |
+| `python3 tools/build_reload2.py` | `140C_KYOTI` | Bug 1 fix + **RELOAD FROM PROJECT** (SEQ-focused): **hold `[PTN]`** opens a sticky picker (opens on `TRK SEQ`; arrows to `PTN SEQ` / `PART + PTN SEQ`), `[YES]` executes + closes / `[NO]` cancels, no timeout. `TRK SEQ` = the one currently-addressed track (audio or MIDI); `PTN SEQ` = the whole pattern, Part assignment preserved; `PART + PTN SEQ` = whole pattern incl. the Part link + apply that Part. From the card's last SAVE BANK, **without stopping playback** |
+| `python3 tools/build_reload.py` | `140C_KYOTI` | RELOAD FROM PROJECT, **3-item variant**: same gesture, picker `PTN SEQ` / `ALL PARTS` (all 4 Parts, `FUN_4004aab4` ×4) / `PARTS + PTN SEQ`. Separate image; no per-track option |
 
 All mods are **OFF by default** (`MUTE MODE = OT`; `KEY = OFF`, stored per Part).
 A freshly flashed unit is indistinguishable from stock until you opt in. An OS
@@ -56,7 +56,7 @@ cross-reference. See [`CREDITS.md`](CREDITS.md).
 | **DIRECT JUMP** (`build_directjump.py`) | **emulator only** — the hooks are stub-tested; `FUN_400a1eea` has instructions Unicorn can't run. Never flashed |
 | side-chain `KEY` menu + formatter (`build_sidechain.py`, `build_sidechain3.py`) | **emulator only**, never flashed |
 | side-chain DSP hooks (`build_sidechain2.py`) | hooks **emulator-verified** under dsp56kEmu; the audio result is untested |
-| **RELOAD FROM PROJECT** picker + SEQ worker (`build_reload.py`, `build_reload2.py`) | the picker and the SEQ worker are **emulator-verified end to end** (`emu_reload.py` / `emu_reload2.py` — `--combo` + `--patched`, full-firmware emulator with a mounted card); the parse against a real card + the picker rendering are a hardware test. Never flashed |
+| **RELOAD FROM PROJECT** picker + SEQ worker (`build_reload.py`, `build_reload2.py`) | picker + whole-pattern SEQ worker + per-track slice **emulator-verified** (`emu_reload.py` / `emu_reload2.py` — `--combo` + `--patched` + `--trk`, full-firmware emulator with a mounted card); the parse against a real card, `FUN_40009094` from the storage task, and the picker rendering are a hardware test. Never flashed |
 
 The ColdFire emulator (Unicorn, real image bytes) proves control-flow and the
 DSP frame-word edits; the DSP emulator (dsp56kEmu) runs the actual DSP56300

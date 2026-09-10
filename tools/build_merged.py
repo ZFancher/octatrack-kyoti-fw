@@ -33,7 +33,7 @@ Cave conflict resolution
 * MUTE MODE and DIRECT JUMP both need the 'ANDY' restore extended pea 0x64 -> pea 0x70
   at 3 sites -- identical, idempotent; done once here.
 
-Usage:   python3 tools/build_merged.py [VERSTR]        (default "140C_KYOTI")
+Usage:   python3 tools/build_merged.py [VERSTR]        (default "KYOTI_V1.0")
 Outputs: out/mainos_merged.bin, out/elek_merged.bin,
          out/OCTATRACK_OS1.40C_KYOTI_ALL.syx, out/OCTATRACK_KYOTI_ALL.bin
 """
@@ -51,7 +51,10 @@ OUT = ROOT / "out/mainos_merged.bin"
 ELEK = ROOT / "out/elek_merged.bin"
 OUT_SYX = ROOT / "out/OCTATRACK_OS1.40C_KYOTI_ALL.syx"
 OUT_BIN = ROOT / "out/OCTATRACK_KYOTI_ALL.bin"
-VERSTR = sys.argv[1] if len(sys.argv) > 1 else "140C_KYOTI"
+# The merged image is the shipping build -- it carries its own branding, not the
+# 140C_KYOTI used by the per-feature test images (reference/MERGE.md).  Boot splash
+# and SYSTEM STATUS -> OS VERSION both read this.  Exactly 10 chars (ELEK field cap).
+VERSTR = sys.argv[1] if len(sys.argv) > 1 else "KYOTI_V1.0"
 
 FREE_START = 0x400d7000
 TRIGSCALE_AT = 0x400d7b00                 # pinned -- byte-identical to build_trigscale_only.py
@@ -155,19 +158,26 @@ def main():
         addr = (addr + 3) & ~3
         placement[name] = addr
         addr += sizes[name]
-    menu_at = (addr + 3) & ~3                       # relocated PERSONALIZE arrays go last
+    if addr > TRIGSCALE_AT:
+        sys.exit(f"ColdFire stubs overflow the pre-trigscale zone: 0x{addr:x} > 0x{TRIGSCALE_AT:x}")
+    # The relocated PERSONALIZE arrays (pure data) go AFTER patch_trigscale --
+    # patch_trigscale is 62 B (18-B detour cave, pinned) and there is 254 B free
+    # from 0x400d7b3e to FREE_END.  This keeps the growing stub region (RELOAD2 in
+    # particular) clear of the pin.
+    TRIGSCALE_END = TRIGSCALE_AT + 62
+    menu_at = (TRIGSCALE_END + 3) & ~3
     menu_end = menu_at + (N_OLD + 1) * 4 * 3
-    if menu_end > TRIGSCALE_AT:
-        sys.exit(f"ColdFire caves overflow the pre-trigscale zone: 0x{menu_end:x} > 0x{TRIGSCALE_AT:x}")
+    if menu_end > FREE_END:
+        sys.exit(f"PERSONALIZE menu arrays overflow the free zone: 0x{menu_end:x} > 0x{FREE_END:x}")
 
     print("=== ColdFire cave layout ===")
     for name, _, _ in CF_STUBS:
         a = placement[name]
         print(f"  {name:17s} 0x{a:08x} .. 0x{a + sizes[name] - 1:08x}  ({sizes[name]} B)")
-    print(f"  {'menu arrays x3':17s} 0x{menu_at:08x} .. 0x{menu_end - 1:08x}  ({menu_end - menu_at} B)")
-    print(f"  {'patch_trigscale':17s} 0x{TRIGSCALE_AT:08x}  (pinned)")
-    print(f"  free after packing: 0x{menu_end:x}..0x{TRIGSCALE_AT:x} "
-          f"({TRIGSCALE_AT - menu_end} B) + 0x{TRIGSCALE_AT + 62:x}..0x{FREE_END:x}")
+    print(f"  {'patch_trigscale':17s} 0x{TRIGSCALE_AT:08x}  (pinned, 62 B)")
+    print(f"  {'menu arrays x3':17s} 0x{menu_at:08x} .. 0x{menu_end - 1:08x}  ({menu_end - menu_at} B, after trigscale)")
+    print(f"  free: 0x{addr:x}..0x{TRIGSCALE_AT:x} ({TRIGSCALE_AT - addr} B) + "
+          f"0x{menu_end:x}..0x{FREE_END:x} ({FREE_END - menu_end} B)")
 
     # ================= 2. SIDE-CHAIN: ColdFire descriptor + FX choosers + CF cave =========
     print("\n=== SIDE-CHAIN: ColdFire (descriptor slots 8..11 + FX choosers) ===")

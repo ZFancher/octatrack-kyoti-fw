@@ -7,8 +7,8 @@
 |   Hold [PTN] ~0.5 s   opens a sticky picker window (the OS's own hold event,
 |                       the same one [PAGE]-hold uses).  A quick [PTN] tap is
 |                       unchanged -- SELECT PATTERN as normal.
-|   arrow keys          move the highlight through RLD SEQ / RLD PARTS / RLD WHOLE
-|                       (UP/RIGHT = prev, DOWN/LEFT = next, wrapping).
+|   arrow keys          move the highlight through PTN SEQ / ALL PARTS /
+|                       PARTS + PTN SEQ  (UP/RIGHT = prev, DOWN/LEFT = next, wrapping).
 |   [YES]               execute the highlighted option, close the window.
 |   [NO]                close the window, execute nothing.
 |
@@ -21,12 +21,15 @@
 |   hold, so the two share no chord.  If combined, DJ's toggle still needs a
 |   `tst.b G_MENU / bne stock` guard for a stray [YES] with the window open.
 |
-|   SEQ    -- reload the ACTIVE pattern's SEQUENCE DATA (trigs, p-locks, length,
-|             scale, trig conditions, microtiming, the pattern->part link) from
-|             the CF card's last SAVE BANK snapshot (bankNN.strd), seamlessly.
-|   PARTS  -- reload all 4 Parts to their last saved state (= stock RELOAD PART
-|             x4: FUN_4004aab4).  Pure RAM.
-|   WHOLE  -- PARTS + SEQ.
+|   PTN SEQ        -- reload the ACTIVE pattern's SEQUENCE DATA (trigs, p-locks,
+|                     length, scale, trig conditions, microtiming) from the CF
+|                     card's last SAVE BANK snapshot (bankNN.strd), seamlessly.
+|                     The pattern->Part ASSIGNMENT is preserved (masked out of the
+|                     copy) -- a sequence reload must not silently re-point the
+|                     pattern at a different Part.
+|   ALL PARTS      -- reload all 4 Parts to their last saved state (= stock RELOAD
+|                     PART x4: FUN_4004aab4).  Pure RAM.
+|   PARTS + PTN SEQ -- ALL PARTS + PTN SEQ.
 |
 | Stock 1.40C only reloads from the card at whole-BANK granularity, and doing so
 | glitches the audio (FUN_400a10c8 pre-step + FUN_400238a4 re-sync).  This is
@@ -38,7 +41,7 @@
     .equ G_KIND,    0x80006a50          | worker request: 0 idle, 1 = SEQ (set by rl_yes)
     .equ G_PAT,     0x80006a51          | pattern to reload (byte)
     .equ G_MENU,    0x80006a52          | 1 = the picker window is open
-    .equ G_SEL,     0x80006a53          | highlighted item: 0 SEQ / 1 PARTS / 2 WHOLE
+    .equ G_SEL,     0x80006a53          | highlighted item: 0 PTN SEQ / 1 ALL PARTS / 2 PARTS + PTN SEQ
 
 |   ---- stock symbols ----
     .equ PTN_USED,  0x460d173e          | set 1 to suppress SELECT PATTERN on [PTN] release
@@ -97,6 +100,7 @@
     .equ BLOB,      0x400e21e0
     .equ BANKSTRIDE,0x9b340
     .equ PATSTRIDE, 0x8ed8
+    .equ PAT_PART,  0x8e57              | RAM slab: pattern->Part link, 1 byte [0..3]
 
     .equ N_ITEMS,     3
 
@@ -326,13 +330,13 @@ rl_menu_tbl:
     .long   rl_msg_parts
     .long   rl_msg_whole
 rl_msg_seq:
-    .asciz "RLD SEQ"
+    .asciz "PTN SEQ"
     .align 2
 rl_msg_parts:
-    .asciz "RLD PARTS"
+    .asciz "ALL PARTS"
     .align 2
 rl_msg_whole:
-    .asciz "RLD WHOLE"
+    .asciz "PARTS + PTN SEQ"
     .align 2
 
 | ================= the SEQ worker -- jmp detour @ the type-0x14 case 0x40085864 =================
@@ -405,11 +409,23 @@ rlj_ploop:
     move.l  #PATSTRIDE,%d1
     muls.l  %d1,%d0
     add.l   %d0,%a4                    | a4 = live slab for P
+
+    move.l  %a4,%a5
+    add.l   #PAT_PART,%a5              | a5 -> the live pattern->Part link byte
+    moveq   #0,%d0
+    move.b  (%a5),%d0
+    move.l  %d0,rl_asgn                | preserve the current assignment across the copy
+
     move.l  #PATSTRIDE,-(%sp)
     pea     SCRATCH
     move.l  %a4,-(%sp)
     jsr     FWMEMCPY                   | memcpy(liveslab, SCRATCH, 0x8ed8)
     lea     12(%sp),%sp
+
+    move.l  %a4,%a5                    | recompute -- be safe on a5 across the call
+    add.l   #PAT_PART,%a5
+    move.l  rl_asgn,%d0
+    move.b  %d0,(%a5)                  | mask out the Part link -- SEQ never re-points the pattern
 
     move.l  %d5,%d0
     move.b  ACT_PAT,%d1
@@ -476,6 +492,8 @@ rlo_zero:
 
     .align 2
 rl_cksum:
+    .space 4
+rl_asgn:
     .space 4
 rl_pathbuf:
     .space 128

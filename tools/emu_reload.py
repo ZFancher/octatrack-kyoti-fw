@@ -274,7 +274,18 @@ PTN_HELD = 0x460d1742
 NO_KEYCODE = 0x32
 G_KIND = 0x80006a50
 G_PAT = 0x80006a51
+G_SEL = 0x80006a53
 TOAST_FN = 0x4005a2b8
+
+# which picker item cmd_patched drives.  patch_reload.s item 0 == PTN SEQ (the
+# whole-pattern worker); emu_reload2.py overrides this to 1 (patch_reload2.s item
+# 0 is TRK SEQ, item 1 is PTN SEQ).
+PATCHED_GSEL = 0
+
+# RAM pattern-slab geometry (FUN_4009a670 / NOTES.md L1067)
+MIDI_BASE_IN_SLAB = 0x48d0
+MTRA_STRIDE = 0x8b0
+PART_LINK_IN_SLAB = 0x8e57
 
 
 def _sym(name):
@@ -365,8 +376,8 @@ def cmd_patched(rt):
         # the picker (rl_ptn hold-open -> rl_yes execute) is proven by --combo;
         # here arm the SEQ worker the way rl_yes does and drive rl_yes for real
         rt.uc.mem_write(G_KIND, b"\x00")
-        rt.uc.mem_write(G_KIND + 2, b"\x01")               # G_MENU = 1 (picker open, SEL 0 = SEQ)
-        rt.uc.mem_write(G_KIND + 3, b"\x00")
+        rt.uc.mem_write(G_KIND + 2, b"\x01")               # G_MENU = 1 (picker open)
+        rt.uc.mem_write(G_SEL, bytes([PATCHED_GSEL]))      # highlight the whole-pattern SEQ item
         rl_yes = _sym("rl_yes")
         d0 = rt.call_as_main(rl_yes, args=(0x31, 1), budget=900_000)
         print(f"combo      : rl_yes(kc=0x31, press) -> d0={d0:#x}")
@@ -452,6 +463,155 @@ def cmd_patched(rt):
     return ok
 
 
+CUR_TRACK_G, MIDI_MODE_G = 0x80000000, 0x80000012
+
+
+def cmd_trk(rt):
+    """patch_reload2.s TRK SEQ (G_KIND=3): drive rl_yes with item 0 highlighted
+    and assert the worker copies back EXACTLY the selected track's region --
+    the other 7 audio tracks, all 8 MIDI tracks, the pattern->Part link byte,
+    and a bystander pattern are all left scribbled."""
+    try:
+        _sym("rl_arm_trk")
+    except KeyError:
+        print("\n--trk: SKIP (no rl_arm_trk symbol -- not patch_reload2)")
+        return True
+    print("\n===== --trk : per-track slice -- only the addressed track reverts =====")
+    T = 3                                   # target audio track
+    curbank = rt.uc.mem_read(er.CUR_BANK, 1)[0]
+    blob = part_ptr(rt)
+    P, Q = 0, DISK_PAT
+    pP, pQ = blob + P * PAT_STRIDE, blob + Q * PAT_STRIDE
+    rt.seq_select_live(curbank, P)
+
+    rt.frame = True
+    rt.next_frame = rt.sample + er.FRAME_PERIOD
+    rt.exact_clock(); rt.internal_clock(); rt.press_play_live()
+    rt.run(ms=250)
+
+    LIVE_COPY = 0x1001614e
+    # Scribble a window of each track's p-lock array (stable under playback --
+    # cmd_patched proved this region byte-reverts cleanly) + the Part-link byte,
+    # in P and a bystander Q, in both the cold blob and the live cache.  For MIDI
+    # tracks scribble a deep offset (0x300) inside the MTRA block.
+    PL = PLOCK_IN_TRAC + 0x40               # into the p-lock array, past step 0
+    PLW = 64
+    MW_OFF, MW = 0x300, 32
+
+    def scr(a, n):
+        rt.uc.mem_write(a, bytes(b ^ 0x5A for b in rd(rt, a, n)))
+
+    def scribble_all(pat):
+        for base in (blob + pat * PAT_STRIDE, LIVE_COPY + pat * PAT_STRIDE):
+            for t in range(8):
+                scr(base + t * TRAC_STRIDE + PL, PLW)
+                scr(base + MIDI_BASE_IN_SLAB + t * MTRA_STRIDE + MW_OFF, MW)
+            scr(base + PART_LINK_IN_SLAB, 1)
+    scribble_all(P); scribble_all(Q)
+    scribbled_P = rd(rt, pP, PAT_STRIDE)
+    scribbled_Q = rd(rt, pQ, PAT_STRIDE)
+
+    fx, deser_seen = [], [False]
+    for a, nm in {_sym("rl_job"): "rl_job", 0x4008cebc: "parse",
+                  0x4008ded0: "deser"}.items():
+        def mk(nm):
+            def cb(u, ad, sz, x):
+                if nm == "deser":                  # halt the residual whole-bank
+                    deser_seen[0] = True           # deser on entry (as cmd_patched)
+                    u.emu_stop(); return
+                fx.append(nm)
+            return cb
+        rt.uc.hook_add(er.eb.UC_HOOK_CODE, mk(nm), begin=a, end=a)
+    rt.uc.mem_write(TOAST_FN, b"\x4e\x75")
+    rt.uc.mem_write(0x40056bc0, b"\x4e\x75")
+    # NB: do NOT stub sprintf (0x40013a08) -- rl_openstrd in the worker uses it to
+    # build the bankNN.strd path, and the RTOS uses it widely; a bare-rts stub
+    # corrupts the storage task's stack and the job silently never runs.  Let the
+    # TRK SEQ toast's sprintf run for real (harmless -- into rl_tbuf).
+    rt.uc.ctl_flush_tb()
+
+    spin(rt)
+    rt.uc.mem_write(PTN_HELD, struct.pack(">I", 1))
+    rt.uc.mem_write(TRANSPORT, struct.pack(">I", 1))
+    rt.uc.mem_write(0x800065be, bytes([P]))
+    rt.uc.mem_write(CUR_TRACK_G, bytes([T]))            # currently-addressed track
+    rt.uc.mem_write(MIDI_MODE_G, b"\x00")               # audio pages
+    rt.uc.mem_write(G_KIND, b"\x00")
+    rt.uc.mem_write(G_MENU_A, b"\x01")
+    rt.uc.mem_write(G_SEL_A, b"\x00")                   # item 0 = TRK SEQ
+    # Arm via rl_arm_trk directly.  Driving the full rl_yes for TRK SEQ runs a real
+    # sprintf (the "T3 SEQ" toast) that opens a scheduling window in which the
+    # posted worker starts *inside* call_as_main and the borrowed idle slot never
+    # cleanly returns to MAIN_SPIN.  rl_yes -> rl_arm_trk routing is covered by
+    # --combo; here we want the worker's slice behaviour, so call the arming
+    # subroutine (reads the track globals, posts, rts -- fast) and drain.
+    faulted = None
+    try:
+        rt.call_as_main(_sym("rl_arm_trk"), args=(), budget=900_000)
+    except Exception as e:
+        faulted = f"{type(e).__name__}: {e}"
+
+    gk = rd(rt, G_KIND, 1)[0]
+    gtrk = rd(rt, 0x80006a54, 1)[0]
+    after_P = after_Q = None
+    for _ in range(300):
+        try:
+            rt.run(ms=100)
+        except Exception as e:
+            faulted = faulted or f"{type(e).__name__}: {e}"
+            break
+        landed = rd(rt, pP, PAT_STRIDE) != scribbled_P
+        if landed or deser_seen[0]:
+            after_Q = rd(rt, pQ, PAT_STRIDE)
+            if landed:
+                rt.run(ms=200)
+            after_P = rd(rt, pP, PAT_STRIDE)
+            break
+    if after_P is None:
+        after_P, after_Q = rd(rt, pP, PAT_STRIDE), rd(rt, pQ, PAT_STRIDE)
+
+    def apl(buf, t):                        # a track's scribbled p-lock window
+        o = t * TRAC_STRIDE + PL
+        return buf[o: o + PLW]
+    def mpl(buf, t):                        # a MIDI track's scribbled window
+        o = MIDI_BASE_IN_SLAB + t * MTRA_STRIDE + MW_OFF
+        return buf[o: o + MW]
+
+    # track T's window should now match bank01.strd (reverted); the rest stays scribbled
+    strd = DEMO_BANK1_STRD.read_bytes()
+    doff = D_PAT1 + D_PSTRIDE * P + D_PHDR + D_TRAC * T
+    disk_win = strd[doff + 0x62 + 0x40: doff + 0x62 + 0x40 + PLW]
+
+    tgt_reverted = apl(after_P, T) == disk_win
+    others_kept = all(apl(after_P, t) == apl(scribbled_P, t) for t in range(8) if t != T)
+    midi_kept = all(mpl(after_P, t) == mpl(scribbled_P, t) for t in range(8))
+    partlink_kept = after_P[PART_LINK_IN_SLAB] == scribbled_P[PART_LINK_IN_SLAB]
+    q_survived = all(apl(after_Q, t) == apl(scribbled_Q, t) for t in range(8))
+    n_parse = fx.count("parse")
+    flag = int.from_bytes(rd(rt, RELOAD_NOW, 4), "big")
+    tport = int.from_bytes(rd(rt, TRANSPORT, 4), "big")
+    print(f"worker     : rl_job={fx.count('rl_job')} FUN_4008cebc={n_parse} "
+          f"deser_seen={deser_seen[0]}  G_KIND {gk}  G_TRK {gtrk}  RELOAD_NOW={flag:#x}")
+
+    ok = (faulted is None and gk == 0 and gtrk == T and tgt_reverted and others_kept
+          and midi_kept and partlink_kept and q_survived and n_parse == P + 1
+          and flag in (0, 1) and tport == 1)
+    print(f"\n--trk: {'ALL GOOD' if ok else 'CHECK FAILED'}   (fault={faulted})")
+    for name, cond in [("no fault", faulted is None),
+                       ("worker cleared G_KIND", gk == 0),
+                       (f"G_TRK == {T}", gtrk == T),
+                       (f"audio track {T} reverted to saved", tgt_reverted),
+                       ("other 7 audio tracks untouched (still scribbled)", others_kept),
+                       ("all 8 MIDI tracks untouched", midi_kept),
+                       ("pattern->Part link byte untouched", partlink_kept),
+                       ("bystander pattern untouched", q_survived),
+                       (f"exactly {P + 1}x FUN_4008cebc", n_parse == P + 1),
+                       ("0x46c8028a fired then consumed", flag in (0, 1)),
+                       ("transport still running", tport == 1)]:
+        print(f"   [{'x' if cond else ' '}] {name}")
+    return ok
+
+
 G_KIND_A, G_PAT_A, G_MENU_A, G_SEL_A = 0x80006a50, 0x80006a51, 0x80006a52, 0x80006a53
 POPUP2_FN, CLOSE_FN, POST_FN, PARTRELD_FN = 0x4005a0e0, 0x40056bc0, 0x40022778, 0x4004aab4
 REFRESH_FNS = (0x4004d948, 0x40032208, 0x4004d640, 0x400486cc, 0x4006dbe8, 0x40077b00, 0x4002f2f8)
@@ -462,9 +622,9 @@ PTN_RESUME, PTN_HOLDTAIL = 0x4005a04a, 0x4005a0d2         # rl_ptn stock targets
 # this for the 2-item scaled-down build.
 #   (G_SEL, label, want_G_KIND, want_FUN_4004aab4_calls, want_seq_job_post)
 COMBO_ITEMS = [
-    (0, "RLD SEQ",   1, 0, True),
-    (1, "RLD PARTS", 0, 4, False),
-    (2, "RLD WHOLE", 1, 4, True),
+    (0, "PTN SEQ",         1, 0, True),
+    (1, "ALL PARTS",       0, 4, False),
+    (2, "PARTS + PTN SEQ", 1, 4, True),
 ]
 
 _END_PCS = {0x4005e276: "NO_REL", 0x4005e262: "NO_PRESS(stock)",
@@ -630,15 +790,17 @@ def main():
     ap.add_argument("--strd", action="store_true", help="async storage-task reload of the blob from .strd")
     ap.add_argument("--combo", action="store_true", help="single-step rl_combo in isolation (fast)")
     ap.add_argument("--patched", action="store_true",
-                    help="boot out/mainos_reload.bin and drive [PTN]+[NO] end to end")
+                    help="boot the built image and drive rl_yes (whole-pattern SEQ) end to end")
+    ap.add_argument("--trk", action="store_true",
+                    help="patch_reload2 only: TRK SEQ copies back exactly one track's region")
     a = ap.parse_args()
-    if not (a.slice or a.strd or a.patched or a.combo):
-        ap.error("pick --slice, --strd, --combo and/or --patched")
+    if not (a.slice or a.strd or a.patched or a.combo or a.trk):
+        ap.error("pick --slice, --strd, --combo, --patched and/or --trk")
     if not DEMO_BANK1_STRD.exists():
         sys.exit(f"missing {DEMO_BANK1_STRD} (the factory OT DEMO export)")
-    if a.patched or a.combo:
+    if a.patched or a.combo or a.trk:
         if not RELOAD_IMAGE.exists():
-            sys.exit(f"missing {RELOAD_IMAGE} -- run python3 tools/build_reload.py first")
+            sys.exit(f"missing {RELOAD_IMAGE} -- run the matching build_reload*.py first")
         OUR_IMAGE = RELOAD_IMAGE
 
     rt = boot_and_load()
@@ -651,6 +813,8 @@ def main():
         ok &= cmd_strd(rt)
     if a.patched:
         ok &= cmd_patched(rt)
+    if a.trk:
+        ok &= cmd_trk(rt)
     sys.exit(0 if ok else 1)
 
 
