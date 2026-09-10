@@ -6,13 +6,21 @@
 |   [PTN] + [YES]   toggles DIRECT JUMP  0 <-> 1, flashing "DIRECT JUMP ON" / "DIRECT
 |                   JUMP OFF" for ~0.7 s.  No PERSONALIZE entry (Session 21 re-scope).
 |
-|   Overlay -- two builds:
+|   Overlay -- three builds:
 |     v1 (build_directjump.py)     FUN_40059f8c: text + 4 draining countdown boxes,
 |                                  styled as the SELECT-BANK/PTN window, borrows its
 |                                  handle 0x460d1e5c for < 1 s.
 |     v2 (build_directjump_v2.py, --defsym DJ_V2=1)   FUN_4005a0e0: bare 18px text box,
 |                                  NO boxes, private handle 0x460d1e64; auto-dismiss via
 |                                  dj_tick2 spliced into the engine per-frame handler.
+|     v3 (build_directjump_v3.py, --defsym DJ_V3=1)   FUN_4005a2b8(text, dur): the OS's
+|                                  OWN self-timing notification -- the call stock uses for
+|                                  "PART n RELOADED" (= ems-octakit GK_STOCK_NOTIFICATION_
+|                                  SHOW), also what patch_reload2 uses.  No boxes, no
+|                                  borrowed/shared handle, NO extra hook.  This is the
+|                                  right primitive; the countdown boxes in v1 were only
+|                                  ever inherited chrome from reusing the SELECT window.
+|                                  ** preferred for build_merged.py. **
 |
 |   DIRECT JUMP  0 = "OFF"  -> stock: a cued pattern switches at the CHAIN AFTER point
 |                              (PLEN by default), restarting at step 1.
@@ -71,6 +79,16 @@
     .equ POPUP,     0x460e5cd0          | !=0 = a modal popup is up (skip our combo then)
     .equ SHOW_MSG,  0x40059f8c          | FUN_40059f8c(text, ticks, enable, on_timeout)
     .equ YES_RESUME,0x4005e4d0          | back into the stock YES handler after the 2 moves
+
+|   ---- v3 overlay (build_directjump_v3.py: --defsym DJ_V3=1) ----
+|   FUN_4005a2b8(text, dur) -- the OS notification/toast primitive (ems-octakit
+|   GK_STOCK_NOTIFICATION_SHOW).  Self-timing: pass a frame duration, it draws the line
+|   and tears itself down.  No handle to manage, no follow-up tick -> no dj_tick2, no
+|   0x400522ca splice.  patch_reload2's rl_yes uses the identical call (pea DUR ; text).
+    .equ NOTIFY,    0x4005a2b8          | FUN_4005a2b8(char *text, int dur_frames)
+    .ifndef DJ_TOAST_DUR
+    .equ DJ_TOAST_DUR, 0x44             | same dwell patch_reload2 uses for its toast
+    .endif
 
 |   ---- v2 overlay (build_directjump_v2.py: --defsym DJ_V2=1) ----
 |   v1 uses SHOW_MSG = the SELECT-BANK/PTN timed window -> text PLUS 4 draining boxes,
@@ -144,6 +162,12 @@ dj_toggle:
     beq.b   djt_show
     lea     dj_msg_on,%a0
 djt_show:
+    .ifdef DJ_V3
+    pea     DJ_TOAST_DUR               | dur (frames)
+    move.l  %a0,-(%sp)                 | text
+    jsr     NOTIFY                     | FUN_4005a2b8(text, dur) -- self-timing OS toast
+    addq.l  #8,%sp
+    .else
     .ifdef DJ_V2
     move.l  %a0,-(%sp)                 | text
     jsr     POPUP2                     | FUN_4005a0e0(text) -- box-free popup @ 0x460d1e64
@@ -157,6 +181,7 @@ djt_show:
     move.l  %a0,-(%sp)                 | text
     jsr     SHOW_MSG
     lea     16(%sp),%sp
+    .endif
     .endif
 
     moveq   #1,%d0

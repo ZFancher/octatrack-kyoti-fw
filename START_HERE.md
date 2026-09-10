@@ -161,8 +161,10 @@ session, in order:
 3. If (2) good → **flash `SIDECHAIN3`** (step 3: `KEY GAIN` + `KEY FLT` SVF + `SC LISTEN`,
    built Session 36). HW test additions in `NOTES.md` "Session 36"; tune `sc_tables.py`
    (gain law / filter range / q) after a listen.
-4. **Flash `DIRECTJUMP`** — the `[PTN]`+`[YES]` toggle + the 5 sequencer-hook unknowns.
-   HW test lists: `NOTES.md` "Session 15 continued" + "Session 21 continued".
+4. **Flash `DIRECTJUMP_V3`** (`build_directjump_v3.py` — the overlay the merge carries;
+   `FUN_4005a2b8` self-timing toast) — the `[PTN]`+`[YES]` toggle + the 5 sequencer-hook
+   unknowns + does the toast read cleanly / `DJ_TOAST_DUR` feel right.
+   HW test lists: `NOTES.md` "Session 15 continued" + "Session 21 continued" + "Session 45".
 5. Then: build the 4th mute mode; OT+FX-solo checklist (`NOTES.md` "Session 11 → NEXT").
 
 **Also no-flash:** all three MUTE MODE builds + DIRECT JUMP now carry the `'ANDY'`-shadow
@@ -171,12 +173,19 @@ persistence (Session 22). **`tools/emu_rtos.py`** wraps octabam's full-firmware 
 Session 23) — the tool for the p-lock backlog below.
 
 **Combined firmware (Session 45, no-flash):** `tools/build_merged.py` composes all five
-final-scoped mods (Bug-1 + MUTE MODE + DIRECT JUMP v1 + SIDECHAIN3 + RELOAD2) into
+final-scoped mods (Bug-1 + MUTE MODE + **DIRECT JUMP v3** + SIDECHAIN3 + RELOAD2) into
 `out/OCTATRACK_OS1.40C_KYOTI_ALL.{syx,bin}` — caves auto-packed, the one shared handler
 (`[YES]` @ `0x4005e4c8`) resolved by a trampoline (RELOAD2 outer → `dj_toggle` chain,
 `patch_reload2.s` `.ifdef MERGE`). `tools/emu_merged.py` ALL GOOD. **Not flashed** —
 flash the per-feature builds first (order below), then the combined image. Full map +
 open decisions: `reference/MERGE.md`.
+
+**DIRECT JUMP v3 (Session 45):** `build_directjump_v3.py` / `--defsym DJ_V3=1` — the
+confirmation toast is `FUN_4005a2b8(text, dur)`, the OS's own self-timing notification
+(what `patch_reload2` uses, = ems-octakit `GK_STOCK_NOTIFICATION_SHOW`). No countdown
+boxes (v1), no `0x400522ca` splice (v2), no shared popup handle. `emu_directjump_v3.py`
+ALL GOOD; dj_a/b/c byte-identical to v1. Preferred everywhere; v1/v2 kept until v3
+flashes.
 
 **Backlog (scoped, Phase 1 tooling next):** auto-remove a trigless lock once a LIVE-REC
 `[NO]`+knob erase clears its last p-lock. Data model is mapped to the step-mask level

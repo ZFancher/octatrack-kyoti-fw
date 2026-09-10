@@ -13,13 +13,13 @@ detour site, or a shared global changes.
 ## The five final-scoped mods
 
 Only the *scoped* build of each — not the intermediates (`RELOAD2` not `RELOAD`,
-`SIDECHAIN3` not `SIDECHAIN`/`2`, DIRECT JUMP **v1**).
+`SIDECHAIN3` not `SIDECHAIN`/`2`, DIRECT JUMP **v3** — see "DIRECT JUMP: use v3").
 
 | Mod | Standalone build | Sources |
 |---|---|---|
 | Bug-1 MIDI manual-trig fix | `build_trigscale_only.py` | `patch_trigscale.s` |
 | MUTE MODE — `OT` / `OT+FX` / `DT` | `build_mutemode_dt.py` | `patch_softmute.s` + `patch_mutemode.s` (`DT_MODE=1`) |
-| DIRECT JUMP — `[PTN]`+`[YES]` | `build_directjump.py` (**v1**) | `patch_directjump.s` |
+| DIRECT JUMP — `[PTN]`+`[YES]` | `build_directjump_v3.py` (**v3**) | `patch_directjump.s` (`DJ_V3=1`) |
 | SIDE-CHAIN compressor | `build_sidechain3.py` | `patch_sidechain.s` + `patch_sc_dsp3.asm` + `sc_tables.py` |
 | RELOAD FROM PROJECT — hold `[PTN]` | `build_reload2.py` | `patch_reload2.s` |
 
@@ -52,7 +52,7 @@ Free zone `0x400d7000 … 0x400d7c3c` (3132 B). Packed from the bottom;
 | `patch_sidechain` (CF: `key_fmt` / `kfilt_fmt`) | `0x400d7000` | 140 B | + descriptor & chooser edits outside the zone |
 | `patch_softmute` (`DT_MODE=1`) | `0x400d708c` | 368 B | |
 | `patch_mutemode` (`DT_MODE=1`) | `0x400d71fc` | 136 B | |
-| `patch_directjump` (v1) | `0x400d7284` | 498 B | `dj_toggle` reached via chain, not a detour |
+| `patch_directjump` (`DJ_V3=1`) | `0x400d7284` | 490 B | `dj_toggle` reached via chain, not a detour |
 | `patch_reload2` (`MERGE=1`) | `0x400d7478` | ~1194 B | ~4 B smaller than standalone (chained `rly_stock`) |
 | PERSONALIZE menu arrays ×3 (17 entries) | `0x400d7924` | 204 B | relocated from `0x400b2a34/74/c0` |
 | — free — | `0x400d79f0` | 272 B | |
@@ -123,9 +123,10 @@ Implementation: `patch_reload2.s` gained an `.ifdef MERGE` block. Standalone,
 `rly_stock` replays the prologue and `jmp`s `YES_RESUME`; under
 `--defsym MERGE=1 --defsym MERGE_DJ_TOGGLE=<addr>` it is a single `jmp DJ_TOGGLE`.
 `build_merged.py` assembles `patch_directjump` first, reads `dj_toggle`, feeds it in.
-**`patch_directjump.s` is unchanged** — `dj_toggle` behaves identically whether
-entered from a detour or from `rl_yes`, because the stack is untouched on that path
-(`0(sp)`=ret, `4`=keycode, `8`=event).
+`dj_toggle` needs no change for the chain — it behaves identically whether entered from
+a detour or from `rl_yes`, because the stack is untouched on that path (`0(sp)`=ret,
+`4`=keycode, `8`=event). (`patch_directjump.s`'s only merge-relevant edit is the
+separate `DJ_V3` overlay switch.)
 
 `emu_merged.py` drives all six cases on the real merged bytes:
 
@@ -156,27 +157,38 @@ RELOAD picker. Confirm the hold feel on hardware (HW unknown, `FLASHING.md` §4.
 
 ---
 
-## DIRECT JUMP: use v1, not v2, in the merge
+## DIRECT JUMP: use v3
 
-v2 adds two couplings into MUTE MODE / RELOAD territory:
+Three overlay builds exist. The pattern-jump behaviour is identical in all three;
+only the confirmation toast differs.
 
-- **`0x400522ca` hook (`dj_tick2`)** — the per-frame routine that services soft-mute's
-  release watchdog `0x46c7dfba`. v2 replays the `lea`, so it is functionally safe, but
-  it is an extra splice next to soft-mute. RELOAD2 deliberately dropped its own hook
-  here in Session 44.
-- **`FUN_4005a0e0` popup + handle `0x460d1e64`** — shared with RELOAD2's picker
-  (`rl_draw`). One window object; a DJ toast and the picker could stomp each other.
+| | overlay | hooks | window |
+|---|---|---|---|
+| v1 | `FUN_40059f8c` — SELECT-BANK/PTN window: text **+ 4 countdown boxes** | 3 (dj_a/b/c) + toggle | borrows the SELECT handle `0x460d1e5c` < 1 s |
+| v2 | `FUN_4005a0e0` — dead-code bare text box, **no timeout** | **4** (+ `dj_tick2` @ `0x400522ca`) | own handle `0x460d1e64` — **shared with RELOAD's picker** |
+| **v3** | **`FUN_4005a2b8(text, dur)`** — the OS's own self-timing notification ("PART n RELOADED"; ems-octakit `GK_STOCK_NOTIFICATION_SHOW`) | **3** (dj_a/b/c) + toggle | none — self-contained |
 
-v1 uses the SELECT-BANK/PTN window (`0x40059f8c` / handle `0x460d1e5c`) and hooks
-nothing in the frame handler. If v2's box-free toast is wanted later, give it a
-private countdown that is not `0x400522ca` and a window that is not `0x460d1e64`.
+The countdown boxes in v1 were never a design choice — they are what `FUN_40059f8c`
+paints, and v1 reused that routine as the cheapest timed-text primitive known at the
+time. `FUN_4005a2b8` (the right primitive) was only identified during the RELOAD work.
+Mnemonically the boxes signal "contemplate and commit" (bank/pattern select) — wrong
+for a mode toggle you have already decided on.
+
+**v3 removes every DIRECT JUMP merge friction:** no `0x400522ca` splice (v2's, next to
+soft-mute), no borrowed SELECT-window handle (v1's), no `FUN_4005a0e0` / `0x460d1e64`
+collision with RELOAD2's picker (v2's). `patch_reload2`'s `rl_yes` uses the identical
+call. `DJ_TOAST_DUR` defaults to `0x44` (the dwell RELOAD2 uses), `--defsym`-tunable.
+
+`build_directjump.py` (v1) and `build_directjump_v2.py` are kept for the standalone
+line until v3 has a hardware pass; `build_merged.py` takes v3.
 
 ---
 
 ## Build & verify
 
 ```
-python3 tools/build_merged.py           # -> out/OCTATRACK_OS1.40C_KYOTI_ALL.{syx,bin}
+python3 tools/build_directjump.py        # v1 stub -- emu_merged / v3 diff against it
+python3 tools/build_merged.py            # -> out/OCTATRACK_OS1.40C_KYOTI_ALL.{syx,bin}
 python3 tools/emu_merged.py              # STATIC + DYNAMIC, expect "ALL GOOD"
 ```
 
@@ -188,6 +200,8 @@ are byte-identical to `build_sidechain3.py`.
 
 The per-feature `emu_*.py` still run against their **standalone** images (they assert
 `0x400d7400`-era cave addresses); `emu_merged.py` covers the merge-specific risk only.
+The v3 overlay has its own `emu_directjump_v3.py` (toggle → `FUN_4005a2b8`; dj_a/b/c
+asserted byte-identical to v1).
 
 ---
 
@@ -195,7 +209,8 @@ The per-feature `emu_*.py` still run against their **standalone** images (they a
 
 1. Flash & sign off each feature standalone, in the `FLASHING.md` / `START_HERE.md`
    order: **DT → SIDECHAIN2 → SIDECHAIN3 → DIRECTJUMP** (+ Bug-2 confirm, p-lock
-   Phase-0).
+   Phase-0). DIRECT JUMP: flash **v3** (`build_directjump_v3.py`) — that is what the
+   merge carries; check the toast reads cleanly and `DJ_TOAST_DUR` feels right.
 2. Only then flash `OCTATRACK_KYOTI_ALL.bin` and re-run each feature's HW checklist on
    the combined image, plus: the `[PTN]` gesture split (tap vs hold), MUTE MODE while
    the RELOAD picker is open, a DIRECT JUMP toggle immediately after a RELOAD.
@@ -207,3 +222,6 @@ The per-feature `emu_*.py` still run against their **standalone** images (they a
   `MERGE` block must be ported to `patch_reload.s` too (same `rly_stock` edit).
 - **Whether the merge ships at all** vs staying a per-feature menu of builds — the
   combined image is the harder thing to support (one HW regression sinks all five).
+- **DIRECT JUMP v3 as the standalone default too** — v3 is strictly better than v1/v2
+  (right primitive, no extra hook, no shared handle). Once it has a HW pass, consider
+  making `build_directjump_v3.py` the DIRECT JUMP line and retiring v1/v2.

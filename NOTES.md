@@ -4504,9 +4504,11 @@ Working model: the knob edits **#2** (`0x46c7ab30`) for the held step; a
    mods), `tools/emu_merged.py` ALL GOOD, `reference/MERGE.md` = the allocation map.
    The `[YES]` `0x4005e4c8` collision (DIRECT JUMP vs RELOAD2) is resolved by a
    trampoline (`patch_reload2.s` `.ifdef MERGE`). **Not flashed** — combined image is
-   gated behind the per-feature HW passes in item 4. Remaining no-flash: DIRECT JUMP
-   v1-vs-v2 for the merge is decided (v1); `reload` vs `reload2` still open (build uses
-   `reload2`); port the `MERGE` block to `patch_reload.s` if the 3-item wins.
+   gated behind the per-feature HW passes in item 4. DIRECT JUMP overlay resolved to
+   **v3** (`build_directjump_v3.py`, `FUN_4005a2b8` self-timing toast — no boxes, no
+   extra hook, no shared handle); flash v3 for the DIRECTJUMP slot of item 4. Remaining
+   no-flash: `reload` vs `reload2` still open (build uses `reload2`); port the `MERGE`
+   block to `patch_reload.s` if the 3-item wins.
 
    Nothing no-flash remains on this board except item 1's alt (trace SAVE for the
    `+0x4900`→`#1` merge, ~2–3 emu sessions).
@@ -6129,4 +6131,38 @@ is **byte-identical** with the guard inert (asserted).
 - `MERGE` block lives in `patch_reload2.s` only. If the 3-item `patch_reload.s` wins
   the Session-43 split decision, port the same `rly_stock` edit there.
 
-**NOT committed at session start / see git for the commit.**
+Committed `75739ad` (`patch_reload2.s` MERGE block, `build_merged.py`, `emu_merged.py`,
+`MERGE.md`, NOTES/START_HERE). NOT pushed.
+
+### DIRECT JUMP v3 — the confirmation toast, done right (same session, commit follows)
+
+**Why the countdown boxes were ever there:** they were never a DIRECT JUMP choice —
+v1 (Session 15/21) reused `FUN_40059f8c`, the SELECT-BANK/PATTERN window, as the
+cheapest way to show timed text, and the 4 draining boxes are what that routine
+paints. At the time the only alternative was `FUN_4005a0e0` (bare box, but dead code
+with no timeout → v2 bolted on the `dj_tick2` splice at `0x400522ca`). The proper
+primitive — **`FUN_4005a2b8(text, dur)`**, the OS notification/toast (= ems-octakit
+`GK_STOCK_NOTIFICATION_SHOW`, what stock uses for "PART n RELOADED") — was only found
+during the RELOAD work, and `patch_reload2`'s `rl_yes` already uses it. Mnemonically
+the boxes say "contemplate + commit"; wrong for a mode toggle already decided on.
+
+**v3:** `patch_directjump.s` gained a third overlay branch under `.ifdef DJ_V3` —
+`pea DJ_TOAST_DUR ; move.l %a0,-(sp) ; jsr 0x4005a2b8 ; addq #8,sp`. `DJ_TOAST_DUR`
+default `0x44` (RELOAD2's dwell), `.ifndef`-overridable. No `dj_tick2`, no
+`0x400522ca` hook, no window handle. Everything else (toggle logic, dj_a/b/c, ANDY
+persistence) is v1's recipe verbatim.
+
+- **`tools/build_directjump_v3.py`** → `out/OCTATRACK_OS1.40C_DIRECTJUMP_V3.{syx,bin}`
+  (`140C_KYOTI`, 516 B vs stock; cave 490 B — smaller than v1's 498 / v2's 546).
+  Asserts v3 touches **exactly** what v1 touches outside its own cave (0 stray),
+  Bug-1 identical, round-trip + checksum OK.
+- **`tools/emu_directjump_v3.py`** — `dj_toggle` OFF↔ON: `DJ_MODE` + shadow + re-cksum
+  + `FUN_4005a2b8("DIRECT JUMP ON"/"OFF", 0x44)` + `PTN_USED` + YES swallowed; v1's
+  `SHOW_MSG` and v2's `POPUP2` asserted **never reached**; PTN-not-held / release /
+  arranger / popup → stock. dj_a/b/c asserted byte-identical to v1's stub. **ALL GOOD.**
+- **`build_merged.py` now assembles `patch_directjump` with `DJ_V3=1`** — merged image
+  3519 B vs stock (was 3525), `emu_merged.py` still ALL GOOD (the `[YES]` trampoline
+  reaches `jsr CKSUM` before the toast, so the dynamic "DJ owns it" marker is
+  unaffected).
+- v1 (`build_directjump.py`) + v2 kept for the standalone line until v3 flashes.
+  `emu_directjump.py` still covers dj_a/b/c (run after `build_directjump.py`).

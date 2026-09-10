@@ -7,7 +7,7 @@ build_merged.py -- the combined OT Kyoti FW: every final-scoped mod in ONE image
     stock 1.40C
       + Bug-1 MIDI manual-trig fix           (patch_trigscale)
       + MUTE MODE  OT / OT+FX / DT            (patch_softmute + patch_mutemode, DT_MODE=1)
-      + DIRECT JUMP  [PTN]+[YES]  (v1 overlay) (patch_directjump)
+      + DIRECT JUMP  [PTN]+[YES]  (v3 overlay) (patch_directjump, DJ_V3=1)
       + SIDE-CHAIN compressor  KEY/KFLT/KGAIN/MON + DSP  (patch_sidechain + patch_sc_dsp3)
       + RELOAD FROM PROJECT  hold [PTN]  (2-item)  (patch_reload2, MERGE=1)
 
@@ -68,7 +68,10 @@ CF_STUBS = [
         (0x40005178, "pre_v", "4feffff448d7001c", 8, "jmp"),
     ]),
     ("patch_mutemode", "DT_MODE=1", []),                 # menu stub -- refs wired below
-    ("patch_directjump", None, [
+    ("patch_directjump", "DJ_V3=1", [
+        # v3 overlay: FUN_4005a2b8 self-timing toast -- no 0x400522ca splice (v2), no
+        # borrowed SELECT-window handle (v1), no FUN_4005a0e0/0x460d1e64 shared with
+        # RELOAD's picker (v2).  reference/MERGE.md "DIRECT JUMP: use v3".
         # NOTE: 0x4005e4c8 (dj_toggle) is NOT hooked here -- RELOAD2 owns that detour and
         #       chains into dj_toggle.  Only the three sequencer hooks are installed.
         (0x400a4006, "dj_a", "4a398000667e",     6, "jsr"),
