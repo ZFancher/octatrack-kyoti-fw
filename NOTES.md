@@ -6269,4 +6269,6 @@ if `G_OURS` → `jsr 0x40056bec` + `clr.b G_OURS`. Scratch: `G_CNT` `0x80006a5c`
    "PART n RELOADED" up when you release `[REC]` would be closed early by
    `0x40056bec` (minor; `G_OURS` already gates it to the case where we opened one).
 
-NOT flashed (user away from the MKI). Committed to `wip/mute-mode` (this commit), not pushed.
+NOT flashed (user away from the MKI). Committed + **pushed** to `origin/wip/mute-mode`
+(the same push carried the previously-unpushed Session 37/38/45 commits — the branch is
+now in sync).
