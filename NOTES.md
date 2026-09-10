@@ -5970,3 +5970,78 @@ Docs: `patch_reload{,2}.s` / `build_reload{,2}.py` / `emu_reload{,2}.py` headers
 `kb/memory-map.md` (arrow keycodes), `README.md`, `BUILD_KYOTI.md`,
 `FLASHING.md` §4.7, `START_HERE.md`. First-attempt in-place scaled-down edit was
 reverted (`git stash@{0}`). **NOT committed, NOT pushed** as of session end.
+
+## Session 44 (2026-09-09, `wip/mute-mode`) — RELOAD FROM PROJECT: OT-native UX (hold [PTN], no timeout)
+
+Session 43's picker was a hybrid — a menu (arrow nav, sticky) wearing a transient
+overlay's clothes (10 s silent auto-close), entered by `[PTN]`+`[NO]`, which
+collides with the reflex "cancel SELECT PATTERN" gesture. Reworked both builds
+(`patch_reload.s` 3-item, `patch_reload2.s` 2-item) to match stock idioms.
+
+### RE — the [PTN] key handler `FUN_4005a044(keycode@4, event@8)`
+
+Disassembled (`0x4005a044`): event **1** = press (sets `0x460d1742=1` "held",
+clears `0x460d173e`), event **0** = release (opens SELECT PATTERN via
+`FUN_40059f8c` **unless `0x460d173e != 0`**), event **2** = HOLD (stock does
+almost nothing — `0x460d1ab2 = 1` then `jmp 0x40027de4`). **So the OS delivers a
+hold event to PTN** — the same mechanism `[PAGE]`-hold uses; the threshold is the
+OS's own. Tail is the clipboard reset `0x40027de4`.
+
+### The change
+
+- **Entry: hold `[PTN]`.** New detour `rl_ptn` @ `0x4005a044` (displaces
+  `202f0008 7201`). On `event==2` + gates (`G_MENU==0`, no popup `0x460e5cd0`,
+  no arranger `0x460d1aec`, `RUNNING`, `G_KIND==0`): open the picker, set
+  `0x460d173e=1` so the release doesn't also pop SELECT PATTERN, then
+  `jmp 0x4005a0d2` (stock hold tail — keeps `0x460d1ab2=1` + the clipboard reset).
+  Non-hold / gated-out: replay `moveq #1,d1` and `jmp 0x4005a04a`. **A quick
+  `[PTN]` tap is byte-for-byte stock.**
+- **No timeout.** Deleted `rl_tick` (the `jsr` splice at `0x400522ca` *inside*
+  the per-control-frame handler `0x40052200`, which displaced `lea 0x46c7dfba,a2`
+  — the SOFT-MUTE release-watchdog var, a latent coupling). Deleted `G_TICKS`,
+  `MENU_FRAMES`, `TICK_ORIG`. `rl_draw` no longer arms a countdown; `rl_no` /
+  `rl_yes` no longer clear one. The window is a sticky menu — `[YES]` executes,
+  `[NO]` cancels, nothing else closes it. Matches every stock OS menu.
+- **`rl_no` simplified** — lost its entire open path (that's `rl_ptn` now); it's
+  just "window open + `[NO]` press → close, swallow; else stock."
+- **DJ decoupled.** RELOAD no longer touches `[PTN]`+`[YES]`. `rl_yes` only acts
+  while `G_MENU==1`; DIRECT JUMP's `[PTN]`+`[YES]` is free of it. (A merged build
+  still wants a `tst.b G_MENU / bne stock` guard on the DJ toggle for a stray
+  `[YES]` with the RELOAD window open.)
+
+Detour count still 6 each, but `rl_tick` (hot-path splice + softmute var) →
+`rl_ptn` (cold key handler). Caves shrank: `reload` 1294→1226 B, `reload2`
+1270→1202 B.
+
+### emu (`tools/emu_reload.py` / `emu_reload2.py`)
+
+`cmd_combo` rewritten to drive `rl_ptn(0x2e, 2)` for the open; new cases:
+- **`--combo` (3-item + 2-item) ALL GOOD** — hold `[PTN]` opens (end
+  `PTN_HOLDTAIL(stock)`, `G_MENU=1`, `POPUP2` shown, `PTN_USED=1`); **quick tap
+  (`event 1`) → `PTN_RESUME(stock)`, window not opened**; **hold while stopped →
+  gated out, `G_MENU` stays 0**; arrows wrap + redraw; arrows fall through clean
+  when closed; `[YES]` per item (SEQ post-only / PARTS ×4-only / WHOLE both);
+  `[NO]` cancels; `[YES]`/`[NO]` closed → stock.
+- **`--patched` (both) ALL GOOD** — the SEQ worker end to end on the built image:
+  `rl_yes` → post → `rl_job` → open `bank01.strd` → one `FUN_4008cebc` → slab
+  memcpy → `0x46c8028a` fired + consumed; no fault; pattern 0's p-lock array ==
+  `bank01.strd`; bystander pattern 10 untouched; transport still running.
+- `--slice` / `--strd` exercise the *unchanged* worker mechanism (slab-copy +
+  async job) — not re-run in anger this session; the worker code is cosmetic-only
+  diffs from Session 43 and `--patched` drives the same path.
+
+### HW-only (adds to Session 42/43's list)
+
+- the OS hold-event threshold + feel for `[PTN]` (same as `[PAGE]`-hold);
+- a quick `[PTN]` tap still opens SELECT PATTERN;
+- whether an arrow reaches `rl_arr_a/b` while the `FUN_4005a0e0` popup is up
+  (fallback: hook the event dispatcher `FUN_40061b60`);
+- that `FUN_4005a044` is *only* the PTN key handler.
+
+### Open (unchanged from Session 43): the two-build split
+
+`patch_reload.s` (493 B) and `patch_reload2.s` (495 B) still differ by ~94 lines
+(N_ITEMS, one `FUN_4004aab4` loop vs one call, menu strings) for ~24 B of cave.
+A genuinely minimal RELOAD would be SEQ-only, hold `[PTN]` → one confirm, no
+picker (~2 detours). Decide whether to keep both, keep only the 3-item, or add a
+no-picker minimal. Not done this session.

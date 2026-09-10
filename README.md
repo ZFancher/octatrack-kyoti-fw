@@ -129,14 +129,15 @@ Write-up: [`NOTES.md`](NOTES.md) "Session 17" (+ "Session 36"); DSP source
 ### RELOAD FROM PROJECT — reload a pattern from the CF card without stopping playback  ·  *emulator-validated, not flashed*
 
 Stock 1.40C can only reload from the card at whole-**bank** granularity, and doing
-so stops the audio. This adds a per-pattern reload, seamlessly. Adapted from the
-Digitone's RELOAD FROM PROJ.
+so glitches the audio. This adds a per-pattern reload, seamlessly. Adapted from
+the Digitone's RELOAD FROM PROJ.
 
-**`[PTN]` + `[NO]`** (while the sequencer is playing) opens a picker window; you
-can let go of `[PTN]` and it stays open. The **arrow keys** move the highlight;
-**`[YES]`** executes it and closes the window; **`[NO]`** closes it and runs
-nothing. While the window is open `[YES]`/`[NO]` act only on the picker. It also
-self-closes after ~10 s of no input. All items reload from the card's last
+**Hold `[PTN]` ~0.5 s** (while the sequencer is playing) opens a picker window —
+the OS's own hold event, the same one `[PAGE]`-hold uses; a quick `[PTN]` tap is
+unchanged. The **arrow keys** move the highlight; **`[YES]`** executes it and
+closes the window; **`[NO]`** closes it and runs nothing. Like every stock menu
+it has **no timeout** — it stays until you answer it. While it is open
+`[YES]`/`[NO]` act only on the picker. All items reload from the card's last
 **SAVE BANK** snapshot:
 
 | item (3-item build) | what it does | how |
@@ -149,14 +150,15 @@ Guards are the stock ones: a never-saved bank shows *"THIS BANK HAS NEVER BEEN
 SAVED! NOTHING TO RELOAD!"*; a never-saved Part shows *"SAVE PART FIRST!"*. No
 confirmation prompt.
 
-`tools/patch_reload.s` — six hooks (the `[NO]`, `[YES]` and two arrow key
-handlers, a per-frame tick for the auto-close, and the storage task's
+`tools/patch_reload.s` — six hooks (the `[PTN]` key handler for the hold, the
+`[NO]` and `[YES]` handlers, two arrow key handlers, and the storage task's
 bank-reload case). `python3 tools/build_reload.py` → `140C_KYOTI`. Write-up:
-[`NOTES.md`](NOTES.md) "Session 42" + "Session 43"; emulator
-`tools/emu_reload.py` — `--combo` (the whole modal picker, single-stepped) and
+[`NOTES.md`](NOTES.md) "Session 42" + "Session 43" + "Session 44"; emulator
+`tools/emu_reload.py` — `--combo` (the whole picker, single-stepped) and
 `--patched` (the SEQ worker end to end in the full-firmware emulator) both pass;
-whether an arrow reaches the picker on hardware, the parse against a real CF card
-and the picker rendering are a **hardware** test. **Never flashed.**
+the hold-event feel, whether an arrow reaches the picker on hardware, the parse
+against a real CF card and the picker rendering are a **hardware** test.
+**Never flashed.**
 
 **Scaled-down build** (`tools/patch_reload2.s`, `python3 tools/build_reload2.py`
 → `OCTATRACK_OS1.40C_RELOAD2.{syx,bin}`): same window, a 2-item picker —

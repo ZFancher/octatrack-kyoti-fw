@@ -9,8 +9,8 @@ Thin shim: swaps emu_reload's image path + symbol source, and overrides
 COMBO_ITEMS to the 2-item picker.  All the logic (cmd_combo modal test,
 --slice / --strd / --patched) lives in emu_reload.py.
 
-  --combo    single-step the Session-43 stay-open modal picker: open (rl_no) ->
-             arrows move G_SEL -> rl_yes executes / rl_no cancels; gates checked.
+  --combo    single-step the Session-44 OT-native picker: hold [PTN] opens
+             (rl_ptn) -> arrows move G_SEL -> rl_yes executes / rl_no cancels.
   --patched  boot out/mainos_reload2.bin and drive rl_yes end to end (SEQ worker).
 
     python3 tools/emu_reload2.py --combo

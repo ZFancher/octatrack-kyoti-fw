@@ -250,18 +250,24 @@ passes audio through.
 > reverts the pattern's own Part + its sequence; a Part another pattern uses is
 > untouched unless it's the same one). Also check the `PART + SEQ DATA` label
 > isn't clipped at the screen edge.
+>
+> **Session 44 HW checks (both builds):** does holding `[PTN]` ~0.5 s feel right,
+> and does a quick tap still open SELECT PATTERN?  Do the arrow keys reach the
+> picker while the `FUN_4005a0e0` popup is up (if not, the fallback is a hook in
+> the event dispatcher `FUN_40061b60`)?
 
-`[PTN]` + `[NO]` (while the sequencer is **playing**) opens a picker **window**:
+**Hold `[PTN]` ~0.5 s** (while the sequencer is **playing**) opens a picker
+**window** — the OS's own hold event, the same one `[PAGE]`-hold uses:
 
     RLD SEQ   -- the active pattern's sequence data (trigs, p-locks, length,
                  scale, trig conditions, microtiming, the pattern->part link)
     RLD PARTS -- all 4 Parts  (= stock RELOAD PART x4)
     RLD WHOLE -- both
 
-The window **stays open** after you release `[PTN]`. The **arrow keys** move the
-highlight; `[YES]` executes it and closes the window; `[NO]` closes it and runs
-nothing. While the window is open `[YES]`/`[NO]` do only picker things. It also
-self-closes after ~10 s of no input. All reloads are from the CF card's last
+A quick `[PTN]` tap is unchanged (SELECT PATTERN). The window is a **sticky menu
+with no timeout** — the **arrow keys** move the highlight; `[YES]` executes it
+and closes the window; `[NO]` closes it and runs nothing. While it is open
+`[YES]`/`[NO]` do only picker things. All reloads are from the CF card's last
 **SAVE BANK** snapshot and do **not** stop playback: SEQ rides the storage task
 and re-homes through the sequencer's own no-stop reload path; PARTS is the stock
 live per-part reload.
@@ -271,23 +277,24 @@ Setup: a project on the card with **at least one SAVE BANK** done. Pick a bank,
 
 1. Play pattern N. Edit its trigs / p-locks AND tweak a Part (filter, FX, level).
    Do **not** SAVE BANK again.
-2. `[PTN]`+`[NO]` -> window opens on **RLD SEQ**.  Release `[PTN]` -- the window
-   stays.  The SELECT PATTERN chooser must **not** pop on the `[PTN]` release.
+2. Hold `[PTN]` ~0.5 s -> window opens on **RLD SEQ**.  Release `[PTN]` -- the
+   window stays.  The SELECT PATTERN chooser must **not** pop on release.  A
+   *quick* `[PTN]` tap must still open SELECT PATTERN as normal.
 3. Press `[YES]` -> within ~1 s the sequence reverts, **no audible gap**; the
    Part tweak is still there; the window closes.
-4. Re-edit.  `[PTN]`+`[NO]`, then **arrow down** to **RLD PARTS**, `[YES]`
+4. Re-edit.  Hold `[PTN]`, then **arrow down** to **RLD PARTS**, `[YES]`
    -> all 4 Parts revert; the sequence edits are still there.
-5. `[PTN]`+`[NO]`, arrow to **RLD WHOLE**, `[YES]` -> both revert.  Arrow keys
+5. Hold `[PTN]`, arrow to **RLD WHOLE**, `[YES]` -> both revert.  Arrow keys
    should wrap; `[NO]` at any point closes the window and reverts nothing.
 6. Switch to a **different pattern** in the same bank that you also edited -- its
    sequence edits must still be there (only the pattern you reloaded reverts).
 7. On a bank you have **never** SAVE BANK'd, choosing RLD SEQ / RLD WHOLE shows
    the stock **"THIS BANK HAS NEVER BEEN SAVED! NOTHING TO RELOAD!"** dialog;
    RLD PARTS on a never-saved Part shows **"SAVE PART FIRST!"**.
-8. Open the window and don't touch anything for ~12 s -> it closes on its own.
-9. With the sequencer **stopped**, `[PTN]`+`[NO]` does nothing (stock `[NO]`).
-10. Higher pattern numbers take slightly longer for SEQ (the worker parses past
-    the earlier patterns) -- up to ~1 s for pattern 16.  Still no audio gap.
+8. Open the window and leave it -- it should **stay open** indefinitely (no
+   timeout); `[NO]` closes it.
+9. With the sequencer **stopped**, holding `[PTN]` does nothing extra (stock
+   SELECT PATTERN on release).
 
 > **If it misbehaves:** the SEQ risk is a storage-task hang (a save/load or the
 > reload appears to freeze).  Power-cycle -- it recovers.  To fully revert,

@@ -31,8 +31,8 @@ build is byte-for-byte reproducible from the stock file.
 | `python3 tools/build_sidechain.py` | `140C_KYOTI` | Bug 1 fix + a `KEY` parameter on the COMPRESSOR page — **menu only, DSP untouched** (does nothing audible; proves the control surface) |
 | `python3 tools/build_sidechain2.py` | `140C_KYOTI` | + the DSP hooks: same-DSP-core side-chain — a compressor keys off a chosen track (even muted). **SPATIALIZER is donated** for the code space and removed from the FX menu |
 | `python3 tools/build_sidechain3.py` | `140C_KYOTI` | Bug 1 fix + the full side-chain **menu scaffolding** (`KEY` `KFLT` `KGAIN` `MON`), **no DSP** |
-| `python3 tools/build_reload.py` | `140C_KYOTI` | Bug 1 fix + **RELOAD FROM PROJECT**: `[PTN]`+`[NO]` opens a stay-open picker window (`RLD SEQ` / `RLD PARTS` / `RLD WHOLE`, arrows move the highlight), `[YES]` executes + closes / `[NO]` cancels — reloads the active pattern's sequence and/or its 4 Parts from the card's last SAVE BANK **without stopping playback** |
-| `python3 tools/build_reload2.py` | `140C_KYOTI` | RELOAD FROM PROJECT, **scaled down**: same window, 2-item picker `SEQ DATA` / `PART + SEQ DATA` (`PART + SEQ DATA` reloads only the Part the pattern is assigned to, not all 4). Separate image; `build_reload.py`'s 3-item menu unchanged |
+| `python3 tools/build_reload.py` | `140C_KYOTI` | Bug 1 fix + **RELOAD FROM PROJECT**: **hold `[PTN]`** opens a sticky picker window (`RLD SEQ` / `RLD PARTS` / `RLD WHOLE`, arrows move the highlight), `[YES]` executes + closes / `[NO]` cancels, no timeout — reloads the active pattern's sequence and/or its 4 Parts from the card's last SAVE BANK **without stopping playback** |
+| `python3 tools/build_reload2.py` | `140C_KYOTI` | RELOAD FROM PROJECT, **scaled down**: same gesture, 2-item picker `SEQ DATA` / `PART + SEQ DATA` (`PART + SEQ DATA` reloads only the Part the pattern is assigned to, not all 4). Separate image; `build_reload.py`'s 3-item menu unchanged |
 
 All mods are **OFF by default** (`MUTE MODE = OT`; `KEY = OFF`, stored per Part).
 A freshly flashed unit is indistinguishable from stock until you opt in. An OS

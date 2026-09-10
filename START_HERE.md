@@ -117,7 +117,7 @@ JUMP already uses it, DT still needs it — see below). Everything here is emula
 | **4th MUTE MODE** — instant cut + FX tails + resume-at-playhead | RE'd, not built; gated on the same HW unknown as DT | `NOTES.md` "Session 14" |
 | **DIRECT JUMP** pattern-change mode | **Re-scoped + rebuilt (Session 21):** toggle is now **`[PTN]` + `[YES]`** (flashes "DIRECT JUMP ON/OFF" ~0.7 s) — no PERSONALIZE entry, so **no menu-array surgery**. `DJ_MODE` `0x800000a8`→`0x800000d8` with the Session-19 ANDY-shadow persistence. `patch_directjump.s` / `build_directjump.py` / `emu_directjump.py` updated, `emu_directjump.py` ALL GOOD (adds `test_toggle`). 522 B vs stock. **Not flashed.** | `NOTES.md` "Session 15" + "Session 21" (+ continued) |
 | **DSP side-chain compressor** | see below | `NOTES.md` "Session 17" (+ continued 1–8) |
-| **RELOAD FROM PROJECT** — per-pattern reload from the CF card, no transport stop | **Built, not flashed.** Two images: `build_reload.py` (3-item `RLD SEQ` / `RLD PARTS` / `RLD WHOLE`) and `build_reload2.py` (2-item `SEQ DATA` / `PART + SEQ DATA`; `PART + SEQ DATA` = SEQ + the one assigned Part via `FUN_4004aab4([0x80000003])`, no `ALL PARTS`). **Session 43 UX:** `[PTN]`+`[NO]` opens a **stay-open** window (release `[PTN]`, stays up); arrows move the highlight; `[YES]` executes + closes, `[NO]` cancels; `[YES]`/`[NO]` are modal to the picker while open; ~10 s walk-away auto-close. 6 detours each (`rl_no`/`rl_yes`/`rl_arr_a` `0x4004b970`/`rl_arr_b` `0x400491a0`/`rl_tick`/`rl_job`). SEQ = async storage-task worker parses one pattern from `bankNN.strd` (`FUN_4008cebc`, no scratch bank) → live slab → `0x46c8028a`. **`emu_reload.py` + `emu_reload2.py` `--combo` + `--patched` ALL GOOD.** HW-only: does an arrow reach the picker with the popup up (fallback: hook `FUN_40061b60`); `FUN_4008cebc` vs a real card; picker render. `FLASHING.md` §4.7. | `NOTES.md` "Session 42" + "Session 43" |
+| **RELOAD FROM PROJECT** — per-pattern reload from the CF card, no transport stop | **Built, not flashed.** Two images: `build_reload.py` (3-item `RLD SEQ` / `RLD PARTS` / `RLD WHOLE`) and `build_reload2.py` (2-item `SEQ DATA` / `PART + SEQ DATA`; `PART + SEQ DATA` = SEQ + the one assigned Part via `FUN_4004aab4([0x80000003])`, no `ALL PARTS`). **Session 44 UX (OT-native):** **hold `[PTN]` ~0.5 s** (the OS hold event, as `[PAGE]`-hold) opens a **sticky** picker — **no timeout**, `[YES]` executes + closes, `[NO]` cancels; a quick `[PTN]` tap = SELECT PATTERN unchanged. 6 detours each (`rl_ptn` `0x4005a044` / `rl_no` / `rl_yes` / `rl_arr_a` `0x4004b970` / `rl_arr_b` `0x400491a0` / `rl_job`). The Session-43 `rl_tick` frame-splice at `0x400522ca` is gone. SEQ = async storage-task worker parses one pattern from `bankNN.strd` (`FUN_4008cebc`, no scratch bank) → live slab → `0x46c8028a`. **`emu_reload.py` + `emu_reload2.py` `--combo` + `--patched` ALL GOOD.** HW-only: the hold feel; does an arrow reach the picker with the popup up (fallback: hook `FUN_40061b60`); `FUN_4008cebc` vs a real card; picker render. `FLASHING.md` §4.7. | `NOTES.md` "Session 42"–"Session 44" |
 
 The shared HW unknown for **DT** and the **4th mode**: does the DSP keep advancing a
 0-amp / envelope-riding voice while the frame level words flow untouched? Flashing DT
@@ -175,7 +175,8 @@ Session 23) — the tool for the p-lock backlog below.
 `emu_rtos` and `--watch-mem` the sequenced-data RAM. Full brief: `NOTES.md` "Session 13"
 + "Session 20" + "Session 23".
 
-**RELOAD FROM PROJECT — BUILT** (Sessions 42–43), see the frontier row above. Two
+**RELOAD FROM PROJECT — BUILT** (Sessions 42–44), see the frontier row above. Two
 images: `build_reload.py` (3-item) and `build_reload2.py` (2-item, scaled down).
-Session 43 also gave both a stay-open modal picker (arrows + `[YES]`/`[NO]`). Both emu-clean,
-neither flashed. Brief: `NOTES.md` "Session 42" + "Session 43".
+Session 44 reworked the UX to OT-native: **hold `[PTN]`** opens a sticky picker,
+**no timeout**, arrows + `[YES]`/`[NO]`. Both emu-clean, neither flashed.
+Brief: `NOTES.md` "Session 42"–"Session 44".

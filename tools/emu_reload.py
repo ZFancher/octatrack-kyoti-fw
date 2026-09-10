@@ -289,17 +289,14 @@ def _sym(name):
 
 
 def cmd_patched(rt):
-    print("\n===== --patched : drive [PTN]+[NO] end to end on the built SEQ-DATA image =====")
-    try:
-        rl_combo = _sym("rl_combo")            # 3-item build (patch_reload.s)
-    except KeyError:
-        rl_combo = _sym("rl_no")               # 2-item build (patch_reload2.s)
+    print("\n===== --patched : drive the SEQ worker end to end on the built image =====")
+    rl_ptn = _sym("rl_ptn")
     curbank = rt.uc.mem_read(er.CUR_BANK, 1)[0]
     blob = part_ptr(rt)
     P, Q = 0, DISK_PAT          # P = active pattern 0 -> the worker's discard loop is empty
     pP, pQ = blob + P * PAT_STRIDE, blob + Q * PAT_STRIDE
     rt.seq_select_live(curbank, P)
-    print(f"curbank={curbank}  blob={blob:#x}  rl_combo={rl_combo:#x}  reload target P={P}, bystander Q={Q}")
+    print(f"curbank={curbank}  blob={blob:#x}  rl_ptn={rl_ptn:#x}  reload target P={P}, bystander Q={Q}")
 
     saved_P = rd(rt, pP, PAT_STRIDE)
     saved_Q = rd(rt, pQ, PAT_STRIDE)
@@ -365,8 +362,8 @@ def cmd_patched(rt):
     print(f"gates      : PTN_HELD=1  RUNNING=1  active pattern={P}")
     faulted = None
     try:
-        # the picker (rl_combo open -> rl_yes execute) is proven by --combo; here
-        # arm the SEQ worker the way rl_yes does and drive rl_yes for real
+        # the picker (rl_ptn hold-open -> rl_yes execute) is proven by --combo;
+        # here arm the SEQ worker the way rl_yes does and drive rl_yes for real
         rt.uc.mem_write(G_KIND, b"\x00")
         rt.uc.mem_write(G_KIND + 2, b"\x01")               # G_MENU = 1 (picker open, SEL 0 = SEQ)
         rt.uc.mem_write(G_KIND + 3, b"\x00")
@@ -455,11 +452,11 @@ def cmd_patched(rt):
     return ok
 
 
-G_KIND_A, G_PAT_A, G_MENU_A, G_SEL_A, G_TICKS_A = (0x80006a50, 0x80006a51,
-                                                  0x80006a52, 0x80006a53, 0x80006a54)
+G_KIND_A, G_PAT_A, G_MENU_A, G_SEL_A = 0x80006a50, 0x80006a51, 0x80006a52, 0x80006a53
 POPUP2_FN, CLOSE_FN, POST_FN, PARTRELD_FN = 0x4005a0e0, 0x40056bc0, 0x40022778, 0x4004aab4
 REFRESH_FNS = (0x4004d948, 0x40032208, 0x4004d640, 0x400486cc, 0x4006dbe8, 0x40077b00, 0x4002f2f8)
 ARROW_A_RESUME, ARROW_B_RESUME = 0x4004b978, 0x400491a6   # arrow-handler fall-through targets
+PTN_RESUME, PTN_HOLDTAIL = 0x4005a04a, 0x4005a0d2         # rl_ptn stock targets
 
 # The picker items cmd_combo drives, in G_SEL order.  emu_reload2.py overrides
 # this for the 2-item scaled-down build.
@@ -472,6 +469,7 @@ COMBO_ITEMS = [
 
 _END_PCS = {0x4005e276: "NO_REL", 0x4005e262: "NO_PRESS(stock)",
             0x4005e4d0: "YES_RESUME(stock)",
+            PTN_RESUME: "PTN_RESUME(stock)", PTN_HOLDTAIL: "PTN_HOLDTAIL(stock)",
             ARROW_A_RESUME: "ARROW_A_RESUME(fell through)",
             ARROW_B_RESUME: "ARROW_B_RESUME(fell through)"}
 
@@ -507,32 +505,31 @@ def _run_cave_fn(rt, addr, keycode, event, calls, budget=4000):
 
 
 def cmd_combo(rt):
-    """Isolate the Session-43 stay-open modal picker: rl_no (open/close),
-    rl_arr_a/b (arrows), rl_yes (execute) single-stepped on a private stack,
-    gates forced, no scheduler.  Data-driven by COMBO_ITEMS (emu_reload2.py
-    overrides it for the 2-item build)."""
+    """Isolate the Session-44 OT-native picker: rl_ptn (hold-to-open),
+    rl_no (close), rl_arr_a/b (arrows), rl_yes (execute) single-stepped on a
+    private stack, gates forced, no scheduler.  Data-driven by COMBO_ITEMS
+    (emu_reload2.py overrides it for the 2-item build)."""
     eb = er.eb
-    rl_no, rl_yes = _sym("rl_no"), _sym("rl_yes")
+    rl_ptn, rl_no, rl_yes = _sym("rl_ptn"), _sym("rl_no"), _sym("rl_yes")
     rl_arr_a, rl_arr_b = _sym("rl_arr_a"), _sym("rl_arr_b")
     n = len(COMBO_ITEMS)
-    print("\n===== --combo : single-step the stay-open modal picker in isolation =====")
-    print(f"rl_no={rl_no:#x}  rl_yes={rl_yes:#x}  rl_arr_a={rl_arr_a:#x}  rl_arr_b={rl_arr_b:#x}  ({n} items)")
+    print("\n===== --combo : single-step the OT-native picker in isolation =====")
+    print(f"rl_ptn={rl_ptn:#x}  rl_no={rl_no:#x}  rl_yes={rl_yes:#x}  "
+          f"rl_arr_a={rl_arr_a:#x}  rl_arr_b={rl_arr_b:#x}  ({n} items)")
 
     for a in (POPUP2_FN, CLOSE_FN, POST_FN, TOAST_FN, PARTRELD_FN, *REFRESH_FNS):
         rt.uc.mem_write(a, b"\x4e\x75")
     rt.uc.ctl_flush_tb()
 
-    def reset_gates(actpat=7, menu=0, sel=0):
-        rt.uc.mem_write(0x460d1742, struct.pack(">I", 1))   # PTN held
+    def reset_gates(actpat=7, menu=0, sel=0, running=1):
         rt.uc.mem_write(0x460e5cd0, struct.pack(">I", 0))   # no popup
         rt.uc.mem_write(0x460d1aec, struct.pack(">I", 0))   # no arranger
-        rt.uc.mem_write(0x800065b8, struct.pack(">I", 1))   # playing
+        rt.uc.mem_write(0x800065b8, struct.pack(">I", running))  # transport
         rt.uc.mem_write(0x800065be, bytes([actpat]))
         rt.uc.mem_write(G_KIND_A, b"\x00")
         rt.uc.mem_write(G_PAT_A, b"\x00")
         rt.uc.mem_write(G_MENU_A, bytes([menu]))
         rt.uc.mem_write(G_SEL_A, bytes([sel]))
-        rt.uc.mem_write(G_TICKS_A, struct.pack(">I", 0))
         rt.uc.mem_write(0x460d173e, struct.pack(">I", 0))   # PTN_USED
 
     def g(a, m=1):
@@ -545,12 +542,29 @@ def cmd_combo(rt):
         ok &= bool(cond)
         print(f"  {'ok  ' if cond else 'FAIL'} {label}")
 
-    # --- open: [PTN]+[NO] press ---
+    # --- open: hold [PTN] (keycode 0x2e, event 2) ---
     reset_gates()
     calls = []
-    end = _run_cave_fn(rt, rl_no, 0x32, 1, calls)
-    check(end == "rts" and g(G_MENU_A) == 1 and g(G_SEL_A) == 0 and POPUP2_FN in calls and g(0x460d173e, 4) == 1,
-          f"open [PTN]+[NO]: end={end} G_MENU={g(G_MENU_A)} G_SEL={g(G_SEL_A)} popup2={POPUP2_FN in calls} PTN_USED={g(0x460d173e,4)}")
+    end = _run_cave_fn(rt, rl_ptn, 0x2e, 2, calls)
+    check(end == "PTN_HOLDTAIL(stock)" and g(G_MENU_A) == 1 and g(G_SEL_A) == 0
+          and POPUP2_FN in calls and g(0x460d173e, 4) == 1,
+          f"hold [PTN]: end={end} G_MENU={g(G_MENU_A)} G_SEL={g(G_SEL_A)} "
+          f"popup2={POPUP2_FN in calls} PTN_USED={g(0x460d173e,4)}")
+
+    # --- quick tap ([PTN] press, event 1) -> stock, window not opened ---
+    reset_gates()
+    calls = []
+    end = _run_cave_fn(rt, rl_ptn, 0x2e, 1, calls)
+    check(end == "PTN_RESUME(stock)" and g(G_MENU_A) == 0 and POPUP2_FN not in calls,
+          f"quick tap [PTN]: end={end} G_MENU={g(G_MENU_A)} popup2={POPUP2_FN in calls}")
+
+    # --- hold [PTN] while STOPPED -> gated out, falls to stock hold tail ---
+    reset_gates(running=0)
+    calls = []
+    end = _run_cave_fn(rt, rl_ptn, 0x2e, 2, calls)
+    check(end == "PTN_HOLDTAIL(stock)" and g(G_MENU_A) == 0 and POPUP2_FN not in calls
+          and g(0x460d173e, 4) == 0,
+          f"hold [PTN] stopped: end={end} G_MENU={g(G_MENU_A)} popup2={POPUP2_FN in calls}")
 
     # --- arrows move the highlight (window open, wrapping) ---
     reset_gates(menu=1, sel=0)
@@ -602,9 +616,8 @@ def cmd_combo(rt):
     end = _run_cave_fn(rt, rl_yes, 0x31, 1, [])
     check(end == "YES_RESUME(stock)", f"YES closed -> {end}")
     reset_gates(menu=0)
-    rt.uc.mem_write(0x460d1742, struct.pack(">I", 0))       # [PTN] not held
     end = _run_cave_fn(rt, rl_no, 0x32, 1, [])
-    check(end == "NO_PRESS(stock)", f"NO closed, no [PTN] -> {end}")
+    check(end == "NO_PRESS(stock)", f"NO closed -> {end}")
 
     print(f"\n--combo: {'ALL GOOD' if ok else 'CHECK FAILED'}")
     return ok

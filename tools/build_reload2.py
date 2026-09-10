@@ -10,14 +10,14 @@ builds a SEPARATE image from patch_reload2.s:
 
   stock 1.40C + the MIDI manual-trig fix + a stay-open 2-item picker window.
 
-  UX (Session 43 revision):
-    [PTN]+[NO]  opens the window (playing, no arranger, no popup).  You may
-                release [PTN] -- the window stays open.
-    arrows      UP/RIGHT -> SEQ DATA ; DOWN/LEFT -> PART + SEQ DATA.
+  UX (Session 44 -- OT-native):
+    Hold [PTN] ~0.5 s  opens a sticky picker window (the OS's own hold event, as
+                       used by [PAGE]-hold).  A quick [PTN] tap is unchanged.
+    arrows      UP/RIGHT -> SEQ DATA ; DOWN/LEFT -> PART + SEQ DATA (wrapping).
     [YES]       execute the highlight, close the window.
     [NO]        close the window, execute nothing.
-    While the window is open [YES]/[NO] act ONLY on the picker.  ~10 s no-input
-    auto-close (re-armed on every arrow) is a walk-away safety.
+    No timeout -- like every stock menu, the window stays until you answer it.
+    While it is open [YES]/[NO] act ONLY on the picker.
 
   SEQ DATA        -- reload the active pattern's sequence data from bankNN.strd
                      (identical mechanism to build_reload.py's "SEQ").
@@ -31,24 +31,28 @@ builds a SEPARATE image from patch_reload2.s:
   1. patch_trigscale  -- MIDI manual-trig stall fix.  Byte-identical detour + cave
                          to build_trigscale_only.py / build_reload.py.
   2. patch_reload2    -- six detours:
-       rl_no    @0x4005e25c  NO handler.  [PTN]+[NO] press -> open the window
-                             (bare-text popup FUN_4005a0e0).  [NO] with the
-                             window open -> close it, execute nothing.  Swallow.
+       rl_ptn   @0x4005a044  PTN key handler FUN_4005a044.  event 2 (HOLD) +
+                             gates (playing, no arranger, no popup, no reload
+                             queued) -> open the window (bare-text popup
+                             FUN_4005a0e0), set PTN_USED so the [PTN] release
+                             doesn't also open SELECT PATTERN.  Otherwise replay
+                             the displaced prologue -> stock (quick tap = SELECT
+                             PATTERN unchanged).
+       rl_no    @0x4005e25c  NO handler.  [NO] with the window open -> close it,
+                             execute nothing, swallow.  Otherwise -> stock.
        rl_yes   @0x4005e4c8  YES handler.  [YES] with the window open -> close
                              it, then: PART + SEQ DATA -> FUN_4004aab4 on the
                              pattern's own Part + the stock UI refresh; both
                              options -> arm {G_KIND=1, G_PAT=active} + post
                              FUN_40022778(1<<curbank).  Toast + swallow.  Window
-                             closed -> replay the stock prologue (the DJ toggle
-                             slots in here in the merged build -- G_MENU first).
+                             closed -> replay the stock prologue (DJ's
+                             [PTN]+[YES] toggle is untouched -- rl_yes only acts
+                             while G_MENU==1).
        rl_arr_a @0x4004b970  UP/RIGHT key handler (keycodes 0x34/0x21).  Window
-                             open -> G_SEL=0, redraw, swallow.  Closed -> replay
-                             the displaced prologue, fall through (invisible).
+                             open -> G_SEL prev, redraw, swallow.  Closed ->
+                             replay the displaced prologue, fall through.
        rl_arr_b @0x400491a0  DOWN/LEFT key handler (keycodes 0x33/0x20).  Window
-                             open -> G_SEL=1, redraw, swallow.  Closed -> ditto.
-       rl_tick  @0x400522ca  the engine per-control-frame handler (same splice
-                             DIRECT JUMP v2 uses).  Counts G_TICKS down; at 0
-                             closes the window (FUN_40056bc0) + clears G_MENU.
+                             open -> G_SEL next, redraw, swallow.  Closed -> ditto.
        rl_job   @0x40085864  the storage task's type-0x14 case.  When G_KIND==1:
                              open bankNN.strd (28 KB of the loader's own 64 KB
                              buffer), read the 22-byte header, parse patterns
@@ -69,17 +73,12 @@ builds a SEPARATE image from patch_reload2.s:
   PART + SEQ DATA + the picker: static + assembly checked; the Part reload = the
   stock FUN_4004aab4 path.  Needs a hardware pass (FLASHING.md 4.7).
 
-  MERGE NOTE (DJ + RELOAD2, planned): [YES] here acts only while G_MENU==1 --
-  otherwise it replays the stock prologue and falls through.  DIRECT JUMP's
-  [PTN]+[YES] toggle is currently a *different* image; the merged build uses one
-  0x4005e4c8 handler that tests G_MENU FIRST (window open -> RELOAD execute) and
-  only reaches the DJ toggle when it is clear.  The DJ toggle also gains a
-  `tst.b G_MENU / bne stock` guard.  So the RELOAD window must be closed before
-  DJ can operate -- which is the intended behaviour.
-
-  HW-only from Session 42, plus: whether an arrow press reaches rl_arr_a/b while
-  the FUN_4005a0e0 popup is up (the base-view arrow routing) -- if not, the
-  fallback is a hook in the event dispatcher FUN_40061b60.
+  HW-only from Session 42, plus (Session 44):
+    - the OS hold-event threshold + feel for [PTN] (same mechanism as [PAGE]-hold);
+    - whether an arrow press reaches rl_arr_a/b while the FUN_4005a0e0 popup is up
+      (the base-view arrow routing) -- if not, the fallback is a hook in the event
+      dispatcher FUN_40061b60;
+    - that FUN_4005a044 is only the PTN key handler (all its globals are PTN's).
 
 Usage:   python3 tools/build_reload2.py [VERSTR]      (default VERSTR = "140C_KYOTI")
 Outputs: out/mainos_reload2.bin, out/elek_reload2.bin,
@@ -105,11 +104,11 @@ PATCHES = [
     ("patch_trigscale", 0x400d7b00, None,
      [(0x4009b6f2, "cave", "203c0000091a", 18, "jmp")]),
     ("patch_reload2", 0x400d7400, None,
-     [(0x4005e25c, "rl_no", "202f00086714", 6, "jmp"),         # NO handler: move.l 8(sp),d0 ; beq.s 0x4005e276
+     [(0x4005a044, "rl_ptn", "202f00087201", 6, "jmp"),        # PTN handler: move.l 8(sp),d0 ; moveq #1,d1  (event 2 = HOLD)
+      (0x4005e25c, "rl_no", "202f00086714", 6, "jmp"),         # NO handler: move.l 8(sp),d0 ; beq.s 0x4005e276
       (0x4005e4c8, "rl_yes", "222f0004202f0008", 8, "jmp"),    # YES handler: move.l 4(sp),d1 ; move.l 8(sp),d0
       (0x4004b970, "rl_arr_a", "4feffff448d7040c", 8, "jmp"),  # UP/RIGHT handler: lea -12(sp),sp ; movem.l d2-d3/a2,(sp)
       (0x400491a0, "rl_arr_b", "2f02206f0008", 6, "jmp"),      # DOWN/LEFT handler: move.l d2,-(sp) ; movea.l 8(sp),a0
-      (0x400522ca, "rl_tick", "45f946c7dfba", 6, "jsr"),       # per-frame handler: lea 0x46c7dfba,a2
       (0x40085864, "rl_job", "2d4afd762f2a0004", 8, "jmp")]),  # 0x14 case: move.l a2,-650(fp) ; move.l 4(a2),-(sp)
 ]
 
@@ -205,10 +204,10 @@ def main():
 
     print(f"\n  {OUT_SYX.name}  (MIDI DIN)  +  {OUT_BIN.name}  (CF card)")
     print(f"  version screen / SYSTEM STATUS -> OS VERSION will read:  {VERSTR}")
-    print("  [PTN] + [NO]  (while playing)  ->  opens the picker window (stays open)")
-    print("  arrows                         ->  UP/RIGHT SEQ DATA / DOWN/LEFT PART + SEQ DATA")
-    print("  [YES]                          ->  execute the highlight + close, no transport stop")
-    print("  [NO]                           ->  close the window, execute nothing")
+    print("  Hold [PTN] ~0.5 s  (while playing)  ->  opens the picker window (sticky, no timeout)")
+    print("  arrows                             ->  UP/RIGHT SEQ DATA / DOWN/LEFT PART + SEQ DATA")
+    print("  [YES]                              ->  execute the highlight + close, no transport stop")
+    print("  [NO]                               ->  close the window, execute nothing")
     print("  Revert = flash downloads/extracted/OCTATRACK_OS1.40C.syx")
 
 

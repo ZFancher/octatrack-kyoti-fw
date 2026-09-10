@@ -1,24 +1,25 @@
 | SPDX-License-Identifier: MIT
 | SPDX-FileCopyrightText: 2026 Zac-Kyoti
 |
-| patch_reload -- "RELOAD FROM PROJECT" (NOTES.md "Session 42" / "Session 43").
+| patch_reload -- "RELOAD FROM PROJECT" (NOTES.md "Session 42" / "43" / "44").
 |
-| ---- UX (Session 43 revision -- a stay-open modal picker) ----
-|   [PTN] + [NO]   (while the sequencer is playing) opens the picker window.
-|                  You may release [PTN] -- the window stays open.
-|   arrow keys     move the highlight through  RLD SEQ / RLD PARTS / RLD WHOLE
-|                  (UP/RIGHT = previous, DOWN/LEFT = next, wrapping).
-|   [YES]          execute the highlighted option, close the window.
-|   [NO]           close the window, execute nothing.
+| ---- UX (Session 44 -- OT-native) ----
+|   Hold [PTN] ~0.5 s   opens a sticky picker window (the OS's own hold event,
+|                       the same one [PAGE]-hold uses).  A quick [PTN] tap is
+|                       unchanged -- SELECT PATTERN as normal.
+|   arrow keys          move the highlight through RLD SEQ / RLD PARTS / RLD WHOLE
+|                       (UP/RIGHT = prev, DOWN/LEFT = next, wrapping).
+|   [YES]               execute the highlighted option, close the window.
+|   [NO]                close the window, execute nothing.
 |
-|   While the window is open, [YES] and [NO] act ONLY on the picker -- the stock
-|   YES/NO handlers never run.  Other keys are not intercepted.  A ~10 s no-input
-|   auto-close (rl_tick, re-armed on every arrow press) is a walk-away safety.
+|   No timeout -- like every stock OS menu, the window stays until you answer it
+|   with [YES] or [NO].  While it is open [YES]/[NO] act ONLY on the picker;
+|   other keys are not intercepted.
 |
-|   MERGE NOTE (DJ + RELOAD, planned): the shared YES handler 0x4005e4c8 must
-|   test G_MENU FIRST -- window open -> RELOAD execute; only when G_MENU == 0 may
-|   [PTN]+[YES] reach the DIRECT JUMP toggle.  rl_yes here is already written that
-|   way.  The DJ toggle also has to gain a `tst.b G_MENU / bne stock` guard.
+|   MERGE NOTE (DJ + RELOAD): DIRECT JUMP is [PTN]+[YES].  RELOAD no longer
+|   touches [PTN]+[YES] -- rl_yes only acts while G_MENU==1, and the entry is the
+|   hold, so the two share no chord.  If combined, DJ's toggle still needs a
+|   `tst.b G_MENU / bne stock` guard for a stray [YES] with the window open.
 |
 |   SEQ    -- reload the ACTIVE pattern's SEQUENCE DATA (trigs, p-locks, length,
 |             scale, trig conditions, microtiming, the pattern->part link) from
@@ -28,21 +29,19 @@
 |   WHOLE  -- PARTS + SEQ.
 |
 | Stock 1.40C only reloads from the card at whole-BANK granularity, and doing so
-| stops audio (FUN_400a10c8 pre-step + FUN_400238a4 re-sync).  This is per-pattern
-| and seamless: the SEQ file work rides the async storage task and the active
-| pattern re-homes through FUN_400a1eea's own no-stop reload block (0x46c8028a);
-| PARTS is the stock per-part reload, which already runs live.
+| glitches the audio (FUN_400a10c8 pre-step + FUN_400238a4 re-sync).  This is
+| per-pattern and seamless: the SEQ file work rides the async storage task and
+| the active pattern re-homes through FUN_400a1eea's own no-stop reload block
+| (0x46c8028a); PARTS is the stock per-part reload, which already runs live.
 |
 | ---- state (volatile scratch, no persistence needed -- one-shot actions) ----
     .equ G_KIND,    0x80006a50          | worker request: 0 idle, 1 = SEQ (set by rl_yes)
     .equ G_PAT,     0x80006a51          | pattern to reload (byte)
     .equ G_MENU,    0x80006a52          | 1 = the picker window is open
     .equ G_SEL,     0x80006a53          | highlighted item: 0 SEQ / 1 PARTS / 2 WHOLE
-    .equ G_TICKS,   0x80006a54          | picker auto-close frame countdown (long)
 
 |   ---- stock symbols ----
-    .equ PTN_HELD,  0x460d1742
-    .equ PTN_USED,  0x460d173e
+    .equ PTN_USED,  0x460d173e          | set 1 to suppress SELECT PATTERN on [PTN] release
     .equ POPUP,     0x460e5cd0
     .equ ARR_ACT,   0x460d1aec
     .equ RUNNING,   0x800065b8          | transport state -- LONGWORD (=1 playing)
@@ -58,7 +57,12 @@
     .equ JOB_POST,  0x40022778          | FUN_40022778(mask) -> post the type-0x14 storage job
     .equ JOB14_EXIT,0x400858a8          | 0x14 case: tst.l d0 ; ... ; done-dance ; -> dequeue loop
     .equ JOB14_ORIG,0x4008586c          | 0x14 case: resume after the displaced 2 insns
-    .equ TICK_ORIG, 0x46c7dfba          | the SOFT-MUTE release watchdog var (displaced `lea`)
+
+|   [PTN] key handler FUN_4005a044(keycode@4, event@8).  Detour @ entry:
+|   displaced `move.l 8(sp),d0 ; moveq #1,d1` (6 B).  event 2 = HOLD.
+    .equ PTN_HOLD_H,  0x4005a044
+    .equ PTN_RESUME,  0x4005a04a        | after the displaced 2 insns
+    .equ PTN_HOLDTAIL,0x4005a0d2        | stock hold tail: 0x460d1ab2 = 1 ; jmp 0x40027de4
 
 |   arrow keys -- keycodes 0x34 (UP) / 0x21 (RIGHT) -> ARROW_A ; 0x33 (DOWN) /
 |   0x20 (LEFT) -> ARROW_B.  Verified against the 26-byte keymap tables
@@ -94,56 +98,71 @@
     .equ BANKSTRIDE,0x9b340
     .equ PATSTRIDE, 0x8ed8
 
-    .equ MENU_FRAMES, 0xc80             | ~10 s at the 0x40052200 frame rate (walk-away safety)
     .equ N_ITEMS,     3
 
     .text
 
-| ================= [PTN] + [NO] open / [NO] close  (@ 0x4005e25c) =================
+| ================= [PTN] HOLD -- open the picker  (@ 0x4005a044) =================
+| Detour replaces 6 bytes: move.l 8(%sp),%d0 ; moveq #1,%d1
+
+    .global rl_ptn
+rl_ptn:
+    move.l  8(%sp),%d0                 | displaced -- d0 = event
+    moveq   #2,%d1
+    cmp.l   %d0,%d1
+    bne.b   rlp_stock                  | not a hold -> stock
+
+|   --- [PTN] HOLD ---
+    tst.b   G_MENU
+    bne.b   rlp_holdtail               | already open
+    tst.l   POPUP
+    bne.b   rlp_holdtail               | a modal dialog is up
+    tst.l   ARR_ACT
+    bne.b   rlp_holdtail               | arranger
+    tst.l   RUNNING
+    beq.b   rlp_holdtail               | only while the sequencer is playing
+    tst.b   G_KIND
+    bne.b   rlp_holdtail               | a reload is already queued
+
+    moveq   #1,%d0
+    move.b  %d0,G_MENU                 | open
+    clr.b   G_SEL                      | default = item 0 (SEQ)
+    move.l  %d0,PTN_USED               | suppress SELECT PATTERN on the [PTN] release
+    jsr     rl_draw
+
+rlp_holdtail:
+    jmp     PTN_HOLDTAIL               | stock: 0x460d1ab2 = 1 ; jmp 0x40027de4
+
+rlp_stock:
+    moveq   #1,%d1                     | displaced #2
+    jmp     PTN_RESUME
+
+| ================= [NO] -- close the window  (@ 0x4005e25c) =================
 | Detour replaces 6 bytes: move.l 8(%sp),%d0 ; beq.s 0x4005e276
 
     .global rl_no
 rl_no:
-    move.l  8(%sp),%d0                 | event
+    move.l  8(%sp),%d0                 | displaced -- event
     bne.b   rln_notrel
     jmp     NO_REL                     | event 0 -> stock release cleanup
 rln_notrel:
     moveq   #1,%d1
     cmp.l   %d0,%d1
-    bne.w   rln_stock                  | hold/other -> stock
+    bne.b   rln_stock                  | hold / other -> stock
 
     tst.b   G_MENU
-    beq.b   rln_tryopen
+    beq.b   rln_stock                  | window closed -> stock [NO]
+    tst.l   POPUP
+    bne.b   rln_stock                  | a modal dialog is up -> let stock [NO] answer it
+
 |   --- window open: [NO] = close, execute nothing ---
     clr.b   G_MENU
-    clr.l   G_TICKS
     lea     -16(%sp),%sp
     movem.l %d0-%d1/%a0-%a1,(%sp)
     jsr     CLOSE_CB
     movem.l (%sp),%d0-%d1/%a0-%a1
     lea     16(%sp),%sp
     rts                                | swallow
-
-rln_tryopen:
-    tst.l   PTN_HELD
-    beq.w   rln_stock                  | [PTN] not held -> stock [NO]
-    tst.l   POPUP
-    bne.w   rln_stock                  | a modal dialog is up -> stock
-    tst.l   ARR_ACT
-    bne.w   rln_stock                  | arranger -> stock
-    tst.l   RUNNING
-    beq.w   rln_stock                  | only while playing
-    tst.b   G_KIND
-    bne.b   rln_swallow                | a reload already queued -> swallow
-
-    moveq   #1,%d0
-    move.b  %d0,G_MENU                 | open
-    clr.b   G_SEL                      | default = SEQ
-    jsr     rl_draw
-rln_swallow:
-    moveq   #1,%d0
-    move.l  %d0,PTN_USED               | suppress the PTN chooser on release
-    rts
 
 rln_stock:
     jmp     NO_PRESS
@@ -164,7 +183,6 @@ rl_yes:
 
 |   --- close the window ---
     clr.b   G_MENU
-    clr.l   G_TICKS
     lea     -16(%sp),%sp
     movem.l %d0-%d1/%a0-%a1,(%sp)
     jsr     CLOSE_CB                   | dismiss the 0x460d1e64 popup
@@ -259,7 +277,7 @@ rab_set:
     jsr     rl_draw
     rts                                | swallow
 
-| ---- rl_draw: (re)show the popup for G_SEL + (re)arm the auto-close ----
+| ---- rl_draw: (re)show the popup for G_SEL ----
 | clobbers only d0/a0 (POPUP2 preserves d2-d7/a2-a6 per ABI).
     .global rl_draw
 rl_draw:
@@ -270,8 +288,6 @@ rl_draw:
     move.l  %a0,-(%sp)
     jsr     POPUP2                     | FUN_4005a0e0(text)
     addq.l  #4,%sp
-    move.l  #MENU_FRAMES,%d0
-    move.l  %d0,G_TICKS
     rts
 
 | ---- rl_parts: FUN_4004aab4(0..3) + the stock RELOAD PART UI refresh ----
@@ -318,30 +334,6 @@ rl_msg_parts:
 rl_msg_whole:
     .asciz "RLD WHOLE"
     .align 2
-
-| ================= picker auto-close tick -- jsr detour @ 0x400522ca =================
-| replaces `lea 0x46c7dfba,%a2` (6 B) in the engine per-control-frame handler
-| (0x40052200).  D0 is dead here (reloaded at 0x400522de).
-
-    .global rl_tick
-rl_tick:
-    tst.b   G_MENU
-    beq.b   rlt_orig
-    move.l  G_TICKS,%d0
-    ble.b   rlt_expire
-    subq.l  #1,%d0
-    move.l  %d0,G_TICKS
-    bne.b   rlt_orig
-rlt_expire:
-    clr.b   G_MENU
-    lea     -16(%sp),%sp
-    movem.l %d0-%d1/%a0-%a1,(%sp)
-    jsr     CLOSE_CB
-    movem.l (%sp),%d0-%d1/%a0-%a1
-    lea     16(%sp),%sp
-rlt_orig:
-    lea     TICK_ORIG,%a2              | displaced original
-    rts
 
 | ================= the SEQ worker -- jmp detour @ the type-0x14 case 0x40085864 =================
 | replaces 8 bytes: move.l %a2,%fp@(-650) ; move.l %a2@(4),%sp@-
