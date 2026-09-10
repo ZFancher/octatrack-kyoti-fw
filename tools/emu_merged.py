@@ -51,6 +51,7 @@ DJ = nm("merged_patch_directjump.elf")
 SM = nm("merged_patch_softmute.elf")
 MM = nm("merged_patch_mutemode.elf")
 TS = nm("merged_patch_trigscale.elf")
+PL = nm("merged_patch_pattern_led.elf")
 
 CLOSE_CB = 0x40056bc0
 CKSUM = 0x4001f23c
@@ -107,6 +108,14 @@ def static_checks():
     ck("[YES] @ 0x4005e4c8 owned by RELOAD2 (rl_yes), not DIRECT JUMP",
        u32(0x4005e4c8 + 2) == RLD["rl_yes"])
 
+    # pattern-LED fix -- one jmp detour at FUN_4009a464's prologue
+    ck("0x4009a464 -> jmp pattern_led:cave",
+       IMG[0x4009a464 - BASE:0x4009a464 - BASE + 2] == b"\x4e\xf9" and u32(0x4009a464 + 2) == PL["cave"],
+       f"cave 0x{PL['cave']:08x}")
+    ck("pattern_led cave ends `jmp 0x4009a46a` (falls into the stock trig scan)",
+       (b"\x4e\xf9" + struct.pack(">I", 0x4009a46a)) in
+       IMG[PL["cave"] - BASE:PL["cave"] - BASE + _elf_size("merged_patch_pattern_led.elf")])
+
     # rl_yes's not-the-picker exit is `jmp dj_toggle`  (MERGE chaining)
     # find the `jmp` (0x4ef9 <abs>) inside the rl_yes .. rl_arr_a span that targets dj_toggle
     lo, hi = RLD["rl_yes"] - BASE, RLD["rl_arr_a"] - BASE
@@ -138,7 +147,7 @@ def static_checks():
                    + [(_text_addr(e), _text_addr(e) + _elf_size(e)) for e in
                       ("merged_patch_softmute.elf", "merged_patch_mutemode.elf",
                        "merged_patch_directjump.elf", "merged_patch_reload2.elf",
-                       "merged_patch_trigscale.elf")])
+                       "merged_patch_pattern_led.elf", "merged_patch_trigscale.elf")])
     overlap = any(spans[i][1] > spans[i + 1][0] for i in range(len(spans) - 1))
     ck("relocated caves are disjoint",
        not overlap, " ".join(f"0x{a:x}-0x{b:x}" for a, b in spans))

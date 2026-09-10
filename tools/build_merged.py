@@ -6,6 +6,7 @@ build_merged.py -- the combined OT Kyoti FW: every final-scoped mod in ONE image
 
     stock 1.40C
       + Bug-1 MIDI manual-trig fix           (patch_trigscale)
+      + pattern-LED "only p-locks -> shows empty" fix  (patch_pattern_led)
       + MUTE MODE  OT / OT+FX / DT            (patch_softmute + patch_mutemode, DT_MODE=1)
       + DIRECT JUMP  [PTN]+[YES]  (v3 overlay) (patch_directjump, DJ_V3=1)
       + SIDE-CHAIN compressor  KEY/KFLT/KGAIN/MON + DSP  (patch_sidechain + patch_sc_dsp3)
@@ -32,6 +33,13 @@ Cave conflict resolution
   footprint (COMPRESSOR descriptor + FX choosers) is a region no other mod touches.
 * MUTE MODE and DIRECT JUMP both need the 'ANDY' restore extended pea 0x64 -> pea 0x70
   at 3 sites -- identical, idempotent; done once here.
+* patch_pattern_led detours ONE site (FUN_4009a464 @ 0x4009a464) that no other mod
+  touches, its cave is position-independent, and it reads the stock function's own
+  hardcoded blob base -- so it is packed LAST (keeps every other stub's address, and
+  thus the SIDE-CHAIN descriptor's formatter pointers, byte-identical to standalone).
+  Heads-up: this leaves only ~26 B free below the pinned patch_trigscale -- the next
+  ColdFire cave added here will need the pre-trigscale zone widened (lower FREE_START
+  or relocate the PERSONALIZE arrays; see reference/MERGE.md).
 
 Usage:   python3 tools/build_merged.py [VERSTR]        (default "KYOTI_V1.0")
 Outputs: out/mainos_merged.bin, out/elek_merged.bin,
@@ -88,6 +96,11 @@ CF_STUBS = [
         (0x4004b970, "rl_arr_a", "4feffff448d7040c", 8, "jmp"),
         (0x400491a0, "rl_arr_b", "2f02206f0008",     6, "jmp"),
         (0x40085864, "rl_job",  "2d4afd762f2a0004", 8, "jmp"),
+    ]),
+    # LAST in pack order: keeps every other stub's address (and so the SIDE-CHAIN
+    # descriptor's formatter pointers) byte-identical to the standalone builds.
+    ("patch_pattern_led", None, [                        # grid-LED "has content" predicate
+        (0x4009a464, "cave", "2f02202f0008", 6, "jmp"),  # FUN_4009a464 prologue -> cave
     ]),
 ]
 
@@ -378,9 +391,10 @@ def main():
     mm = ROOT / "out/mainos_mutemode_dt.bin"
     dj = ROOT / "out/mainos_directjump.bin"
     sc = ROOT / "out/mainos_sidechain3.bin"
-    if all(p.exists() for p in (mm, dj, sc)):
+    pl = ROOT / "out/mainos_patternled.bin"
+    if all(p.exists() for p in (mm, dj, sc, pl)):
         union = set()
-        for p in (mm, dj, sc, ts):
+        for p in (mm, dj, sc, pl, ts):
             b = p.read_bytes()
             union |= {i for i in range(len(b)) if b[i] != stock[i]}
         cave = set()
@@ -417,6 +431,7 @@ def main():
     print("  PERSONALIZE -> MUTE MODE: OT / OT+FX / DT")
     print("  [PTN]+[YES] (quick): DIRECT JUMP toggle    |    hold [PTN]: RELOAD picker")
     print("  COMPRESSOR FX page 2: RMS (gap) KEY KFLT KGAIN MON;  SPATIALIZER passes through")
+    print("  A p-lock-only pattern (MIDI locks / audio trigless locks) now lights its grid LED")
     print("  Revert = flash downloads/extracted/OCTATRACK_OS1.40C.syx")
     print("\n  NOT hardware-tested as a combined image -- flash the per-feature builds first")
     print("  (FLASHING.md), in order, then this.  See reference/MERGE.md.")

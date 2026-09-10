@@ -6363,3 +6363,92 @@ updated (cave table, scratch range, headroom ~220 B).
   while the picker is open) — same class as the arrow-key HW unknown.
 
 NOT flashed. Committed + pushed to `origin/wip/mute-mode`.
+
+## Session 48 (2026-09-10, `wip/mute-mode`) — STOCK BUG FIX: "pattern with only p-locks shows as empty" (built, emu-validated stock-repro + patched-fix, NOT flashed, NOT committed)
+User bug report: a pattern whose only content is parameter locks on the **MIDI-track**
+side shows as empty — grid LED unlit under `[PTN]`, slot looks unused. Adding any p-lock
+on the audio side lights it.
+
+### Root cause — `FUN_4009a464(pattern, bank)` = `GK_STOCK_PATTERN_HAS_CONTENT 0x4009a464`
+The "does this pattern have content" predicate that gates the pattern-grid LED. 3 callers
+load its address into a register: `0x4000fd7e` (inside `0x4000fd78` = "does this *bank*
+have content", loops 16 patterns), `0x400354f6` (chain/─ view painter, enclosing fn
+`0x400353d4`), `0x4007b1f4` (PTN-page painter, enclosing fn `0x4007afe8`). The two UI
+painters: `has_content(pat,bank); tst.l d0; bne` → LED bit **set** via `0x400131a0(bit)`
+(`buf[bit>>3] |= 1<<(bit&7)`, LED framebuffer `0x460ba98c`) / **clear** via
+`0x400131c8(bit)`. Both painters are event-driven page-draw handlers (dirty-gated:
+`0x460e73c6` / `0x100b14ce`+`0x100b14d0`), not audio-thread, not a per-frame timer.
+
+`FUN_4009a464` walks 8 track slots (`a0` = `0x400e21e0` + off, stride `0x91a`;
+`a1` = `0x400e6ab8` + off = `blob+0x48d8`, stride `0x8b0`; `off = bank*0x9b340 +
+pat*0x8ed8` — blob base **hardcoded** `0x400e21e0`, not `[0x46c82456]`) and ORs a fixed
+longword set:
+- audio TRAC: block `+0x00..0x0f` **and** `+0x18..0x37` (skips `+0x10..0x17`) — trig masks
+- MIDI  MTRA: block `+0x00..0x0f` only — trig masks
+It never reads **either** side's p-lock array, so a pattern with locks but no trig ORs to
+zero → returns 0 → LED cleared.
+
+### RAM layout (confirmed: serialiser `~0x4008a740` loop 1/2 + initialiser `FUN_4009abdc`
+two fill loops `0x4009ac30` audio / `0x4009ad56` MIDI + a live `emu_rtos` load)
+- audio p-lock array: `blob + bank*0x9b340 + pat*0x8ed8 + trk*0x91a + 0x59`, `0x800` B
+- MIDI  p-lock array: `blob + bank*0x9b340 + pat*0x8ed8 + 0x4900 + trk*0x8b0`, `0x800` B
+- `0xFF` = "parameter not locked on this step" (initialiser byte-fills `0xFF`; deserialiser
+  loads `0xFF` for an empty track). The empty MIDI block also carries `0xAA` micro-timing
+  defaults at `blk+0x18..0x1f` and a `10 02 00 ff 00 00 00 01` param header at `blk+0x28`
+  — **neither is in the p-lock array range**, so the fix's array scan is not tripped by them.
+
+### Fix — `tools/patch_pattern_led.s` + `tools/build_pattern_led.py`
+Detour `FUN_4009a464` entry (6 B: `2f02 202f 0008` → `jmp <cave>`) to a **142-byte
+cave** (standalone `0x400d7000`; `0x400d64da–0x400d7c3c` free). Cave: replay the
+prologue's `move.l d2,-(sp)`; compute the pattern's blob offset from the args; scan the
+16 p-lock arrays (8 audio `blob+off+trk*0x91a+0x59` + 8 MIDI `blob+off+0x4900+trk*0x8b0`,
+`0x800` B each) for a longword `!= 0xFFFFFFFF` via the `addq.l #1; bne` sentinel trick
+(`0xFFFFFFFF+1 → 0`). A hit → pop d2, `moveq #1,d0`, `rts`. No hit → `move.l 8(sp),d0`
+(the detour swallowed the stock arg load too) + `jmp 0x4009a46a` = the rest of the stock
+function (its own trig scan + epilogue) runs unchanged. So every trig-bearing pattern is
+byte-for-byte stock behaviour and a genuinely empty pattern (all 0xFF, no trig) still
+returns 0. Also fixes the symmetric **audio trigless-lock-only** pattern (same path).
+Worst case (16 genuinely-empty patterns) ≈ 16 × 16 KB longword scan per grid repaint ≈
+low single-digit ms, once, on an event-driven UI repaint — acceptable.
+(First cut replicated the whole trig scan → 296 B; shrunk to the "scan then fall
+through to the stock body" shape above so it fits the merge's pre-`patch_trigscale` gap.)
+
+### Validation — `tools/emu_pattern_led.py` (stock + `--patched`), full-firmware `emu_rtos`
+Pattern 15 reset to genuine stock-empty via `call_as_main(FUN_4009abdc, blob+15*0x8ed8)`
+before each probe (so "empty stays empty" is real, not a zero-fill artefact).
+
+| case | STOCK | PATCHED |
+|---|---|---|
+| all 16 DEMO patterns | 1 | 1 (unchanged) |
+| reset-empty pattern 15 | 0 | **0** (no false positive) |
+| MIDI p-lock only (trk3 step10), no trig | **0 (bug)** | **1 (fixed)** |
+| audio trigless-lock only (trk2 step6), no trig | **0 (bug)** | **1 (fixed)** |
+| MIDI note trig present | 1 | 1 (stock fast path unchanged) |
+
+`out/mainos_patternled.bin` 245 B vs stock; wrap `OCTATRACK_OS1.40C_PATTERNLED.{syx,bin}`
+`140C` version unchanged (`1.40C`), container round-trips (`payload ok, checksum ok`).
+Base = **stock 1.40C only** (no Bug-1 fix, no other Kyoti mods — standalone single fix).
+
+### Merge — DONE (S48)
+`build_merged.py` now carries it as a 6th `CF_STUBS` entry, **packed last** (position-independent
+cave, single detour at a site nothing else touches → keeps every other stub's address, so the
+SIDE-CHAIN descriptor's formatter pointers stay byte-identical to `build_sidechain3.py`). Lands
+at `0x400d7a58` (142 B) → **only 26 B free** below the pinned `patch_trigscale` — the next
+merge cave needs the zone widened (pin `patch_sidechain` at `0x400d7000` like trigscale, lower
+`FREE_START`). `emu_merged.py` asserts the detour + the `jmp 0x4009a46a` tail;
+`emu_pattern_led.py --image out/mainos_merged.bin` re-runs the full case set on the relocated
+cave — **ALL GOOD**. `changes outside {feature diffs, caves, detours}: 0`, round-trip + checksum OK.
+`reference/MERGE.md` updated (6 mods, cave table, detour inventory, the widen-the-zone note).
+
+### Docs
+README.md ("Bug 2" section + QUANTIZE LIVE REC section — the latter was missing entirely —
++ HW-status rows), BUILD_KYOTI.md ("What you get" + HW-status rows for Bug-2 and QLREC),
+reference/MERGE.md.
+
+### Open / next
+- **HW confirm on the MKI**: create a real MIDI-track p-lock with no note (trigless), select
+  its bank on the PTN grid, LED should now light; power-cycle-safe (pure code, no state).
+- Candidate for the **upstream "already-in-1.40C findings"** list (it's a stock bug, not a
+  behaviour mod) — but MKI-only RE, so offer as a report, not a PR, unless mxldyn wants it.
+
+Committed + pushed to `origin/wip/mute-mode`. NOT flashed.

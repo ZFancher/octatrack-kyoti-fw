@@ -58,6 +58,21 @@ a 6-byte detour into a code cave (`tools/patch_trigscale.s`). Flashed to a real
 Octatrack MKI (2026-08-28) — the stall is gone, no regression. Write-up:
 [`NOTES.md`](NOTES.md) "Session 5–7"; emulator `tools/emu_trigbug.py`.
 
+### Bug 2 — a pattern with only parameter locks reads as empty  ·  *emulator-validated, not flashed*
+
+A pattern whose only content is p-locks — parameter locks on a **MIDI track**, or
+**trigless locks** on an audio track, with no trig anywhere — showed as an unused
+slot: its grid LED stayed unlit under `[PTN]`. The stock "does this pattern have
+content" predicate (`FUN_4009a464`, which drives the pattern-grid LEDs and the
+"does this bank have content" check) scans each track's trig masks but never its
+p-lock array. Fixed with a 6-byte detour into a code cave that, when no trig is
+found on any track, scans the 16 p-lock arrays (8 audio + 8 MIDI) for a locked
+value: `tools/patch_pattern_led.s`, `python3 tools/build_pattern_led.py` →
+`OCTATRACK_OS1.40C_PATTERNLED.{syx,bin}` (version stays `1.40C`, base = stock
+only). Validated in the full-firmware emulator (`tools/emu_pattern_led.py`): stock
+reproduces the bug, patched lights the LED, a genuinely empty pattern still reads
+empty. Write-up: [`NOTES.md`](NOTES.md) "Session 48". **Never flashed.**
+
 ### MUTE MODE — a PERSONALIZE toggle for audio-track mute behaviour
 
 Off by default (`MUTE MODE = OT`). Stored in a battery-backed PERSONALIZE word,
@@ -174,6 +189,20 @@ A **power move** — hold `[PTN]` + tap a `[TRACK]` key for immediate per-track
 reload, no picker — is scoped but not built (the chord is free; it needs a
 track-key-handler hook).
 
+### QUANTIZE LIVE REC — a front-panel toggle for the live-record quantize  ·  *emulator only, not flashed*
+
+The OS's all-or-nothing **QUANTIZE LIVE REC** (the PERSONALIZE row — *not* the
+per-track 50 % TRIG QUANT in the TRACK TRIG MENU) has no shortcut. This adds one,
+Digitone-style: **hold `[REC]`, tap `[PLAY]` twice** to toggle it, with a
+"QUANT LIVE REC ON / OFF" toast that shows while `[REC]` is held and clears when
+you let go (no timer). The first `[REC]` + `[PLAY]` still starts live recording
+exactly as on stock — only every second press within the same `[REC]` hold flips
+the setting, and it is swallowed so the transport is untouched. The setting is a
+stock PERSONALIZE word that already lives inside the battery-backed `'ANDY'`
+block, so it survives a power cycle with no extra plumbing. Two detours, one cave:
+`tools/patch_qlrec.s`, `python3 tools/build_qlrec.py` → `140C_KYOTI`. Write-up:
+[`NOTES.md`](NOTES.md) "Session 46"; emulator `tools/emu_qlrec.py`. **Never flashed.**
+
 ### Backlog — scoped, not built
 
 - **Auto-remove an emptied trigless lock.** When a LIVE-REC `[NO]`+knob erase
@@ -187,6 +216,8 @@ track-key-handler hook).
 | element | build | on-hardware status (Octatrack MKI) |
 |---|---|---|
 | Bug 1 manual-trig fix | all | **confirmed** — flashed 2026-08-28, stall gone, no regression |
+| Bug 2 p-lock-only pattern shows empty | `build_pattern_led.py` | **emulator only** (full-firmware `emu_pattern_led.py`, stock-repro + patched-fix + no false positive), never flashed |
+| **QUANTIZE LIVE REC** front-panel toggle | `build_qlrec.py` | **emulator only** (`emu_qlrec.py`), never flashed |
 | MUTE MODE menu + `OT+FX` soft **mute** mechanism | `build_mutemode.py` | **confirmed** — the Session-10 build was flashed and works |
 | ↳ the `'ANDY'`-shadow persistence (survives power cycle) | `build_mutemode.py` | emulator-verified, **not yet flashed** |
 | ↳ the **SOLO** extension (softmute V7) | `build_mutemode.py` (`wip/mute-mode`) | **emulator only**, never flashed |
@@ -271,7 +302,7 @@ Elektron ships a ZIP with **two transports of the same OS** — a `.bin` and a
 ```
 START_HERE.md        onboarding + current frontier (read first)
 README.md            this — what the firmware is, and lineage
-BUILD_KYOTI.md       roll-your-own build guide (Bug 1 fix, MUTE MODE, DIRECT JUMP, side-chain, RELOAD)
+BUILD_KYOTI.md       roll-your-own build guide (Bug 1 & 2 fixes, MUTE MODE, DIRECT JUMP, side-chain, RELOAD, QUANTIZE LIVE REC)
 CREDITS.md           lineage and acknowledgements
 ARCHITECTURE.md      consolidated architecture (hardware, OS, memory map, container)
 COVERAGE.md          what firmware subsystems are mapped vs untouched

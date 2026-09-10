@@ -22,6 +22,8 @@ build is byte-for-byte reproducible from the stock file.
 | build command | version string | contents |
 |---|---|---|
 | `python3 tools/build_trigscale_only.py` | `1.40C` (unchanged) | **Bug 1 fix only** — the Plays-Free MIDI manual-trig stall — on otherwise-stock 1.40C |
+| `python3 tools/build_pattern_led.py` | `1.40C` (unchanged) | **Bug 2 fix only** — a pattern whose only content is p-locks (MIDI-track locks, or audio trigless locks) no longer reads as an empty slot; its grid LED lights under `[PTN]`. On otherwise-stock 1.40C |
+| `python3 tools/build_qlrec.py` | `140C_KYOTI` | Bug 1 fix + **QUANTIZE LIVE REC** front-panel toggle: hold `[REC]`, tap `[PLAY]` twice to flip the PERSONALIZE row (with an on/off toast); the first `[REC]`+`[PLAY]` still starts live recording |
 | `python3 tools/build_mutemode.py` | `140C_KYOTI` | Bug 1 fix + **MUTE MODE** toggle: `OT` (stock) / `OT+FX` (soft mute — dry cuts clean, FX tails ring; **and, on this branch, soloed-out tracks get the same soft cut**) |
 | `python3 tools/build_mutemode_dt.py` | `140C_KYOTI` | as above **+ a third mode `DT`** — pure sequencer mute (a sounding voice rides its own AMP envelope; only new trigs are suppressed) |
 | *(a fourth mode `OTFX` — instant cut + FX tails + **playhead-resume** unmute — is reverse-engineered but **not built**; NOTES "Session 14")* | — | — |
@@ -49,6 +51,8 @@ cross-reference. See [`CREDITS.md`](CREDITS.md).
 | element | status |
 |---|---|
 | Bug 1 manual-trig fix | **hardware-confirmed** (flashed 2026-08-28; the whole of `build_trigscale_only.py`) |
+| Bug 2 p-lock-only pattern shows empty (`build_pattern_led.py`) | **emulator only** — full-firmware `emu_pattern_led.py`: stock reproduces it, patched lights the LED, an empty pattern still reads empty. Never flashed |
+| **QUANTIZE LIVE REC** toggle (`build_qlrec.py`) | **emulator only** (`emu_qlrec.py`), never flashed |
 | MUTE MODE menu + `OT+FX` soft **mute** mechanism | **hardware-confirmed** — the Session-10 build (softmute V6b, on `main`) was flashed and works |
 | soft cut extended to **SOLO** (softmute V7 — this branch's `build_mutemode.py`) | **emulator only**, never flashed |
 | **DT** mode (`build_mutemode_dt.py`) | **emulator only**, never flashed |
@@ -122,8 +126,9 @@ Pass a custom version string as the first argument if you want
 `sysex/` carries the **Bug-1 fix** captured hunk-by-hunk as JSON (load address +
 expected original bytes + replacement bytes) and applies it with
 `sysex/apply_patch.py` — no cross-assembler required. See
-[`sysex/README.md`](sysex/README.md). The MUTE MODE, DIRECT JUMP, side-chain and
-RELOAD FROM PROJECT work is build-from-source only.
+[`sysex/README.md`](sysex/README.md). Everything else — the Bug-2 pattern-LED fix,
+MUTE MODE, DIRECT JUMP, side-chain, RELOAD FROM PROJECT, QUANTIZE LIVE REC — is
+build-from-source only.
 
 ## Flashing
 

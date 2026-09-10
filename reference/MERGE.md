@@ -1,7 +1,7 @@
 # MERGE.md — combining every final-scoped mod into one firmware
 
-**Status: no-flash merge prep (2026-09-09, `wip/mute-mode`).** `tools/build_merged.py`
-composes all five and `tools/emu_merged.py` verifies the one integration point. The
+**Status: no-flash merge prep (2026-09-10, `wip/mute-mode`).** `tools/build_merged.py`
+composes all six and `tools/emu_merged.py` verifies the integration points. The
 combined image is **not hardware-tested**; the per-feature HW passes in `FLASHING.md`
 come first, in order, then this.
 
@@ -10,7 +10,7 @@ detour site, or a shared global changes.
 
 ---
 
-## The five final-scoped mods
+## The six final-scoped mods
 
 Only the *scoped* build of each — not the intermediates (`RELOAD2` not `RELOAD`,
 `SIDECHAIN3` not `SIDECHAIN`/`2`, DIRECT JUMP **v3** — see "DIRECT JUMP: use v3").
@@ -18,10 +18,16 @@ Only the *scoped* build of each — not the intermediates (`RELOAD2` not `RELOAD
 | Mod | Standalone build | Sources |
 |---|---|---|
 | Bug-1 MIDI manual-trig fix | `build_trigscale_only.py` | `patch_trigscale.s` |
+| Bug-2 pattern-LED "only p-locks → empty" fix | `build_pattern_led.py` | `patch_pattern_led.s` |
 | MUTE MODE — `OT` / `OT+FX` / `DT` | `build_mutemode_dt.py` | `patch_softmute.s` + `patch_mutemode.s` (`DT_MODE=1`) |
 | DIRECT JUMP — `[PTN]`+`[YES]` | `build_directjump_v3.py` (**v3**) | `patch_directjump.s` (`DJ_V3=1`) |
 | SIDE-CHAIN compressor | `build_sidechain3.py` | `patch_sidechain.s` + `patch_sc_dsp3.asm` + `sc_tables.py` |
 | RELOAD FROM PROJECT — hold `[PTN]` | `build_reload2.py` | `patch_reload2.s` |
+
+QUANTIZE LIVE REC (`build_qlrec.py`) is **not** in the merge — it is a small
+independent PERSONALIZE-surface toggle (`patch_qlrec.s`, one cave, two detours at
+`0x40061778` / `0x4004883a`, none shared with the six). Adding it later is a clean
+extra `CF_STUBS` entry once the pre-`patch_trigscale` zone is widened (see below).
 
 Combined build: **`build_merged.py`** → `out/OCTATRACK_OS1.40C_KYOTI_ALL.{syx,bin}`.
 
@@ -35,12 +41,21 @@ Combined build: **`build_merged.py`** → `out/OCTATRACK_OS1.40C_KYOTI_ALL.{syx,
    8 bytes. Resolved by a trampoline (below). *Needs integration + retest.*
 2. **Cave base `0x400d7400`** — MUTE MODE, DIRECT JUMP, RELOAD2 each link there.
    Resolved by auto-packing (below). *Mechanical.*
-3. Space: everything fits `0x400d7000–0x400d7c3c` with **~220 B** headroom (RELOAD2
-   grew in S47; the PERSONALIZE menu arrays moved to *after* `patch_trigscale` so
-   the growing stub region stays clear of the pin).
-4. SIDE-CHAIN is nearly orthogonal — DSP address space + a descriptor region nothing
+3. Space: everything fits `0x400d7000–0x400d7c3c` with only **~26 B** headroom below
+   the pinned `patch_trigscale` (Bug-2's 142 B cave went in as the last stub in S48).
+   The **next** ColdFire cave added to the merge needs the pre-`patch_trigscale` zone
+   widened — lower `FREE_START` below `0x400d7000` (the whole `0x400d64da–0x400d7c3c`
+   span is free) **and** keep `patch_sidechain` linked at `0x400d7000` (its address is
+   baked into the COMPRESSOR descriptor's formatter pointers, which the verify step
+   diffs byte-for-byte against `build_sidechain3.py`) — i.e. pin `patch_sidechain` the
+   way `patch_trigscale` is pinned, and pack the rest below it.
+4. Bug-2's `patch_pattern_led` is packed **last** on purpose: its cave is
+   position-independent and it detours one site (`0x4009a464`) nothing else touches,
+   so putting it after everything keeps every other stub's address — and therefore the
+   SIDE-CHAIN descriptor bytes — identical to the standalone builds.
+5. SIDE-CHAIN is nearly orthogonal — DSP address space + a descriptor region nothing
    else touches.
-5. `patch_trigscale` is byte-identical in every build; it is the shared base.
+6. `patch_trigscale` is byte-identical in every build; it is the shared base.
 
 ---
 
@@ -51,14 +66,15 @@ Free zone `0x400d7000 … 0x400d7c3c` (3132 B). Packed from the bottom;
 
 | Cave | Addr | Size | Notes |
 |---|---|---|---|
-| `patch_sidechain` (CF: `key_fmt` / `kfilt_fmt`) | `0x400d7000` | 140 B | + descriptor & chooser edits outside the zone |
+| `patch_sidechain` (CF: `key_fmt` / `kfilt_fmt`) | `0x400d7000` | 140 B | + descriptor & chooser edits outside the zone; address baked into the descriptor |
 | `patch_softmute` (`DT_MODE=1`) | `0x400d708c` | 368 B | |
 | `patch_mutemode` (`DT_MODE=1`) | `0x400d71fc` | 136 B | |
 | `patch_directjump` (`DJ_V3=1`) | `0x400d7284` | 490 B | `dj_toggle` reached via chain, not a detour |
-| `patch_reload2` (`MERGE=1`) | `0x400d7478` | ~1494 B | TRK SEQ / PTN SEQ / PART + PTN SEQ (S47) |
-| — free — | ~`0x400d7a50` | ~176 B | |
+| `patch_reload2` (`MERGE=1`) | `0x400d7470` | 1512 B | TRK SEQ / PTN SEQ / PART + PTN SEQ (S47) |
+| `patch_pattern_led` | `0x400d7a58` | 142 B | Bug-2; packed last, position-independent |
+| — free — | `0x400d7ae6` | 26 B | **tight — widen the zone before the next cave** |
 | `patch_trigscale` | `0x400d7b00` | 62 B | **pinned** |
-| PERSONALIZE menu arrays ×3 (17 entries) | `0x400d7b40` | 204 B | relocated from `0x400b2a34/74/c0`; **now placed after trigscale** (S47 -- RELOAD2 grew) |
+| PERSONALIZE menu arrays ×3 (17 entries) | `0x400d7b40` | 204 B | relocated from `0x400b2a34/74/c0`; **placed after trigscale** (S47 -- RELOAD2 grew) |
 | — free — | `0x400d7c0c` | 48 B | |
 
 Addresses shift if any cave's size changes — `build_merged.py` re-packs and re-asserts
@@ -80,6 +96,7 @@ these into another tool; read them from a build run.
 | Site | Mod | Sym | Kind | Displaced (stock) |
 |---|---|---|---|---|
 | `0x4009b6f2` | Bug-1 | `cave` | jmp+6nop (18) | `move.l #0x91a,d0` … |
+| `0x4009a464` | Bug-2 | `cave` | jmp (6) | `move.l d2,-(sp) ; move.l 8(sp),d0` (cave replays both, then either returns 1 or `jmp 0x4009a46a` into the stock body) |
 | `0x40004dc6` | MUTE MODE | `pre` | jmp (6) | `move.l 0x80000008,d5` |
 | `0x40005178` | MUTE MODE | `pre_v` | jmp (8) | `lea -0xc(sp),sp` … |
 | `0x400a4006` | DIRECT JUMP | `dj_a` | jsr (6) | `tst.b (0x8000667e).l` |
@@ -209,6 +226,11 @@ every change is one a standalone feature also makes (bar relocated caves / detou
 round-trip + checksum through Elektron's tool. The SIDE-CHAIN DSP + descriptor bytes
 are byte-identical to `build_sidechain3.py`.
 
+`emu_merged.py` also asserts the Bug-2 detour (`0x4009a464` → `patch_pattern_led:cave`,
+cave ends `jmp 0x4009a46a`) and `tools/emu_pattern_led.py --image out/mainos_merged.bin`
+re-runs the full Bug-2 case set against the relocated cave in the combined image
+(ALL GOOD, S48).
+
 The per-feature `emu_*.py` still run against their **standalone** images (they assert
 `0x400d7400`-era cave addresses); `emu_merged.py` covers the merge-specific risk only.
 The v3 overlay has its own `emu_directjump_v3.py` (toggle → `FUN_4005a2b8`; dj_a/b/c
@@ -232,7 +254,7 @@ asserted byte-identical to v1).
   takes `reload2` (2-item). Swap to `patch_reload.s` if the 3-item picker wins; the
   `MERGE` block must be ported to `patch_reload.s` too (same `rly_stock` edit).
 - **Whether the merge ships at all** vs staying a per-feature menu of builds — the
-  combined image is the harder thing to support (one HW regression sinks all five).
+  combined image is the harder thing to support (one HW regression sinks all six).
 - **DIRECT JUMP v3 as the standalone default too** — v3 is strictly better than v1/v2
   (right primitive, no extra hook, no shared handle). Once it has a HW pass, consider
   making `build_directjump_v3.py` the DIRECT JUMP line and retiring v1/v2.
