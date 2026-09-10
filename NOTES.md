@@ -4499,6 +4499,15 @@ Working model: the knob edits **#2** (`0x46c7ab30`) for the held step; a
    sequencer stalls" trap for existing projects — flash notes need a default guard.
 4. **(blocked on MKI)** flash sequence DT → SIDECHAIN2 → SIDECHAIN3 → DIRECTJUMP
    (v1 or v2); the p-lock Phase-0 `pattern-diff` pass; Bug 2 HW confirm.
+5. ~~**merge-conflict audit + combined build**~~ — **DONE (Session 45).**
+   `tools/build_merged.py` → `out/OCTATRACK_OS1.40C_KYOTI_ALL.*` (all five final-scoped
+   mods), `tools/emu_merged.py` ALL GOOD, `reference/MERGE.md` = the allocation map.
+   The `[YES]` `0x4005e4c8` collision (DIRECT JUMP vs RELOAD2) is resolved by a
+   trampoline (`patch_reload2.s` `.ifdef MERGE`). **Not flashed** — combined image is
+   gated behind the per-feature HW passes in item 4. Remaining no-flash: DIRECT JUMP
+   v1-vs-v2 for the merge is decided (v1); `reload` vs `reload2` still open (build uses
+   `reload2`); port the `MERGE` block to `patch_reload.s` if the 3-item wins.
+
    Nothing no-flash remains on this board except item 1's alt (trace SAVE for the
    `+0x4900`→`#1` merge, ~2–3 emu sessions).
 
@@ -6045,3 +6054,79 @@ Detour count still 6 each, but `rl_tick` (hot-path splice + softmute var) →
 A genuinely minimal RELOAD would be SEQ-only, hold `[PTN]` → one confirm, no
 picker (~2 detours). Decide whether to keep both, keep only the 3-item, or add a
 no-picker minimal. Not done this session.
+
+## Session 45 (2026-09-09, `wip/mute-mode`) — merge-conflict audit + a mechanized combined build (no-flash)
+
+Goal: does every *final-scoped* mod compose into one firmware? Audited each scoped
+build (`RELOAD2` not `RELOAD`, `SIDECHAIN3` not `1`/`2`, DIRECT JUMP **v1**) —
+actual bytes, caves, detour sites, shared globals, DSP. Then mechanized the merge so
+it's a guarded build, not a hand-splice. **Reference: `reference/MERGE.md`** (the
+authoritative allocation map — keep it current).
+
+### Findings
+
+**One real code collision, one mechanical cave clash, everything else composes.**
+
+1. **`[YES]` handler `0x4005e4c8`** — DIRECT JUMP (`dj_toggle`, `[PTN]`+`[YES]`
+   toggle) *and* RELOAD2 (`rl_yes`, answers the picker) detour the identical 8 bytes
+   (`222f0004202f0008`). One `jmp` fits. Both source files already anticipate this
+   (patch_reload2.s header "MERGE NOTE"; `rl_yes` routes "not the picker" through
+   `jmp YES_RESUME`).
+2. **Cave base `0x400d7400`** — MUTE MODE, DIRECT JUMP, RELOAD2 each `-Ttext` there.
+   Mechanical; relocate.
+3. **Space** — sum of the five caves + trigscale = ~2600 B into the 3132 B free zone
+   `0x400d7000–0x400d7c3c`. Fits, **~526 B** headroom after packing.
+4. **SIDE-CHAIN is ~orthogonal** — its DSP work is a different address space; its
+   ColdFire footprint is the COMPRESSOR descriptor (`0x400d5ac8+`) + FX choosers
+   (`0x400d607e+`), regions no other mod reads or writes. Only shared point:
+   `patch_trigscale`, byte-identical everywhere.
+5. **Compatible shared state** — MUTE MODE `0x800000dc`/shadow `0x100fff6c` vs DIRECT
+   JUMP `0x800000d8`/`0x100fff68` (distinct, both need `pea 0x64→0x70`, idempotent);
+   scratch globals `0x80006c66` / `0x80006a40–44` / `0x80006a50–53` disjoint; both
+   MUTE MODE and DIRECT JUMP re-checksum the ANDY block (sequential, no race).
+6. **DIRECT JUMP v1, not v2** — v2's `dj_tick2` splices `0x400522ca` (soft-mute
+   release-watchdog fn) and shares `FUN_4005a0e0` + handle `0x460d1e64` with RELOAD2's
+   picker. v1 avoids both.
+
+### The `[YES]` trampoline
+
+RELOAD2 is the outer hook; `rl_yes`'s "not the picker" path chains to `dj_toggle`,
+which handles the combo or replays the prologue → `0x4005e4d0`.
+`patch_reload2.s` gained an `.ifdef MERGE` block: standalone `rly_stock` replays +
+`jmp YES_RESUME`; `--defsym MERGE=1 --defsym MERGE_DJ_TOGGLE=<addr>` makes it one
+`jmp DJ_TOGGLE`. **`patch_directjump.s` unchanged** (`dj_toggle` sees the same stack
+whether entered from a detour or from `rl_yes`). Standalone `build_reload2.py` output
+is **byte-identical** with the guard inert (asserted).
+
+### New tooling
+
+- **`tools/build_merged.py`** → `out/OCTATRACK_OS1.40C_KYOTI_ALL.{syx,bin}`
+  (`140C_KYOTI`, 3525 B vs stock). Auto-packs the ColdFire caves from `0x400d7000`
+  (`patch_trigscale` pinned at `0x400d7b00`), wires all 12 detours (single `[YES]`
+  hook), relocates the PERSONALIZE menu, runs `build_sidechain3`'s DSP + descriptor
+  transforms verbatim (imports it as a module). Asserts: caves disjoint + in-zone;
+  every displaced-byte guard; no detour-site collision; Bug-1 bytes identical to
+  `build_trigscale_only.py`; every change is one a standalone feature also makes bar
+  relocations; round-trip + checksum. SIDE-CHAIN DSP/descriptor bytes verified
+  byte-identical to `build_sidechain3.py` (payload A+B 658 each, descriptor 40,
+  choosers 36).
+- **`tools/emu_merged.py`** — STATIC (every detour landed as the right branch into the
+  relocated cave; `0x4005e4c8`→`rl_yes`; `rl_yes` contains `jmp dj_toggle`; pea 0x70;
+  count `#16`; `KEY` at descriptor slot 8; caves disjoint) + DYNAMIC (drives `[YES]`
+  at `0x4005e4c8` on the real merged bytes; verdict by which OS routine the trampoline
+  reaches first — `CLOSE_CB`→RELOAD2, `CKSUM`→DIRECT JUMP, `YES_RESUME`→stock). All 6
+  cases **ALL GOOD**: picker-open→RELOAD (even with `[PTN]` held); closed+`[PTN]`→DJ;
+  closed/release/popup→stock.
+
+### Not done / HW-only
+
+- Combined image **not flashed** — flash the per-feature builds first (order in
+  `START_HERE.md` §"Blocker & NEXT"), then this, then re-run every feature's checklist
+  on the merged image + the `[PTN]` tap-vs-hold split + MUTE MODE with the picker open.
+- Per-feature `emu_*.py` still run against standalone images (hardcoded `0x400d7400`
+  cave asserts) — not adapted to the merged layout; `emu_merged.py` covers the
+  merge-specific risk instead.
+- `MERGE` block lives in `patch_reload2.s` only. If the 3-item `patch_reload.s` wins
+  the Session-43 split decision, port the same `rly_stock` edit there.
+
+**NOT committed at session start / see git for the commit.**

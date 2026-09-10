@@ -37,6 +37,7 @@ published repo, `upstream` = mxldyn (fetch only, for `whatsnew.py`).
 | `NOTES.md` | the full chronological RE log; every finding, every session, every dead end |
 | `reference/kb/*.md` | **distilled knowledge base** — address map + file format + DSP + container + techniques, ours merged with external RE. Read the relevant one before a new patch |
 | `reference/EXTERNAL_RESEARCH.md` | index of the 6 external OT-RE repos + the sync/distill workflow (`tools/refs/`) |
+| `reference/MERGE.md` | **combining every final-scoped mod into one firmware** — cave allocation, detour inventory, the `[YES]` trampoline, shared-state table. `tools/build_merged.py` + `tools/emu_merged.py`. No-flash prep (Session 45) |
 | `README.md` | what the firmware is, the feature list + per-feature HW status, repo layout, lineage |
 | `BUILD_KYOTI.md` | roll-your-own build guide (every `build_*.py`, prerequisites, the reproducible patch) |
 | `COVERAGE.md` | what firmware subsystems are mapped vs untouched; the DSP-is-a-separate-blob caveat |
@@ -168,6 +169,14 @@ session, in order:
 persistence (Session 22). **`tools/emu_rtos.py`** wraps octabam's full-firmware emulator
 (runs the real scheduler/tasks/CF/LOAD-PROJECT against our image — M6a/M6b verified,
 Session 23) — the tool for the p-lock backlog below.
+
+**Combined firmware (Session 45, no-flash):** `tools/build_merged.py` composes all five
+final-scoped mods (Bug-1 + MUTE MODE + DIRECT JUMP v1 + SIDECHAIN3 + RELOAD2) into
+`out/OCTATRACK_OS1.40C_KYOTI_ALL.{syx,bin}` — caves auto-packed, the one shared handler
+(`[YES]` @ `0x4005e4c8`) resolved by a trampoline (RELOAD2 outer → `dj_toggle` chain,
+`patch_reload2.s` `.ifdef MERGE`). `tools/emu_merged.py` ALL GOOD. **Not flashed** —
+flash the per-feature builds first (order below), then the combined image. Full map +
+open decisions: `reference/MERGE.md`.
 
 **Backlog (scoped, Phase 1 tooling next):** auto-remove a trigless lock once a LIVE-REC
 `[NO]`+knob erase clears its last p-lock. Data model is mapped to the step-mask level

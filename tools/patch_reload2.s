@@ -117,6 +117,19 @@
 
     .equ N_ITEMS,     2
 
+|   ---- merged-firmware [YES] chaining (build_merged.py only) ----
+|   Standalone, patch_reload2 owns the YES handler detour @ 0x4005e4c8 and its
+|   "not the picker" path replays the displaced prologue -> stock.  In a combined
+|   build DIRECT JUMP also wants that handler ([PTN]+[YES] toggle), so the single
+|   detour goes to rl_yes and rl_yes hands "not the picker" on to dj_toggle
+|   instead.  dj_toggle sees the stack exactly as the stock handler would (0=ret,
+|   4=keycode, 8=event -- rl_yes has not disturbed it on this path) and either
+|   handles the combo or replays the prologue itself -> 0x4005e4d0.  build_merged.py
+|   passes  --defsym MERGE=1 --defsym MERGE_DJ_TOGGLE=<dj_toggle abs addr>.
+    .ifdef MERGE
+    .equ DJ_TOGGLE, MERGE_DJ_TOGGLE
+    .endif
+
     .text
 
 | ================= [PTN] HOLD -- open the picker  (@ 0x4005a044) =================
@@ -241,9 +254,13 @@ rly_t1:
     rts                                | swallow YES
 
 rly_stock:
+    .ifdef MERGE
+    jmp     DJ_TOGGLE                  | chain: DIRECT JUMP checks [PTN]+[YES], else replays -> stock
+    .else
     move.l  4(%sp),%d1                 | displaced
     move.l  8(%sp),%d0                 | displaced
     jmp     YES_RESUME
+    .endif
 
 | ================= arrow keys -- move the highlight while the window is open =================
 | ARROW_A (@ 0x4004b970) replaces 8 bytes: lea -12(%sp),%sp ; movem.l %d2-%d3/%a2,(%sp)
