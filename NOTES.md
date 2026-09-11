@@ -6463,3 +6463,1044 @@ toggle" was a miscommunication) — `patch_qlrec.s` / NOTES S46 "PERSONALIZE men
   behaviour mod) — but MKI-only RE, so offer as a report, not a PR, unless mxldyn wants it.
 
 Committed + pushed to `origin/wip/mute-mode`. NOT flashed.
+
+## Session 49 (2026-09-10, `wip/mute-mode`) — SCOPING a new stock bug: "Part params carry over after a pattern→Part change" (static RE only; emu repro NOT yet run; NOT built)
+
+### The reports (Elektronauts "Octatrack OS Bug Reports" / "Playback gets carried over…")
+1. **Open_Mike** — switch from a pattern on Part A (track T = **PICKUP** machine, pickup NOT
+   running) to a pattern on Part B (track T = **FLEX**, sample-locked, STARTS SILENT): the new
+   pattern triggers **Part A's pickup loop** on track T instead of Part B's assigned sample.
+   A second user reproduces and adds: **only when Part B's machine is FLEX** — a **STATIC**
+   machine on track T works as intended. Workaround: have the pickup loop running (muted if
+   needed) before switching. Open_Mike also: **scenes** of the new Part still respond to the
+   **old** pattern/Part's scene values.
+2. **Open_Mike** — recorder trigs: after a pattern→Part change the **recorder source + RLEN
+   from the old Part** are used even when locked on the new pattern. Workaround: make every
+   Part's recorder buffer N settings identical across Parts.
+3. **sezare56** — REC SETUP: last-tweaked value persists. P1/PartA SRC=T1, P2/PartB SRC=T2;
+   tweak P1 SRC→T8, switch to P2 → **P2 records T8**, not T2.
+
+All three = one family: **a pattern change that links a different Part does not fully
+re-apply / re-publish that Part's per-track state.** STATIC works because STATIC lives in a
+different sample arena (`0x100d5b30+id*1096`) from FLEX/PICKUP (both `0x100b14f0+id*1096`,
+`memory-map.md`) → a PICKUP→STATIC type change crosses arenas and forces a rebind; PICKUP→FLEX
+stays in the same arena with a still-valid (stale) slot id = the pickup recording buffer
+(`128+track`, forced by `FUN_400972fc`).
+
+### What static RE established this session (objdump, base `0x40000400`)
+
+- **`FUN_40009094(bank@a5, part@fp)` = the per-track Part→engine apply** (octakit
+  `GK_STOCK_ENGINE_PART_LOAD`). Confirmed: reads the machine-type byte at
+  **`blob + part*0x18b2 + track + 0x8eda2`** (= part payload `+0x22 + track`; signed byte
+  `mvsb`, `sp@84` walks +1/track), then copies machine-type-selected param groups
+  (`mt*6`-indexed) into the per-voice DSP pre-image `0x80000a50+track*64` / records
+  `0x80000110` / `0x8000082f`. Stores bank→`0x80001828`, part→`0x80001829`. It does **not**
+  touch the voice struct `0x800049d8+track*0xA8` (SETTINGS ptr / slice / play position).
+- **`FUN_400972fc(part@d5, track@d4)` = the PICKUP-only voice rebind.** Bails immediately if
+  `blob+part*0x18b2+track+0x8eda2 != 4`. For a PICKUP track it forces the slot byte
+  (`part payload +0x8f04e + …`) to `128+track` and sets the dirty set
+  (`+0x9b332`, `0x100f8598`, `0x100b145e`, `0x9504a`), then `FUN_40027e00`.
+- **The deferred change queue `0x460c80f0` (kind) + `0x460c80f4/f8/fc`, `0x460c8100/8104`
+  (descriptor).** Enqueue/dequeue lives entirely in the `0x40025xxx–0x40026xxx` cluster
+  (project/bank serializer + "apply pending change" drain; `FUN_40026664` = the
+  match/filter). **Kind 5 → `FUN_4002b3b4`** = re-copy one TRAC block (cold blob → live
+  `0x1001614e`, `0x91a` B) + `FUN_40029b9c(track)`. Called from the pattern path at
+  `0x4005f002`. **Kind 4 → `FUN_4002b654`** = the Part apply: memcpy a batch of per-track
+  Part sub-records (playback `+0x1da` 0x1e, slice-lock `+0x2ca` 5, amp `+0x2f2` 0x1e,
+  twelve-byte `+0x602` 0xc, **recorder `+0x8f382 + part*6322 + track*12`, 0xc B**, plus
+  30/24/5-byte records with a `-128` PICKUP adjust) cold blob ↔ live, then
+  `FUN_40009094(0x80000002, part)`. So kind-4 **is** thorough on paper — incl. the recorder
+  12-byte record.
+- ⇒ The bug is most likely **(a) the pattern-triggered Part change never enqueues / drains a
+  kind-4** (only manual PART select — `FUN_4004aab4` / the `0x4005exxx` PART UI — does), OR
+  **(b) it enqueues but the drain lands after the recorder engine / voice has already latched
+  the old value**, OR **(c)** for the pickup-loop case specifically, `FUN_40009094` +
+  kind-4 don't re-resolve the FLEX voice's sample pointer when the machine *type* changed
+  PICKUP→FLEX within the shared arena. The pickup-running workaround fits: an active pickup
+  voice keeps `FUN_400972fc` / the plays-free PICKUP-sync auto-reload (`0x4000aea6`,
+  `move.l #1,0x46c8028a`) firing, which forces the full reload.
+
+### Repro plan (NOT yet run — needs either a real test project or an emu harness)
+
+Emulator: `tools/emu_rtos.py` (octabam full-firmware). `emu_reload.py` already shows the
+primitives — `er.stage_project` / `er.attach` / `rt.load_project_live` /
+**`rt.seq_select_live(bank, pat)`** (drives a real pattern switch) / `rt.press_play_live` /
+`rt.run(ms=)`.
+
+Harness (`tools/emu_partswitch.py`, to write):
+1. boot + load a project with **two patterns on two different Parts**, track T with a
+   machine-type difference.
+2. read machine types for all Parts from `blob + 0x8ed80 + part*0x18b2 + 0x22 + track`
+   (blob = `PART_PTR`); read the live recorder record `0x80000cf4+track*12+[0x800000e0]*96`
+   and the voice struct `0x800049d8+T*0xA8` (`+8` SETTINGS ptr, `+32` slice, `+8`→slot).
+3. `seq_select_live` pattern A (Part A), `press_play_live`, run; snapshot the T voice +
+   recorder record.
+4. `seq_select_live` pattern B (Part B), run; **assert** the T voice SETTINGS ptr now
+   resolves to Part B's FLEX slot (not `128+T`) and the recorder SRC/RLEN == Part B's.
+5. control case: start a pickup voice on T first, then switch → expect it to work (matches
+   the HW workaround).
+6. also check whether a kind-4 (`0x460c80f0`) is ever enqueued across the switch
+   (`--watch-mem 0x460c80f0,4`).
+
+**Test data:** the factory **OT DEMO** links P1–4→Part0, P5–8→Part1, … (confirmed via
+`scan_parts.py`), so P4→P5 is a real Part change — but it has no PICKUP/FLEX-on-same-track
+difference and no divergent REC SETUP. Options: (i) **ask the user to export a purpose-built
+project** from the MKI — 2 patterns, 2 Parts, T1 = PICKUP in Part A / FLEX+assigned sample
+(STARTS SILENT) in Part B, and REC SETUP SRC differing between the Parts; or (ii) RAM-poke the
+machine-type + slot bytes in `emu_rtos` (Session-48 precedent) on top of the DEMO. (i) is the
+faithful one and also lets the user confirm the HW repro on their own unit.
+
+### Fix sketch (if repro confirms) — effort ≈ DIRECT JUMP (medium), risk moderate
+
+Detour the sequencer's pattern-change commit (`FUN_400a1eea` @ `0x400a44d0`, or the cue
+choke `FUN_400a0570`) so that when the incoming pattern's Part link
+(`slab+0x8e57` / disk `+0x8ee7`) differs from the current Part (`0x80000003` / `0x80000002`),
+it forces a synchronous full Part apply for the new Part — enqueue+drain a kind-4
+(`FUN_4002b654`) and/or call `FUN_40009094(bank,newpart)` + re-publish the recorder record
+(`0x80000cf4…` from `+0x8f382`) + re-apply scenes. Gate behind a PERSONALIZE/-chord toggle
+per house style (this is a behaviour change on a stock code path; some users may rely on the
+current "hold last tweak" for live performance). No menu-array surgery. HW-only unknowns:
+`FUN_40009094` from the sequencer tick context; glitch on the active voice; scene re-apply
+path (`FUN_400972fc` siblings / `0x4005a676` / `0x40062204`).
+
+### Emu probe #1 (`tools/emu_partswitch.py --probe`, DEMO as-is) — the Part change DOES run per-track work; `FUN_40062204` / `FUN_400972fc` are it
+
+- DEMO machine types: **every track is FLEX** (T8 = THRU/STATIC). No PICKUP anywhere → the
+  PICKUP→FLEX case must be RAM-poked (chose option ii).
+- `seq_select_live(bank, 4)` (P1→P5 = Part 0→1): the **applied-part witness `0x80001829`
+  went 0→1** and **`FUN_400972fc(part=1, …)` ran ×8 (once per track), from `0x4006220a` in
+  the `sys` task**. So a pattern-triggered Part change is NOT inert — my "root cause (a)"
+  guess is wrong. (My `watch_calls` single-address hooks missed `FUN_40009094`/kind-4 —
+  hook-flush quirk; `0x80001829` moving proves a Part apply ran. `watch_pc` used from probe
+  #2 on.)
+- **`sys` message case `0x400621a6–0x40062284` = THE part-change handler.** On msg-byte
+  `!= 0x80000003` (current-part mirror `0x100b14cf`): memcpy the current Part's 8
+  machine-type bytes to a local (`fp-9` = **OLD types**); set `0x80000003 = 0x100b14cf =
+  newPart`; **loop t=0..7: `FUN_400972fc(newPart, t, OLD_type[t])`**; then `FUN_400326a0`,
+  `FUN_40078850(0)`, and a redraw burst (`0x4004d948/d870/d640`, `0x4002f2f8`, `0x40093468`,
+  `0x4009da20`, `0x40097460`). It does **not** call `FUN_40009094` or the kind-4 handler
+  here — the Part-apply that moved `0x80001829` is elsewhere in the same dispatch (probe #2
+  to pin).
+
+### `FUN_400972fc(newPart@d5, track@d4, oldType@sp+32)` — the per-track rebind, and its asymmetry
+
+Reads NEW machine type (`blob + newPart*0x18b2 + track + 0x8eda2`).
+- **NEW == 4 (PICKUP):** force the PICKUP slot (`blob + newPart*0x18b2 + track*5 + 0x8f04e`)
+  to `128+track`, mirror to `0x100a519c[newPart*6322 + track*5]`, set dirty
+  (`+0x9b332`,`0x100f8598`,`0x100b145e`,`+0x9504a`), `FUN_40027e00`. Then if **OLD != 4**
+  (was not PICKUP): `FUN_40097290(newPart)` + **`0x8000184c |= 1<<track`** (the AMP-kill /
+  release bit, Session 9) + `FUN_40001f18([0x100b14ce],[0x100b14cf],track)`.
+- **NEW != 4 (STATIC/FLEX/THRU/NEIGH):** branch to `0x400973e6` — clears the plays-free
+  SEQ-SYNC-PICKUP track (`0x800065bc`) if it was this track, updates `0x461054f8`
+  ("current track is PICKUP? / 8"), **`rts`**. **Nothing re-resolves the voice slot, no
+  `0x8000184c` kill, no param push.** ⇒ **OLD=PICKUP → NEW=FLEX leaves the voice/slot
+  pointing at the PICKUP recording buffer `128+track`.** The FLEX slot from the new Part is
+  never bound to that voice.
+- **Why STATIC is fine:** STATIC's sample arena (`0x100d5b30+id*1096`) ≠ FLEX/PICKUP's
+  (`0x100b14f0+id*1096`); the per-audio-frame voice-SETTINGS re-resolver rebinds on the
+  arena change. PICKUP→FLEX stays in the same arena with a still-valid stale slot id →
+  no rebind → pickup buffer plays. (To confirm in probe #2.)
+
+### Emu probe #2 (`tools/emu_partswitch.py --repro`) — ROOT CAUSE CONFIRMED for report #1
+
+Poked DEMO **Part 0 T1 machine → 4 (PICKUP)** + its PICKUP slot (`blob+0x8f04e`) → `128`,
+Part 1 T1 stays FLEX; `seq_select_live` P1→P5 (Part 0→1). `watch_pc` on `FUN_400972fc`,
+watched the T1 voice struct + slot mirror `0x100a519c` + pre-image `0x80000a50` + kill
+bitmap `0x8000184c` + `0x80001829`.
+
+- **`FUN_400972fc(newPart=1, track=0, oldType=4)` fired** — the exact PICKUP→FLEX transition
+  (args read straight off the stack: `[ret 0x4006220a, 1, 0, 4]`). Tracks 1–7 fired with
+  `oldType` 1/2 (FLEX/THRU), as expected.
+- **Across the whole switch, for track 0: ZERO state change.** No write to the slot mirror.
+  No write to the pre-image. **`0x8000184c` (voice-kill / re-trigger bit) stayed `0`** — the
+  reverse transition (notPICKUP→PICKUP) *does* set it; PICKUP→FLEX does not.
+  `FUN_40009094` (the full per-track apply) never ran for track 0. The **only** write in the
+  watched set was `0x80001829 <- 1` from `FUN_40009e00 @ 0x40009e16` (seq-select's light
+  part setup — records bank/part + FX descriptors, does **not** rebind the playback voice).
+- ⇒ **On a pattern change that moves a track PICKUP→FLEX, nothing rebinds that track's
+  playback voice.** It keeps the PICKUP recording-buffer slot (`128+track`) → the FLEX
+  track sounds the pickup loop. STATIC escapes only because its arena differs
+  (`0x100d5b30` vs `0x100b14f0`) and the per-frame SETTINGS re-resolver rebinds on the
+  arena change. "Pickup running before the switch" works because an active pickup voice
+  keeps the plays-free PICKUP-sync full reload (`0x46c8028a`) firing.
+- Harness caveat: `press_play_live` did **not** start the transport in this setup
+  (`0x800065b8 == 0`), so the *voice itself* couldn't be watched resolving a wrong pointer
+  — not needed for the mechanism, but fix it before the fix-validation run (probe the
+  DEMO's CLOCK-RECEIVE / `0x80000029` / add `FW_START_TRACK`, or drive `press_key_live`
+  for PLAY + a trig).
+
+### Fix — one detour on `FUN_400972fc`, ~Session-48 scale
+
+On **`oldType == 4 && newType != 4`** (currently the `bne 0x400973e6` fast-path that does
+nothing), also: (a) write the new machine type's real slot for that track from the Part
+payload (`blob + newPart*0x18b2 + track*5 + newType`; `newType` 0 STATIC / 1 FLEX) into the
+slot mirror `0x100a519c[newPart*6322 + track*5]` and the live per-track record, and
+(b) set `0x8000184c |= 1<<track` so the next trig re-resolves + re-triggers the voice from
+the correct slot (exactly what the notPICKUP→PICKUP arm already does via
+`FUN_40097290` + the OR). ~1 detour + small cave. Gate behind a toggle (it changes a stock
+code path).
+
+### Reports #2 / #3 — the recorder-page config pipeline, RE'd (static)
+
+The recorder page (SETUP RECORDING: `page1 INAB INCD RLEN TRIG SRC3 LOOP`, `page2 FIN FOUT
+AB QREC QPL CD`) travels **editor → cache → per-frame publish → engine**:
+
+| tier | address | writer |
+|---|---|---|
+| blob (persisted Part copy) | `blob + part*0x18b2 + 0x8f382 + track*12` | knob editor `FUN_4002ef28 @ 0x4002f03a`; kind-4 copies it in |
+| SRAM mirror | `0x100a54d0 + track*12` | knob editor `@ 0x4002f042` |
+| **UI cache** | **`0x80000c94 + track*12`** (8×12 B) | knob editor `@ 0x4002f0ca`; **`FUN_40009094 @ 0x40009176`**; RELOAD-PART `FUN_40009848 @ 0x40009928`; boot `0x40001f6e` |
+| **published (engine reads this)** | **`0x80000cf4 + track*12 + [0x800000e0]*96`** | **the frame-builder, every DSP frame**: `0x4000cac2` `memcpy(0x80000cf4 + frame*96, 0x80000c94, 96)` (all 8 tracks, 96 B) |
+
+Engine read sites: `FUN_40005ff0` / the `0x40006cc0` fn (recorder arm/trigger — read `pub[+7]`
+→ `0x400ab63a` RLEN→block table → `macl` sample math) and `0x4006e3b2` (`lea 0x80000cf4`,
+`pub[+2 + …]`).
+
+**The gap:** the per-frame copier faithfully ships whatever is in the UI cache `0x80000c94`.
+The cache is refreshed from a Part's blob record **only by `FUN_40009094` / `FUN_40009848`**
+(the full manual PART apply / RELOAD PART) — **never by the pattern-triggered Part change**
+(`sys` `0x400621a6`: `FUN_400972fc`×8 + `FUN_40078850(0)` display-only + redraws; probe #2
+pinned the applied-part write to `FUN_40009e00 @ 0x40009e16`, and `FUN_40009e00` is **not**
+in the `0x80000c94` writer set). ⇒ after a pattern→Part change the recorder engine keeps
+the previous Part's recorder config, and any REC-SETUP tweak made before the change (which
+wrote the cache directly) sticks — **exactly reports #2 (SRC/RLEN) and #3 (last-tweak
+persists)**. Same family as #1: the pattern-change path is a partial re-apply.
+
+### Fix for #2 / #3
+
+Add to the same `FUN_400972fc` detour (or a single hook at the `sys` handler's post-loop
+point `~0x40062216`): for each track, `memcpy(0x80000c94 + track*12, blob + newPart*0x18b2 +
+0x8f382 + track*12, 12)` — re-seed the UI cache from the new Part's stored recorder record;
+the frame-builder then publishes it next frame. Also refresh the SRAM mirror `0x100a54d0`
+for consistency. (Matches what `FUN_40009094` already does — could instead lift/reuse just
+that fn's recorder sub-copy.) Note: page 2 of the recorder page may live at a different cache
+offset — verify the 12-B record covers both pages before shipping.
+
+### Emu probe #3 (`--repro`, recorder rows) — #2 / #3 ALSO CONFIRMED
+
+Poked Part 0 rec-blob `= 40..4b`, Part 1 rec-blob `= 60..6b`, stamped the UI cache
+`0x80000c94[T] = AA*12` ("just tweaked"), switched P1→P5.
+- Before: cache `AA*12`, published `0x80000cf4[T] = AA*12` (frame-builder shipped the
+  marker faithfully).
+- **After the Part change: cache still `AA*12`, published still `AA*12`, SRAM mirror
+  unchanged, both blob records unchanged.** The `AA` marker survived the entire Part
+  change — **nothing re-seeded the recorder cache from Part 1's stored record `60..6b`.**
+- The only write in the whole watched set (incl. both blob records, cache, SRAM):
+  `0x80001829 <- 1` from `FUN_40009e00`. **Zero recorder writes on the switch.**
+⇒ reports #2 and #3 confirmed: the pattern-triggered Part change leaves the recorder-page
+config (SRC/RLEN/…) at whatever the cache held — the previous Part's values, or a
+pre-switch REC-SETUP tweak.
+
+### Scene aspect (Open_Mike's aside) — RE'd, it's a real gap
+
+There are two `sys` pattern/Part dispatch cases:
+- **`0x400620fe`** — "select pattern N": derives the Part from the pattern link
+  (`blob + pat*0x8ed8 + 0x8e56 → +1` = slab `+0x8e57`), sets `0x80000003` / `0x100b14cf`,
+  runs a redraw burst (`0x4002e5ac`, `0x400339d8` LED rebuild, `0x4004d***`, …). **No
+  `FUN_400972fc`, no recorder refresh, no scene morph.**
+- **`0x400621a6`** — "select Part P": memcpy old machine types → local, set `0x80000003`,
+  loop `FUN_400972fc(newPart, track, OLD_type)` ×8, `FUN_400326a0`, `FUN_40078850(0)`,
+  redraws. (This is the case probe #1/#2 caught firing ×8 — the pattern change reaches it
+  when the linked Part differs.)
+
+**Neither calls the crossfader scene morph `FUN_4003f1b4`.** `FUN_4003f1b4`:
+- reads scene A/B **selection** (`blob + [0x80000003]*0x18b2 + 0x8ed90/91`) and both scene
+  **data blocks** (`blob + part*0x18b2 + scene*0x100 + 0x8f3e2`), per-track, interpolates by
+  the crossfader position, posts **kind-0x0e** records to the DSP param queue `0x460d17ee`.
+- **early-returns if the fader position `0x460d16c8` == its last-processed value
+  `0x400c0c44`** (`0x4003f1bc`; `0x400c0c44` is written *only* by `FUN_4003f1b4` itself at
+  `0x4003f394`, init `0xffff`).
+- has exactly **two callers**: the `sys` crossfader-move case `0x400626de` and the
+  arranger-exit handler `FUN_40055f18` (`0x40055fa4`, gated on `0x460d1aec`). **No periodic /
+  per-frame caller.**
+
+⇒ After a pattern→Part change with a stationary crossfader, the DSP keeps the **previous
+Part's** scene-morphed parameter values (last `FUN_4003f1b4` output) until the fader is next
+moved — then `FUN_4003f1b4` runs, reads the new Part's scenes (via the now-updated
+`0x80000003`), and corrects. **Exactly Open_Mike's "scene behavior of new part might still
+respond to the first pattern/part scenes"** — transient, clears on a fader touch.
+
+**Fix (add to the same detour):** `move.l #-1, 0x400c0c44` (invalidate the morph dedup
+guard) + `jsr FUN_4003f1b4` — re-posts the morph with the new Part's scene selection + data.
+~1 instr + a jsr; `FUN_4003f1b4` is no-arg and already runs in `sys` context (the
+crossfader-move case is in the same dispatch), so it's safe from the handler.
+
+**The scene *parameter data* (not just the morph) is also stale — same root cause.**
+`FUN_40002df4(bank, part, scene, slotAB)` = the scene-param stager: per track, if
+`0x8000182a[track] == activeBank && 0x80001832[track] == activePart` (`0x80000002` /
+`0x80000003`), copy 32 B of scene data from `blob + bank*0x9b340 + part*0x18b2 + scene*0x100
++ 0x8f3e2` (`0x401715c2` base) into the **live scene buffer `0x80000ed4 + track*0x40`**
+(A/B interleaved, stride 2) **and** into the per-voice DSP record region (`0x80000110 + …
++ 0xfc4`). Called from the pattern-change redraw burst (`FUN_4004d640` → `FUN_40002df4`)
+and the scene-edit menu. Frame-builder reads `0x80000ed4` (`0x4000c234` / `0x4000cc96` /
+`0x4000cd6a`) → audio; the scene-edit/apply code (`0x40038xxx`, `0x40052xxx`) reads it for
+display too.
+
+**The gate `0x80001832[track] == activePart` is the whole bug.** `0x80001832[track]` (per
+track, "the Part this track's staged engine + scene state reflects") / `0x8000182a[track]`
+(bank) are:
+- **set to `part` / `bank` by `FUN_40009094` in its per-track loop** (`0x40009396` bank,
+  `0x4000939e` part — displacements `+0x171a` / `+0x1722` off `0x80000110+track`).
+- reset to `0xFF` by `FUN_40004768` (project load) and `0x4004a394` (RELOAD-PART adjacent).
+- **never touched by the pattern-triggered Part change** (`sys` `0x400621a6` / `0x400620fe`).
+
+So: a manual PART apply / RELOAD PART / bank load runs `FUN_40009094` → marks every track
+with the new part → the redraw burst's `FUN_40002df4` gate passes → `0x80000ed4` restages →
+audio + display + LEDs all track the new Part. A **pattern-triggered Part change** doesn't
+run `FUN_40009094`, so `0x80001832[track]` stays at the *old* part, `FUN_40002df4` skips
+every track, and `0x80000ed4` keeps the **old Part's scene data** — feeding stale scene
+values to the DSP (audio) and to the parameter display / scene LEDs. **This is the data /
+audio / screen / LED mismatch, and it's the same missing `FUN_40009094` as #1/#2/#3.**
+
+(`#3` `0x46c7aa24` — the step handler's `d2 == -1` scene-pseudo-track p-lock source, spliced
+`#3 → #2` on pattern-enter but not reloaded from the blob — is a *separate* sequencer-side
+scene representation. Not yet pinned to a loader; likely another face of the same gap.)
+
+### The frame-builder ALREADY has a partial per-track re-stage — found while chasing the above
+
+`FUN_4000c8a4` (frame builder), per track per frame (`0x4000bf3a`): compare
+`0x8000182a/0x80001832[track]` (this track's staged bank/part) to the track's **currently
+playing** bank/part (`sp@118/119`, computed from the sequencer's per-track pattern
+pointers); set `d3` = "changed"; **write the playing bank/part back into
+`0x8000182a/0x80001832[track]`** (`0x4000bf62/6a`). Then `0x4000c0ae: if (d3) { … }` — a
+big inline re-stage block (`0x4000c0b4–0x4000c428`): re-copies the `mt`-indexed machine
+params + the 30/36-byte param records + the **scene data → `0x80000ed4 + track*0x40`** +
+the per-voice DSP records + the slot bytes `0x80000110 + track + 0xb40/0xb50`.
+
+**So a *running* pattern→Part change DOES re-stage machine params + scene data per track —
+but NOT:**
+- the **recorder-page config** (`0x80000c94` / `0x8f382`) — not in the block → #2/#3 stand
+  even while playing (emu `--repro` `0xAA` marker survived).
+- a **PICKUP→FLEX voice-slot rebind** — the block writes the slot bytes to
+  `0x80000110+track+0xb40` (same as `FUN_40009094`), yet the reported bug says the pickup
+  loop still plays → writing those bytes is not enough to unstick a PICKUP voice from its
+  recording buffer; the `0x8000184c` re-trigger is still needed → #1 stands.
+- and it only runs **while the transport is playing** (frame builder is idle when stopped) →
+  a *stopped* pattern→Part change re-stages nothing (emu `--repro` stopped: `0x80000ed4`
+  `0xEE` marker + `0x80000c94` `0xAA` marker + `0x80001832` all survived).
+- timing: the `sys` handler's redraw burst (which calls `FUN_40002df4`, gated on
+  `0x80001832[track] == activePart`) fires *before* the frame builder updates
+  `0x80001832[track]` → `FUN_40002df4`'s non-`0x80000ed4` outputs (per-voice + display) run
+  with the stale gate.
+
+⇒ the scene *audio* partly self-heals on a running switch, but the recorder config, the
+pickup voice, the stopped-switch case, and the data/display/LED consistency do not. The
+robust fix is to make the pattern→Part change do the **full** manual-PART-select work.
+
+### Status — all four symptoms are ONE root cause: the pattern-triggered Part change never runs `FUN_40009094`
+
+Static RE + four emu probes in `emu_rtos`. `tools/emu_partswitch.py` (`--probe` / `--repro`;
+`--repro` now: `start_transport_live` [transport starts ✓, `0x800065b8=1`], poke PICKUP +
+distinct recorder + distinct scene data per Part, STOP, switch, watch voice / slot mirror /
+recorder cache / `0x80001832` / `0x80000ed4` / morph guard / `FUN_40002df4` / `FUN_4003f1b4`).
+`scan_parts.py` in scratchpad. Nothing built/committed.
+
+| symptom | what the manual PART apply does that the pattern-change doesn't |
+|---|---|
+| #1 pickup loop | `FUN_40009094` re-applies playback-machine params + marks `0x80001832[track]`; the notPICKUP→PICKUP `FUN_400972fc` arm sets `0x8000184c` (voice re-trig) |
+| #2/#3 recorder | `FUN_40009094` writes the recorder UI cache `0x80000c94` (`0x40009176`) |
+| scenes (data + audio + display + LED) | `FUN_40009094` marks `0x80001832[track]=part` → the redraw burst's `FUN_40002df4` gate passes → `0x80000ed4` restages; `FUN_40009094` also writes `0x80000ed4` directly (`0x4000943c`) |
+
+**Cleanest fix — one call, covers all four:** detour the `sys` Part-change handler
+(`~0x40062216`, after the `FUN_400972fc`×8 loop) to `jsr FUN_40009094(0x80000002, newPart)`
+— exactly what a manual PART select runs — then `move.l #-1, 0x400c0c44` + `jsr
+FUN_4003f1b4` (re-run the crossfader scene morph without waiting for a fader move).
+`FUN_40009094(bank@sp+108, part@sp+112)` — 2 args on the stack, the `pea` convention.
+
+**Pre-build tasks — done:**
+- **Harness transport start:** `press_play_live()` left `0x800065b8 == 0` on the DEMO;
+  **`rt.start_transport_live()`** (`FW_TRANSPORT(0)` + `FW_START_TRACK`×8 directly) works —
+  `0x800065b8 = 1`, `frame_count` advances. `--repro` updated. (Note: a *running* pattern
+  change defers to the step engine's pattern boundary — thousands of frames out — so the
+  switch-probe STOPs first, which the reports also cover.)
+- **Recorder record covers page 2:** the record is **12 bytes** = 12 params (page 1
+  `INAB INCD RLEN TRIG SRC3 LOOP` + page 2 `FIN FOUT AB QREC QPL CD`), 1 byte each. The
+  knob editor `FUN_4002ef28` writes slot `d4` 0–5, or `d4 += 6` for page 2 (gated on
+  `0x460d115e`), into the same 12-byte record at `0x80000c94` / `0x100a54d0` / blob
+  `+0x8f382`. The frame-builder copies 96 B (8×12). ⇒ the fix's `memcpy(…, 12)` covers
+  both pages.
+
+**Emu `--repro` #4 (STOP-then-switch, scene instruments):** `press_key_live(KEY_STOP)`
+didn't stop the transport (still `1`), so the switch stayed *pending* and never committed
+(`0x800065be` = 0 after). But it captured the frame-builder's per-track settle:
+`0x8000182a/1832[track]` written from `0x4000bf62/6a` (the per-frame settle described
+above), `TRK_PART` `ff 00 ff 00 00 00 ff 00` → `ff 00 00 00 00 00 00 00`. Everything else
+(`0x80000ed4` `0xEE`, `0x80000c94` `0xAA`, slot mirror) unchanged. Need a working STOP
+(double-press? edge=1? `FW_TRANSPORT(1)`?) or a long run past the pattern boundary to
+observe a *committed* running switch — deferred.
+
+**Decision: full `FUN_40009094` call, gated behind a PERSONALIZE toggle, default OFF.**
+- Rationale: it makes a pattern→Part change identical to a manual PART select — the one
+  behaviour users can already reason about. It drives audio + data + display + LEDs from
+  one source (`FUN_40009094` writes `0x80000c94`, `0x80000ed4`, the pre-image, and marks
+  `0x80001832[track]`; the handler's existing redraw burst then repaints from fresh state).
+  A piecemeal fix would have to chase each representation separately and still race the
+  frame-builder's own settle.
+- Cost: `FUN_40009094` re-applies every param → possible envelope retrigger / LFO-phase
+  reset / a click on live voices. This is precisely why stock (and octamax's "lazy Part
+  transitions") *avoid* it. → toggle, default OFF (stock, smooth-but-wrong); ON = correct.
+
+**Fix = detour `~0x40062216` (after the `FUN_400972fc`×8 loop), gated:**
+1. `jsr FUN_40009094(0x80000002, [0x100b14cf])` — `pea` convention, 2 stack args.
+2. per track where `oldType == 4 && newType != 4`: `0x8000184c |= 1<<track` (unstick the
+   PICKUP voice — writing the slot bytes alone doesn't, per the report + the frame-builder
+   evidence).
+3. `move.l #-1, 0x400c0c44` + `jsr FUN_4003f1b4` — re-run the crossfader morph now.
+
+**Still verify before building (HW, mostly):**
+- the click magnitude from `FUN_40009094` on live voices — the toggle's whole reason to exist.
+- `FUN_40009094` re-entrancy / safety from the `sys` task with the transport running
+  (stock only calls it post-stop / post-deserialise / RELOAD-PART).
+- whether step 2 is actually needed once `FUN_40009094` runs, or `FUN_40009094` +
+  `0x8000184c` is belt-and-braces.
+- does `FUN_40009094` re-stage BOTH recorder pages (the 12-B record — it should, per the
+  page-2 finding above, but confirm it copies all 12).
+- the `#3` `0x46c7aa24` sequencer-scene-plock loader (still unpinned) — check `FUN_40009094`
+  or the redraw burst reloads it.
+
+NEXT: emu — get a *committed running* switch (working STOP or long run) and confirm
+`FUN_40009094`-in-the-detour clears all four; then build + validate S48-style
+(stock-repro + patched-fix).
+
+### FINAL DESIGN (supersedes both framings above) — reuse `FUN_40009094` as Elektron's own canonical Part-apply primitive, complete the two pieces nothing implements
+
+User's call: use Elektron's intended mechanics, fix the incomplete implementation — not a
+from-scratch reimplementation, not a blanket "avoid it, might click" retreat. Re-checked
+`FUN_40009094` line-for-line against the frame-builder's inline block: it already does the
+`mt`-indexed machine-param copy, the slot bytes, **the recorder cache `0x80000c94`** (`#2/#3`
+covered), **the scene buffer `0x80000ed4`**, and marks `0x80001832`/`0x8000182a[track]` (fixes
+the `FUN_40002df4` gate/race for the redraw burst). It touches no envelope, LFO-phase, or
+play-position state anywhere in its body. It is not a bespoke "full reapply" risk — it is
+**the single routine manual PART select, RELOAD PART, bank load, and project load all already
+call**, on every real session, without incident.
+
+The one real, narrow risk — not "resets everything," but precisely characterized from
+octamax's *own* inherited notes on a different wish ("preserve volume when switching Part",
+`reference/upstream-notes.md` "Go/No-Go"): the frame builder reads the active Part's params
+continuously, so **a track with a voice actively sounding through the exact instant of the
+switch may hear a discrete parameter jump** if the new Part's value differs. Silent tracks,
+and tracks whose next trig lands at/after the switch, are unaffected. That's the honest
+tradeoff to disclose, not a reason to avoid Elektron's own routine.
+
+**Fix — detour `sys` `0x400621a6` (the site emulation confirmed a real pattern-driven Part
+change reaches), right after its existing `FUN_400972fc`×8 loop, before `FUN_400326a0`:**
+
+1. `jsr FUN_40009094(0x80000002, [0x100b14cf])` — Elektron's own routine, called as-is.
+   Closes #2/#3 and the scene data/display/LED consistency (marks `0x80001832[track]` →
+   the redraw burst's `FUN_40002df4` now passes its gate with fresh data).
+2. Per track (old machine types are already buffered on the stack for the loop above —
+   nothing new to compute): `oldType == 4 && newType != 4` → `0x8000184c |= 1<<track`.
+   **Nothing in stock does this** — not `FUN_40009094`, not the frame-builder's lazy block,
+   not `FUN_400972fc`'s own PICKUP branch. The one genuinely new piece; narrowly scoped to
+   the exact transition report #1 describes.
+3. Once: `move.l #-1, 0x400c0c44` + `jsr FUN_4003f1b4` — re-trigger the crossfader morph.
+   Also nothing existing does this for a Part change. Small, self-contained — `FUN_4003f1b4`
+   already runs from this same `sys` task context via the crossfader-move case.
+
+**Scope note:** `FUN_400972fc` has two other callers (`0x4005a676`, `0x4005a8b0`, in the
+`0x4005axxx` PART-select UI region) not yet audited — worth checking later whether manual
+PART select has its own (smaller?) version of the pickup/scene-morph gaps, but that's outside
+the four reported symptoms (all pattern-triggered) and not folded into this fix without
+evidence.
+
+**Build-time to confirm:** exact `pea`/stack-arg convention + byte offsets for the
+`0x400621a6` case (re-disasm at build time, don't trust hand-counted displacements from a
+reading pass); `FUN_40009094` reentrancy from `sys` with the transport running (it's already
+called from `sys`-adjacent contexts per its 10 call sites, but confirm this specific one);
+whether `#3` (`0x46c7aa24`) also gets refreshed as a side effect of `FUN_40009094` running
+(still unpinned) or needs its own line.
+
+Toggle: still gate behind a PERSONALIZE entry per house style (behaviour change on a stock
+path) — but frame the description around the real, narrow tradeoff (a sounding voice may
+jump on switch) rather than an overstated "full reset" risk.
+
+### Verification pass — does `FUN_40009094` actually fix #2/#3? (user asked before building)
+
+Re-traced the `0x4000917e` write cited above by hand and got an inconsistent *source*
+address (looked like it read near Part-payload offset 0, not the recorder record's real
+offset `0x602`) — so the specific instruction attribution in the table above is not
+trustworthy as stated; don't cite `0x4000917e` specifically without re-deriving it at
+build time. Rather than keep re-reading disassembly, settled the question that actually
+matters empirically, in `emu_rtos` (`check_reccache.py` / `check_reccache2.py`,
+scratchpad):
+
+- **Plain check**: after a normal `load_project_live`, `0x80000c94[track]` for every track
+  matched `blob+part*0x18b2+0x8f382+track*12` exactly — but all 8 tracks held identical
+  default bytes, so this alone doesn't rule out coincidence.
+- **Causation check (decisive)**: scribbled the cache to `0x99×12` for all 8 tracks, poked
+  a distinctive record (`0x70..0x7b`) into the blob for all 8 tracks, called
+  `call_as_main(FUN_40009094, (curbank, curpart))` directly, re-read the cache — **every
+  track's cache slot came back holding exactly the poked bytes.** Causal, not coincidental.
+
+**Confirmed: `FUN_40009094(bank, part)` does correctly refresh the recorder-page cache
+`0x80000c94` (both pages, all 8 tracks) from the applied Part's stored record.** The
+FINAL DESIGN fix (calling it from the `sys` Part-change detour) does close reports #2/#3,
+on top of #1 and the scene aside. Exactly which instruction inside `FUN_40009094` performs
+this copy is unresolved (my hand-traced attribution was wrong) — not needed to trust the
+fix, since the causal behaviour is now proven directly; if a future session wants the exact
+site (e.g. to understand page-2 coverage precisely rather than infer it), re-derive fresh
+rather than reuse the `0x4000917e` claim above.
+
+### REVISED FINAL DESIGN — don't touch/race Elektron's own lazy mechanism, only fill genuine gaps
+
+User pushback (rightly): does calling `FUN_40009094` break the jump-avoidance the lazy path
+was built for? Real, unresolved uncertainty: does the frame-builder's per-track catch-up
+(`0x4000bf3a`→`0x4000c0b4` block) genuinely defer past a sounding voice's risk window (e.g.
+until that track's next trig), or does it fire at essentially the same instant as the
+pattern-boundary commit (no real timing advantage over a synchronous call, just narrower
+scope)? **Not resolved — not worth guessing on a question this consequential.** Routed
+around it instead of answering it:
+
+- **Recorder cache (#2/#3):** standalone `memcpy(0x80000c94+track*12, blob+newPart*0x18b2+
+  0x8f382+track*12, 12)`, all 8 tracks. Touches nothing machine/voice-state related; recorder
+  settings aren't a continuously-audible parameter (they govern a not-yet-started recording,
+  not a decaying/sustaining voice) → no jump-risk category, independent of the timing
+  question, safe unconditionally.
+- **PICKUP unstick (#1) and the scene-morph retrigger** — real, audible, but the risk is
+  *inherent to the fix itself* (a voice stuck on the wrong buffer must be interrupted to
+  correct it; scenes applying now instead of on next fader-touch means a discrete DSP push
+  now) — not a side effect of choosing to reuse `FUN_40009094`. No version of "fixed" avoids
+  this.
+- **Machine params + scene buffer (`0x80000810`/`0x80000a50`/`0x80000ed4`) — LEFT ALONE.**
+  Do **not** call `FUN_40009094` for this piece while the transport is running, and do
+  **not** write the per-track marker `0x80001832[track]` either — writing the marker without
+  also doing the copy would tell the frame-builder's own detector "already settled" and make
+  it **skip its own catch-up**, which is strictly worse than today's bug (currently it lags;
+  that would make it never happen). Whatever protection Elektron's existing per-track lazy
+  mechanism has for these two fields, keep it completely intact and unraced.
+- **Full `FUN_40009094` call — gated to `0x800065b8 == 0` (transport stopped) only.** The
+  frame-builder never runs at all when stopped (confirmed empirically, `--repro` probes
+  1/2) → zero catch-up ever happens on a stopped switch without this, AND zero jump risk
+  exists (nothing sounding) → this is exactly the case where the full routine is both safe
+  and necessary.
+
+**Net design:** per track, always — recorder memcpy; on `oldType==4→newType!=4` — kill bit.
+Once, always — scene-morph retrigger. Additionally, **only if `0x800065b8==0`** —
+`jsr FUN_40009094(bank,newPart)` (covers machine params/scene buffer/marker for the stopped
+case, where stock's lazy mechanism never would). While playing, machine-param/scene-buffer
+timing is stock's, untouched, unmodified — cannot regress whatever jump-avoidance property
+it has, known or unknown.
+
+**Residual gap, accepted:** while playing, the display/LED consistency for `FUN_40002df4`'s
+gate may lag by up to ~1 frame after a Part-crossing switch, same as it does today for
+whatever else is lazily caught up — not eliminated, but not worsened, and self-corrects
+within a frame once the frame-builder's own detector fires (unaffected by our fix, since we
+never touch its inputs while playing).
+
+Toggle: still gate the WHOLE thing (recorder + pickup + morph + stopped-case full-apply)
+behind one PERSONALIZE entry, described around "recorder/pickup/scene correctness on a
+Part-changing pattern switch; while playing, tracks with a currently-sounding voice may
+interrupt/click on the pickup-unstick and scene-morph pieces specifically — inherent to the
+fix, not this build's error."
+
+NEXT (build-time): re-derive `0x400621a6`'s exact stack-arg offsets fresh (per the earlier
+verification-pass lesson — don't trust a hand-counted read); confirm `0x800065b8` is
+reliably read at the point of this detour; the stopped-case `FUN_40009094` call still needs
+the reentrancy-from-`sys` check noted earlier.
+
+## Session 49 — HANDOFF (read this first; everything above is the raw log, including two dead ends corrected in-line — this section is the current, authoritative status)
+
+**Bug family scoped:** a pattern change that links a different Part doesn't fully re-apply
+that Part's per-track state. Three Elektronauts reports + one aside, all traced to the same
+underlying gap:
+1. **Open_Mike** — track T = PICKUP machine in Part A (not running) → switch to a pattern on
+   Part B where T = FLEX → T plays **Part A's pickup loop**, not Part B's sample. A second
+   user confirms, and specifically narrows it: **only when the new machine is FLEX — a
+   STATIC machine on the same switch works correctly.**
+2. **Open_Mike** — recorder trig SRC/RLEN from the old Part is used even when locked on the
+   new pattern.
+3. **sezare56** — REC SETUP last-tweaked value leaks across a Part boundary (tweak P1's
+   SRC→T8, switch to P2 whose stored SRC=T2 → P2 records from T8).
+4. **(aside, Open_Mike)** — the new Part's scenes may still respond to the old
+   pattern/Part's scene values.
+
+### What's SOLID (static RE + emulator-confirmed, trust these)
+
+- **The two `sys`-task dispatch cases that handle a Part change**: `0x400620fe`
+  ("select pattern N" — derives the Part from the pattern link, sets `0x80000003`/
+  `0x100b14cf`, redraws only) and `0x400621a6` ("select Part P" — loop
+  `FUN_400972fc(newPart,track,oldType)` ×8, redraws). **`0x400621a6` is the one a real
+  pattern-driven Part change reaches** (confirmed: `FUN_400972fc` fired ×8 in `emu_rtos`
+  across a real `seq_select_live` switch). **Neither case calls `FUN_40009094`** (the full
+  per-track Part-apply that manual PART select / RELOAD PART / bank load / project load all
+  use) — confirmed by watching its entry point across a real switch: zero hits.
+- **`FUN_40009094(bank, part)` does correctly refresh the recorder-page cache
+  `0x80000c94+track*12` (both pages, all 8 tracks) from the applied Part's stored record —
+  proven CAUSALLY**, not just by reading code: scribble the cache, poke a distinctive
+  record into the blob, call the function directly, cache comes back holding exactly the
+  poke. Reproducible via `tools/check_reccache_causation.py`. **This closes reports #2/#3**
+  once the pattern-change path is made to call it.
+- **The scene aside is real and has its own mechanism**: the crossfader morph
+  `FUN_4003f1b4` (reads scene A/B selection + data from the blob keyed by the active Part,
+  posts interpolated values to the DSP) has exactly two callers — the crossfader-move
+  handler and an arranger-exit handler — **neither is the pattern-change path**, and it has
+  a dedup guard (`0x400c0c44` vs fader position `0x460d16c8`) that skips the whole morph if
+  the fader hasn't moved since its last run. So a Part-crossing pattern switch leaves the
+  DSP holding the *previous* Part's scene morph until the fader is next touched.
+- **The scene *data* (not just the morph) has a second, independent gap**: the scene-param
+  stager `FUN_40002df4` is gated per-track on `0x80001832[track] == activePart` (and
+  `0x8000182a[track] == activeBank`) — and **`0x80001832`/`0x8000182a[track]` are only ever
+  set to the applied Part/bank by `FUN_40009094`** (never by the pattern-change path). So the
+  live scene buffer `0x80000ed4+track*0x40` (what the frame-builder publishes to the DSP,
+  and what other scene-consumer code reads for display) also stays stale.
+- **The frame-builder (`FUN_4000c8a4`) has its own partial, running-only lazy catch-up**
+  (`0x4000bf3a` per-track "did this track's playing Part change" detector →
+  `0x4000c0b4-0x4000c428` re-stage block): it DOES re-copy machine params and scene data —
+  but only while the transport plays, and it never touches the recorder cache and never
+  unsticks a PICKUP voice.
+
+### What turned out WRONG this session — don't repeat these
+
+- **A specific instruction attribution inside `FUN_40009094`** (claimed to be "the" recorder-
+  cache copy at `0x4000917e`) was hand-traced twice with two different, both-plausible-
+  looking-but-inconsistent answers for its source address. **Don't trust either reading** —
+  the *functional* claim (the routine refreshes the cache) is proven causally above; the
+  *specific instruction* was never correctly pinned and isn't needed.
+- **`FUN_40005030` is NOT the sequencer's per-step trig sample-resolver.** It looked
+  promising (reads the active Part's machine type + slot fresh, maps to the right sample
+  arena, matches octamax's old "trig helper, doesn't refresh Part params" description) — but
+  a real, confirmed sequencer trig (via `install_trig_log`, landing on track 1 at frame
+  ~1379-1593 from a cold pattern start) never once called it. Its 8 callers all trace to
+  manual/UI gesture dispatchers, not the step-trig path. **The real per-trig resolver is
+  still unidentified** — it's somewhere inside the step handler `FUN_4009d1e8` / its
+  consumers `0x4009d382..0x4009da12`, not traced to instruction level.
+- **The differential PICKUP→FLEX vs PICKUP→STATIC test (`tools/diff_flex_static.py`) has
+  been run twice and both times failed to establish the bug's actual precondition** — a
+  *real* prior trig has to genuinely bind the voice to the PICKUP arena entry before the
+  track goes idle and the switch happens; a poked machine-type byte alone isn't the same
+  state. Both runs used a 200-frame "bind" budget, but a real first trig from a cold pattern
+  start doesn't land until ~1300-1600 frames — so neither run ever created the real
+  precondition, and **both showed correct resolution in a state that was never actually
+  buggy to begin with.** Fixed in the copy now in `tools/diff_flex_static.py` (waits for a
+  genuine bind + asserts it before proceeding) — **not yet re-run with the fix.**
+
+### Current fix design (REVISED — see "REVISED FINAL DESIGN" above for the full reasoning)
+
+Per track, always: `memcpy(0x80000c94+track*12, blob+newPart*0x18b2+0x8f382+track*12, 12)`
+(recorder, safe unconditionally). Per track, `oldType==4 && newType!=4`:
+`0x8000184c |= 1<<track` — **this piece is UNVERIFIED and now suspect** (see below). Once:
+`move.l #-1,0x400c0c44` + `jsr FUN_4003f1b4` (scene morph retrigger). Only if
+`0x800065b8==0` (transport stopped): `jsr FUN_40009094(bank,newPart)` (covers machine
+params/scene buffer/marker for the stopped case only, where the frame-builder's lazy
+catch-up never runs anyway). Deliberately does NOT call `FUN_40009094` or write the
+`0x80001832[track]` marker while playing, to avoid racing/disabling Elektron's own lazy
+per-track catch-up (see the design conversation above for why).
+
+**Open, real question on the `0x8000184c` kill-bit piece:** it was proposed by analogy (the
+*reverse* transition, notPICKUP→PICKUP, also sets this bit) — never proven to actually
+unstick a PICKUP voice. Per Session 9, this bit triggers an AMP envelope *release* ramp, not
+a "re-resolve which buffer this voice reads" action, so the analogy may not hold. The
+differential test above was specifically trying to settle this and hasn't yet, due to the
+bind-phase bug (now fixed, not yet re-run).
+
+### NEXT (prioritized)
+
+1. **Re-run `tools/diff_flex_static.py`** (now fixed — waits for a genuine PICKUP bind +
+   asserts it) for the real PICKUP(bound,idle)→FLEX vs →STATIC comparison. ~8-12 min wall.
+   If it STILL shows correct resolution in both cases even with a genuine prior bind, the
+   bug may specifically require a Part change committed **while the transport is running**
+   (a live pattern-boundary commit) rather than the stop-switch-restart sequence every test
+   this session has used — `seq_select_live` while playing only *queues* the change for the
+   next pattern boundary (1000s of frames out, never reached this session). That needs its
+   own harness (run playback for real until the *current* pattern's own step count is
+   reached, not a fixed frame budget).
+2. If the diff finally reproduces the bug, it will show WHICH memory location diverges
+   between the FLEX and STATIC runs (the read/write watches are already in place, covering
+   the 3 arena entries + the pre-image/cache/scene/marker band + the voice struct) — that
+   directly names the real mechanism, replacing the `0x8000184c` guess with something
+   verified.
+3. Confirm the `#3` sequencer-side scene p-lock loader (`0x46c7aa24`) — still unpinned; no
+   literal-address writer found. Lower priority than #1's mechanism.
+4. Build-time (once #1's mechanism is settled): re-derive `0x400621a6`'s exact stack-arg
+   offsets fresh (don't reuse any offset quoted earlier in this log without re-verifying),
+   confirm `FUN_40009094` reentrancy from `sys` for the stopped-case call, then build +
+   validate S48-style (stock-repro + patched-fix) before ever touching hardware.
+
+### Tools (all in `tools/`, none in scratchpad — safe across a session boundary)
+
+- `tools/emu_partswitch.py` — `--probe` (DEMO as-is) / `--repro` (poke PICKUP→FLEX + recorder
+  + scene markers, drive the switch, dump before/after state). The main scoping harness.
+- `tools/diff_flex_static.py` — the PICKUP→FLEX vs PICKUP→STATIC differential (fixed bind
+  phase, not yet re-run — see NEXT #1).
+- `tools/check_reccache_causation.py` — the causal proof that `FUN_40009094` refreshes the
+  recorder cache. Re-run any time that claim needs re-confirming.
+- `tools/scan_parts.py` — static bank-file pattern→Part link dump (reliable) + a machine-type
+  guess (NOT reliable, known limitation documented in its own header).
+
+## Session 49 — HANDOFF UPDATE (2026-09-10, same day, continued): the fixed bind phase found a bigger problem than the one it was fixed to catch
+
+**Re-ran `tools/diff_flex_static.py` per NEXT #1 above.** Result: `BIND FAILED` —
+zero trigs on T1 within the full 3000-frame ceiling (not "too slow to bind," literally
+zero `FW_LIVE_NIBBLE` events on that track at all). This is a different, more
+fundamental failure than the timing problem the bind-phase fix targeted, and it changes
+the read on both prior (pre-fix) runs.
+
+**Root-caused with two small throwaway probes** (`probe_trigs.py` / `probe_trigs_poked.py`,
+scratchpad, not added to `tools/` — pure diagnostics, easily reproduced by any script that
+loads OT DEMO, calls `seq_select_live(curbank, 0)`, and runs the transport):
+
+- **Unpoked baseline** (no pokes at all, stock OT DEMO, pattern index 0 / Part 0):
+  T1 (track 0) DOES trig — at frame 1 (an init write, value 0x10, shared by tracks
+  0/1/3/4/5/7 simultaneously — not a real step trig), then **real** trigs at frame 1379
+  (val 2, then 18) and frame 2757 (val 4, then 20). Interval ~1378 frames between real
+  trigs — **sparse, not "nearly every step"** as this session's earlier notes claimed;
+  that "1300-1600" figure was borrowed by analogy from a different investigation
+  (the `FUN_40005030` probe) and the "nearly every step" characterization was never
+  actually measured for this project/pattern. Correct the record: T1/P1 in OT DEMO trigs
+  roughly once every ~1378 frames, first real trig at frame 1379.
+- **Same setup, but with `diff_flex_static.py`'s exact poke applied first**
+  (`machine_addr(blob,0) = 4` PICKUP, `slot_addr(blob,0,4) = 128`, i.e. Part0/T1 → PICKUP,
+  slot 128 — the standard `128+track` PICKUP arena addressing the script itself uses):
+  **T1 gets ZERO trig events for the entire 4000-frame run** — every other track (1-7)
+  still fires at the exact same frames as the unpoked baseline (690, 1379, 2068, 2412,
+  3446 — unaffected), but T1 is completely silent, and its voice struct
+  (`0x800049d8`) never leaves `active=0x0, SETTINGS=0x00000000` the whole run — the voice
+  engine never even touches it.
+- **Why**: dumped the raw 1096-byte `FLEX_ARENA` entries. The REAL, loaded FLEX slot
+  (Part1/T1, slot 20) holds a valid path string at its head (`../AUDIO/ELEKTRON/
+  MDKICK.WAV`, 40 nonzero bytes total in the entry). **The PICKUP arena entry
+  (slot 128+T, i.e. `FLEX_ARENA + 128*1096`) is essentially empty — only 12 nonzero bytes
+  in the whole 1096-byte entry, no path string, nothing that looks like a loaded sample.**
+  This is expected on a project where track 0 has never actually performed a PICKUP
+  capture: unlike FLEX/STATIC, a PICKUP machine's arena entry isn't populated from a
+  file on the card — it's populated by an actual on-unit PICKUP capture action, which
+  this project has never done for T1. The firmware evidently checks something in this
+  entry (a length, a valid/loaded flag — not yet located) before scheduling ANY trig for
+  a track pointed at an unpopulated PICKUP slot, and skips the track entirely if it's
+  empty — which is arguably correct, sensible stock behaviour (nothing to play, so don't
+  schedule playback), not a bug.
+
+**What this means for the differential test and for report #1 generally:**
+
+- **A bare machine-type-byte poke to PICKUP can never produce the "genuinely bound,
+  idle PICKUP voice" precondition the bug report describes**, because the firmware
+  won't schedule any trig — let alone bind a voice to the PICKUP arena entry — for an
+  empty PICKUP slot. This was true of BOTH pre-fix runs this session too: the "bind"
+  phase in those runs (200-frame budget, no assertion) silently "succeeded" by doing
+  nothing meaningful, same as this run's failure, just without the check that would
+  have caught it. **All three runs of this test to date (two pre-fix, one post-fix)
+  have failed to create the bug's actual precondition, for two compounding reasons now
+  identified: insufficient bind time (fixed this session) AND an empty/unpopulated
+  PICKUP arena entry that can never bind regardless of time (newly found, NOT fixed).**
+- The real Elektronauts report describes a PICKUP machine that **has** been used —
+  it has real captured audio, a real "loaded" state, and (per the report) is actively
+  looping/playing before the switch. Reproducing that in the emulator needs the PICKUP
+  arena entry to look genuinely populated, not a bare type-byte flip. Two ways to get
+  there, neither tried yet:
+  1. **Fabricate a populated-looking PICKUP entry** — e.g. clone a real FLEX entry's
+     1096 bytes into the PICKUP slot (128+T) before binding, so whatever gate the
+     firmware checks (probably a length or loaded-flag near the entry head, unlocated)
+     reads as "populated." Fast to try, but risks being structurally wrong: a PICKUP
+     entry may not share layout with a file-backed FLEX entry at all (PICKUP audio
+     lives in a captured RAM buffer, not a WAV path) — if the firmware trusts the
+     path string specifically, a cloned entry could bind to the wrong data, or bind
+     to something that doesn't behave like a real PICKUP voice for the purposes of
+     the actual test (whether a stale buffer is what a FLEX switch would inherit).
+  2. **Drive an actual PICKUP capture in the emulator first** (whatever real gesture
+     populates a track's PICKUP buffer on hardware — not yet identified in this
+     project's RE), then let T1 genuinely bind to it, then do the switch. Higher
+     fidelity, more RE work up front (need to find and drive the real capture path),
+     probably several more sessions of static RE before it's emulator-drivable.
+  Neither has been attempted. This is the fork in the road for how to proceed.
+
+**User clarified the report's precondition directly** (quoting the original Elektronauts
+text): the PICKUP machine is "already linked to a sample" (i.e. genuinely populated,
+not a fresh empty slot) and simply not running before the switch. Decision: pursue
+fabrication (option 1 above) as the faithful reproduction of this precondition, not
+just a shortcut — tried it, and it's NOT sufficient on its own (see below).
+
+**Tried: seed the PICKUP arena entry (slot 128+T) with a clone of a real, loaded FLEX
+entry's 1096 bytes** (`tools/diff_flex_static.py` updated to do this before the bind
+phase; also verified standalone in a throwaway sanity probe). **Result: still
+`NOT BOUND` — T1 still gets ZERO trigs in 3000 frames, identical to the unseeded
+case.** So whatever gates trig-scheduling for a PICKUP-machine track is **not** the
+arena entry's content — cloning real sample bytes into it changed nothing. The gate
+must be a separate flag/field, keyed on the machine type itself or on some other
+per-track state we haven't located yet (candidates: something in the PART data near
+`MACHINE_OFF` beyond the single type byte; a separate "has this track ever captured
+pickup audio" bit; a length/valid field that lives outside the `FLEX_ARENA` table
+entirely, maybe alongside the recorder cache at `0x80000c94+track*12` or similar).
+
+**NEXT (supersedes the old NEXT #1 above):** find the actual gate via instruction-level
+tracing — compare execution through the step handler (`FUN_4009d1e8` / consumers
+`0x4009d382..0x4009da12`, per the existing "real per-trig resolver still unidentified"
+note above) between a poked-PICKUP track (never trigs) and the same track left as its
+stock FLEX machine (trigs at frame 1379) — same project, same pattern, only the
+machine-type poke differs — to find where the two diverge. That divergence point names
+the real gate. Old NEXT #2-4 (exact divergence mechanism for report #1 itself, `#3`
+scene p-lock loader, build-time offset re-derivation) are unaffected and still pending,
+now gated behind finding this gate first.
+
+**FOUND — and it reframes the whole investigation.** The gate hunt succeeded, but the
+gate turned out to be architectural, not content-related: `FW_LIVE_NIBBLE` (the signal
+this session's whole test methodology has been using as "did this track trig") is
+**structurally never written for a PICKUP-machine track, valid buffer or not.**
+
+Method: (1) disassembled `0x4000b7xx-0x4000ba20` (the actual `FW_LIVE_NIBBLE` publish
+routine, found by hooking writes to `FW_LIVE_NIBBLE` directly rather than guessing a
+range — the earlier `FUN_4009d1e8` guess from the "per-trig resolver" note was wrong,
+that address range never contains the write at all: real write PCs are `0x4000b910` /
+`0x4000b9bc`). (2) Traced writes to its two guard structures (a 16-entry table at
+`0x46c7e998`, and a per-track bitmask byte at `0x80001798+track`) across the exact
+frame where T1's real trig lands (1379, from the unpoked baseline), poked vs unpoked.
+Found: **at frame 1379, unpoked track 0 falls through the routine's NORMAL path to the
+publish write; poked track 0 instead takes an early "clear and skip" branch at
+`0x4000b8b8`**, which exits via a different address (`0x4000bc32`) that never reaches
+the write. (3) That branch is gated on `btst #11` of the per-track table entry (clear
+in both cases — not the differentiator) AND a bit in a single GLOBAL flag byte at
+`0x46c7ff3e` (one bit per track, tested via `mvzb`+`andl` against the per-track
+bitmask). Confirmed directly: this byte is `0x00` throughout the unpoked run, and
+flips to `0x01` (bit 0 = track 0) in the poked run **immediately after
+`seq_select_live`** — i.e. it's computed fresh at pattern/Part-apply time, not
+per-step. (4) Found the setter via a static search (`grep` for `ff3e` across a full
+disassembly of the image — cheap, no emulator run needed): `FUN_40097204`, an 8-track
+loop that for each track reads `blob[activePart*0x18b2 + 0x8eda2 + track]` (this is
+exactly `PARTS_OFF+MACHINE_OFF`, i.e. the track's machine-type byte) and:
+```
+if (machine_type == 4 /* PICKUP */) {
+    flag |= (1 << track);                    // 0x40097250
+    x = FUN_40000e50(track);                 // unexplored
+    if (*(x+20) != 4) FUN_40006820(track);   // unexplored, "not PICKUP" cleanup?
+} else {
+    flag &= ~(1 << track);                   // 0x40097276
+}
+```
+**This sets the bit purely from the machine-type byte — it never reads the arena
+entry, a length, or anything that would distinguish "empty" from "really captured"
+PICKUP content.** Every PICKUP-machine track gets this bit set, always, real capture
+or not.
+
+**Consequence: this whole session's differential-test methodology has been measuring
+the wrong observable for a PICKUP track.** `FW_LIVE_NIBBLE` not firing for T1 is not
+evidence of "empty buffer, never binds" — it's evidence that **PICKUP machines don't
+use this trig-publish path at all**, by design, real capture or not. The
+`voice_settings()[1] == pickup_entry` check `diff_flex_static.py`'s bind phase also
+polls may have the same problem — if PICKUP voices are driven through the
+`FUN_40000e50`/`FUN_40006820` pair (or whatever they call) into a different voice
+mechanism entirely, the generic voice struct at `0x800049d8` may not be what a PICKUP
+voice's binding shows up in either. **Neither has been checked yet.** This is a
+genuine, still-open question, not assumed either way.
+
+**NEXT (supersedes the immediately-preceding NEXT):** disassemble `FUN_40000e50` and
+`FUN_40006820` (the two calls `FUN_40097204` makes for a PICKUP track) to find the
+real PICKUP-specific trig/bind mechanism — that names the correct observable to poll
+for "has this PICKUP voice genuinely bound" before any further emulator run is worth
+doing. Until that observable is known, every future differential-test run against a
+PICKUP track risks repeating this session's mistake (measuring a signal PICKUP
+structurally bypasses) regardless of how faithfully the buffer content is fabricated.
+
+**FOUND (static disassembly only, no emulator run needed) — and this decisively kills
+the "fabricate a populated arena entry" approach.**
+
+- `FUN_40000e50(track)` is trivial: returns `VOICE_BASE(0x800049d8) + track*VOICE_STRIDE(0xA8)`
+  if track ≤ 7, else a fixed fallback pointer `0x46104e0e`. Just "get this track's
+  voice struct pointer" — the same struct `diff_flex_static.py`'s `voice_settings()`
+  already reads.
+- `FUN_40006820(track)`, called by `FUN_40097204` only when `voice[track].+20 != PICKUP`
+  (i.e. "this voice hasn't already been configured for PICKUP"): with track out of
+  0-7 it recurses over all 8 tracks; for a real track it **clears `voice[track].+0`**
+  (the "active" byte our probes have been reading as evidence of "never bound" all
+  session), clears a 4-byte entry in an unrelated table at `0x80004898`, increments a
+  counter at `voice[track].+144`, then calls `FUN_4000672C(track)`. **This runs
+  unconditionally the first time a track's machine becomes PICKUP — real capture or
+  not** — so `active=0x0` in every probe this session was this housekeeping reset
+  firing, not evidence the buffer was empty.
+- `FUN_4000672C(track)` — the real payoff. It reads `voice[track].+20` (same byte)
+  and **only does anything if that byte already equals PICKUP AND
+  `track == *(0x400d7c4c)`**; otherwise it's a no-op (jumps straight to return).
+  **`0x400d7c4c` is a single GLOBAL 4-byte "which track currently owns the PICKUP
+  buffer" variable — not a per-track slot.** The rest of the function (guarded on that
+  match) manipulates a per-track enable bitmask at `0x461054ec`/`0x461054f0` and a
+  small lookup table at `0x46c922d4+track*44`, consistent with transferring PICKUP
+  "ownership" away from whichever track previously held it.
+
+**Conclusion: PICKUP is architecturally a single shared, global capture buffer with one
+owner at a time (`0x400d7c4c`), not a per-track resource the way FLEX/STATIC arena
+slots are.** This fully explains why seeding `FLEX_ARENA[128+track]` with real sample
+bytes (tried and failed earlier this session) could never work — that arena table has
+nothing to do with PICKUP ownership or content; a track's PICKUP machine only has
+"real" captured content when it is (or recently was) `*(0x400d7c4c)`'s value, set by
+whatever the actual on-unit PICKUP-capture action does elsewhere (not yet located).
+**The "fabricate a populated arena entry" path (Option 1 from the original fork) is
+now confirmed non-viable, independent of how much more faithfully it's implemented —
+wrong resource entirely.** Reproducing the report's precondition needs Option 2: find
+and drive the real capture path (whatever sets `0x400d7c4c` and `voice[track].+20`
+together, consistently), or at minimum fabricate BOTH of those in a self-consistent
+way (set `0x400d7c4c = track`, `voice[track].+20 = 4`, and whatever the enable-bitmask
+`0x461054ec` expects) rather than just the arena bytes.
+
+**NEXT:** find what sets `0x400d7c4c` (the PICKUP-owner variable) and
+`voice[track].+20` together — grep the full disassembly for `7c4c` (cheap, static,
+no emulator run) to find every reader/writer, the same technique that found
+`FUN_40097204` this round. That should lead to the real capture-assignment routine,
+or at least reveal the minimal self-consistent set of pokes needed to fake ownership
+without a real capture.
+
+**FOUND the claim logic (static, `grep 7c4c` across the full disassembly — same cheap
+technique).** Real hits (filtering disassembler noise): `0x40006754`/`0x400067da`/
+`0x400067e4`/`0x400067f2` (already known, inside `FUN_4000672C`), plus three new ones
+inside a large, not-yet-fully-mapped function spanning roughly `0x4000f000-0x4000f900+`
+(true entry point not yet found — still reading backward from `0x4000f7d0` at the point
+this note was written). The relevant fragment, guarded on `sp@(56) == 4` (this call's
+target track's machine == PICKUP):
+```
+d1 = 0x400d7c4c                  ; current owner (-1 == unclaimed)
+if (d1 >= 0) goto existing_owner_path;   // 0x4000f7e2: checks a bitmask at 0x461054ec,
+                                          // only transfers ownership under further conditions
+0x400d7c4c = candidate_track;    // 0x4000f7d0 — CLAIM, only reached when unclaimed
+0x461054f0 = *(a5);              // a5 = a table row two entries further in, from a5+16
+```
+So on a fresh boot (never captured before, `0x400d7c4c` presumably `-1`), **the first
+track whose machine becomes PICKUP and reaches this code claims the singleton
+automatically** — no separate "capture" gesture is structurally required for a FIRST
+claim, contrary to the assumption two paragraphs up. The surrounding function (still
+being mapped) does dense loop-point/slice-boundary arithmetic (`macl`, table lookups at
+`a4@(1092)` — note 1092, not 1096/`ARENA_STRIDE`, a different table) — this reads like
+the actual per-voice sample/loop resolver, plausibly *the* function `FUN_40005030` and
+`FUN_4009d1e8` were both wrongly suspected of being earlier this session.
+
+**Open question, not yet resolved:** does the `0x46c7ff3e` skip-bit (set unconditionally
+whenever machine==PICKUP, confirmed above) gate entry to THIS resolver too? If the
+skip-branch in the step handler (`0x4000b8b8..0x4000bc32`) bypasses this resolver
+entirely, PICKUP tracks would never bind at all while that bit is set — which cannot be
+right, since PICKUP demonstrably works on real hardware. Two possibilities, neither
+checked: (a) the skip-branch's own body (only partially read — it clears
+`table[track]`, touches a byte-table at `0x46c7fe44`, then branches to `0x4000bc32`)
+still leads into this resolver via a different route than the generic
+`FW_LIVE_NIBBLE`-publishing normal path; or (b) something else clears the
+`0x46c7ff3e` bit once a track's PICKUP voice is genuinely bound (`voice[track].+20`
+becomes 4), and the bit is really "not yet bound" rather than a permanent PICKUP-vs-
+everything-else router — in which case the correct experiment is to poll
+`voice[track].+20` and `0x400d7c4c` over a longer run on the already-poked project to
+see whether they ever change, independent of `FW_LIVE_NIBBLE` (which we now know is
+never a valid signal for PICKUP either way).
+
+**NEXT:** (1) find this resolver function's true entry point and its caller(s) — likely
+resolves the open question above directly (if its caller is inside the step handler's
+skip-branch itself, question (a) is confirmed; if its caller is elsewhere e.g. a
+different per-frame path, question (b) is more likely). Cheap, static work — search for
+`jsr`/`bsr` targets landing in `0x4000f000-0x4000f900`. (2) Once the true "did this
+PICKUP voice bind" observable is known (candidate: `voice[track].+20 == 4`, possibly
+combined with `0x400d7c4c == track`), re-run the differential test polling THAT instead
+of `FW_LIVE_NIBBLE`/generic `SETTINGS` — this is the corrected version of `NEXT #1`
+from several revisions back in this same session.
+
+**PIVOT (user prompt): the `diff_flex_static.py` precondition-fabrication path never
+needed to happen at all.** The actual root cause for report #1 was already fully
+established and confirmed EARLIER in this same session's raw log (see "Emu probe #2
+... ROOT CAUSE CONFIRMED for report #1" above, `tools/emu_partswitch.py --repro`), via
+static RE + `watch_pc` on `FUN_400972fc` -- no genuinely-bound PICKUP voice, no real
+capture, no `FW_LIVE_NIBBLE` observable ever needed. Everything from "FOUND -- and it
+reframes the whole investigation" through the `0x400d7c4c` ownership-singleton
+digression (this whole PICKUP-arena/ownership tangent) was answering a question -- "can
+we fabricate a genuinely playing PICKUP voice in the emulator" -- that the fix doesn't
+actually depend on. It is not wasted (the `FUN_400068e4`/kill-bit connection below is
+real and useful), but it was the wrong next step at the time; re-reading the earlier
+raw log first would have found the already-proven mechanism directly. Lesson for future
+sessions: **the HANDOFF section is the authoritative *status*, but the raw log above it
+can contain load-bearing technical answers the HANDOFF didn't restate** -- skim the raw
+log for the specific mechanism in play before re-deriving it.
+
+## Session 49 -- BUILD: `patch_partreapply` fix for report #1 + #2/#3, validated (emu A/B, NOT flashed)
+
+**Confirmed the `FUN_400068e4` connection while chasing the fabrication tangent above is
+real, not wasted**: static+emulator cross-reference (`grep` for `400068e4` across
+earlier, pre-Session-49 raw log) shows it is the **same function** documented back then
+as "the control-rate voice updater" that `DAT_8000184c` (the kill/re-trigger bit)
+kicks -- confirming the kill-bit's target function does real per-voice arena/slot
+resolution work (not *only* an AMP-envelope fade, as its narrower earlier
+characterization suggested), lending confidence to the fix design below.
+
+### The fix, built
+
+`tools/patch_partreapply.s` + `tools/build_partreapply.py` -> `out/mainos_partreapply.bin`
+(220 B cave, 6 B detour, `1.40C` version string unchanged). Implements the "REVISED
+FINAL DESIGN" from earlier in this session exactly:
+1. **Recorder memcpy, always** -- one 96-byte copy (`blob+newPart*0x18b2+0x8f382` ->
+   `0x80000c94`), covers all 8 tracks' 12-byte records (both recorder-page halves) in
+   one shot since both sides are contiguous per-Part blocks.
+2. **Per track, `oldType==4 (PICKUP) && newType!=4`**: `0x8000184c |= 1<<track`.
+3. **Once**: `move.l #-1,0x400c0c44` + `jsr FUN_4003f1b4` (scene morph retrigger).
+4. **Only if `0x800065b8==0` (stopped)**: `jsr FUN_40009094(bank,newPart)`.
+
+Detour: `0x40062216` (`jsr 0x400326a0`, the instruction right after the `sys` "select
+Part P" handler's `FUN_400972fc`x8 loop) -> `jsr cave`; cave replays the displaced call
+verbatim then `rts` (a "jsr"-kind detour per the house convention -- the site's own
+return address resumes the caller correctly, no explicit resume `jmp` needed).
+
+**Calling conventions re-derived fresh from real call sites** (per the standing "don't
+trust a hand-counted read" caution): `FUN_40020898(dst,src,len)` -- 3 long stack args,
+dst closest to the `jsr`; `FUN_40009094(bank,part)` -- 2 long stack args (each a
+zero-extended byte), bank closest to the `jsr`; `FUN_4003f1b4()` -- no arguments. All
+confirmed against real, unrelated call sites elsewhere in the image, not against
+NOTES' own shorthand.
+
+**Merge/interlock check (MERGE.md) before building**: detour site `0x40062216` and
+every global touched (`0x8000184c`, `0x400c0c44`, `0x80000c94`, `0x800065b8`, the
+`fp@(-9+track)` stack locals) appear in none of the 14 existing detour sites or the
+shared/adjacent-state tables for the seven already-merged mods -- orthogonal, same
+shape as Bug-2/QLREC ("detour one site nothing else touches, share no global"). Should
+compose cleanly into `build_merged.py`'s cave-packing scheme when it's added there (not
+done yet -- this session only produced the standalone build).
+
+### Two assembler/build snags, fixed while building
+
+- **GAS on this ColdFire target rejects `move.l #imm,<absolute>`** (immediate source +
+  absolute-long destination) -- matches the REAL firmware's own avoidance of this form
+  (`moveq #-1,d2 ; move.l d2,0x400c0c44` is what stock code actually does at the
+  morph-guard reset site). Fixed the same way: load the immediate into a register first.
+- None of the ColdFire-specific mnemonics needed (`mulsl`, the zero-extend idiom,
+  `extb.l`, indexed addressing `-9(%fp,%d2.l)`) needed anything beyond GAS's normal
+  m68k syntax once the right register-vs-immediate forms were used -- no CPU-support
+  surprises despite the caution that would have been warranted.
+
+### A pre-existing harness bug found and fixed while validating (not this fix's bug)
+
+**`tools/emu_partswitch.py --repro`'s `press_key_live(KEY_STOP)` does not actually stop
+the transport** (`0x800065b8` stays `1`) -- already flagged as a known, deferred issue
+earlier in this session ("Emu --repro #4 ... Need a working STOP ... deferred"), but
+never fixed before now. Consequence: with the transport left running, the switch below
+it just gets *queued* for the step engine's next pattern boundary (thousands of frames
+away) and never commits within the test's run budget -- `seq_select_live`'s own
+readback kept showing pattern 0, not 4. **This made the very first fix-validation
+attempt look like a total no-op on BOTH stock and patched images** (kill bitmap and REC
+cache byte-identical, unchanged, in both) -- not because the fix was broken, but because
+neither run ever executed a real switch at all. Diagnosed by watching PC hits at the
+detour site directly (confirmed the cave *did* execute correctly, including the
+kill-bit logic, in an isolated no-transport test) and then finding `seq now: ... pattern
+0` in the full test's own printed output -- the switch commit itself was the untested
+variable, not the fix. **Fixed**: replaced `rt.press_key_live(er.KEY_STOP)` with a
+direct poke `rt.uc.mem_write(0x800065b8, b"\x00\x00\x00\x00")`, the same mechanism
+every other probe this session already used reliably.
+
+### Validated -- clean A/B, `tools/emu_partswitch.py --repro` (stock) vs `--repro
+--patched` (patched), same PICKUP(Part0/T1) -> FLEX(Part1/T1) switch, transport
+genuinely stopped before the switch (fixed harness), pattern confirmed committed
+(`seq now: pattern 4`, `active part 0x80000003 = 1` in both runs):
+
+| observable | stock | patched |
+|---|---|---|
+| kill bitmap `0x8000184c` | `0x00` (bug) | `0x01` (fixed) |
+| REC cache `0x80000c94[T]` | `aa aa ...` marker survives (bug) | `60 61 62 63 64 65 66 67 68 69 6a 6b` -- Part 1's real record (fixed) |
+| REC published `0x80000cf4[T]` | `aa aa ...` (bug) | `60 61 62 ... 6a 6b` (fixed) |
+| `TRK_PART[0..7]` | `ff 00 ff 00 00 00 ff 00` (stale/mixed) | `01 01 01 01 01 01 01 01` (uniform -- bonus: step 4's `FUN_40009094` also fixes the scene/display consistency piece for every track, not just T) |
+| `TRK_BANK[0..7]` | `ff 00 ff 00 00 00 ff 00` | `00 00 00 00 00 00 00 00` |
+| `FUN_400972fc` fired for T (PC-HIT) | yes, x2 (both patterns' Part-apply loops) | yes, x2 -- unchanged, confirms the detour doesn't disturb the existing call |
+
+Both runs confirmed via direct PC-hit hooks that the cave executes fully (detour ->
+cave entry -> all 8 kill-check iterations -> cave return) with no crash, no hang, no
+illegal instruction.
+
+**Status: fix is emu-validated (stock-repro + patched-fix, S48-style), NOT flashed,
+NOT added to `build_merged.py` yet.** Report #1 and #2/#3 (recorder) are both closed by
+this build. The scene *aside* (Open_Mike's fourth report) and the `#3` sequencer-side
+p-lock loader (`0x46c7aa24`, still unpinned) are covered by design (steps 3-4) but not
+independently emu-confirmed this session -- lower priority, matches the original
+HANDOFF's own prioritization.
+
+**NEXT:** (1) add `patch_partreapply` to `build_merged.py`'s `CF_STUBS` list and
+`reference/MERGE.md`'s allocation table (mechanical, per the interlock check above --
+expect no conflicts). (2) HW pass once the MKI is back, per `FLASHING.md`'s ordering
+convention. (3) if time allows, independently confirm the scene-morph retrigger
+(step 3) and the `#3` p-lock loader with their own targeted emu probes, matching the
+rigor applied to steps 1-2 here.

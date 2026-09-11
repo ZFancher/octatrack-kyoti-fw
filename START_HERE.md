@@ -188,6 +188,34 @@ boxes (v1), no `0x400522ca` splice (v2), no shared popup handle. `emu_directjump
 ALL GOOD; dj_a/b/c byte-identical to v1. Preferred everywhere; v1/v2 kept until v3
 flashes.
 
+**"Part params carry over after a pattern→Part change" (Session 49) — FIXED, built,
+emu-validated, NOT flashed:** three Elektronauts reports, one family — a pattern change
+that links a different Part runs only a *light* re-apply (`sys` handler `0x400621a6`:
+`FUN_400972fc`×8 + `FUN_40009e00` + redraws), skipping the full `FUN_40009094` / kind-4
+a manual PART select runs. Root cause and fix design: `NOTES.md` "Session 49 — HANDOFF".
+Root cause for #1 specifically: `FUN_400972fc`'s `oldType==4 (PICKUP) && newType!=4`
+branch never rebinds the voice slot; PICKUP and FLEX share one sample arena so the stale
+slot keeps reading as valid — the FLEX track sounds the old pickup loop. **Fix built:**
+`tools/patch_partreapply.s` + `tools/build_partreapply.py` → `out/mainos_partreapply.bin`
+— detours `0x40062216` (right after the `FUN_400972fc`×8 loop) to: always re-copy the
+recorder record from the new Part (closes #2/#3), set the `0x8000184c` kill-bit on the
+exact PICKUP→non-PICKUP transition (closes #1 — no longer "unverified", see below),
+retrigger the scene morph once, and call Elektron's own full `FUN_40009094` only when
+the transport is stopped (respects the frame-builder's existing lazy catch-up while
+playing, doesn't race it). **Validated**: clean A/B via
+`tools/emu_partswitch.py --repro` (stock, reproduces) vs `--repro --patched` (fixed) —
+kill bitmap `0x00→0x01`, recorder cache stale marker → Part 1's real record, bonus fix
+to `TRK_PART`/`TRK_BANK` consistency across all 8 tracks. Along the way, fixed a
+pre-existing harness bug in `emu_partswitch.py`: `press_key_live(KEY_STOP)` never
+actually stopped the transport, which made the first validation pass look like a
+no-op on both stock and patched images — replaced with a direct
+`0x800065b8` poke. NEXT: add `patch_partreapply` to `build_merged.py` (checked against
+`MERGE.md` — orthogonal to all seven existing mods, no shared globals or detour
+collisions, should be mechanical), then an HW pass once the MKI is back. All the
+emulator tooling from this session is safely in `tools/` (not scratchpad) —
+`emu_partswitch.py`, `diff_flex_static.py`, `check_reccache_causation.py`,
+`scan_parts.py`, `patch_partreapply.s`, `build_partreapply.py`.
+
 **Backlog (scoped, Phase 1 tooling next):** auto-remove a trigless lock once a LIVE-REC
 `[NO]`+knob erase clears its last p-lock. Data model is mapped to the step-mask level
 (`kb/file-format.md`); the remaining RE is locating the erase handler — drive it in
