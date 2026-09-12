@@ -80,7 +80,8 @@ Two branches. **`main`** is the stable line: only hardware-tested build tooling,
 plus the shared knowledge base. **`wip/mute-mode`** (this) is the active
 frontier — everything not yet on hardware: the DT and solo mute modes, a
 DIRECT JUMP pattern-change mode, and an in-progress DSP side-chain compressor.
-`octamax-main` tracks `upstream/main`.
+Octamax's current state is tracked via `refs/octamax/` (see `reference/EXTERNAL_RESEARCH.md`),
+not a mirrored branch.
 
 | Thread | State |
 |---|---|
