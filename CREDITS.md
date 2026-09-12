@@ -48,8 +48,9 @@ no binary" approach — worth reading alongside this repo:
   (~500 named stock-firmware addresses for the Part / Kit / Bank / scene /
   LFO-designer / sequencer subsystems) and `runtime/firmware.json` (598
   SHA-guarded patch sites) are distilled into
-  [`reference/kb/octakit-abi.md`](reference/kb/octakit-abi.md). Ships no `LICENSE`
-  and no official code/assets — same "bring your own OS" stance as this repo.
+  [`reference/kb/octakit-abi.md`](reference/kb/octakit-abi.md). MIT-licensed as of
+  2026-09-12 (`20b0697`); still no official Elektron code/assets — same
+  "bring your own OS" stance as this repo.
 - **[bryantysinger/octa-bt-pt](https://github.com/bryantysinger/octa-bt-pt)**
   (Bryan_T) — a parameter-default patch tool for OS 1.40C (Python / Streamlit):
   customise the firmware's default values and generate a flashable image from

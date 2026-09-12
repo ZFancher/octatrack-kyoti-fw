@@ -150,6 +150,17 @@ Part edit / dispatch: `GK_STOCK_MKI_PART_DISPATCH 0x40058a64` (the MKI PART-butt
 path — FUNC+MIDI / FUNC+BANK in Octakit), `part-edit-dispatch 0x40058a70`,
 `GK_STOCK_PART_EDIT_OPEN_CURRENT 0x4002dc9c`, `GK_STOCK_PART_MODAL_ACTIVE 0x4002dc3c`.
 
+Recording Setup menu / LOAD KIT (added `1760ac0`/`d1a9ef0`, 2026-09-12 —
+Octakit's own "stale ownership at a Kit/Pattern handoff" bugfix pair, not stock
+bugs, but adjacent territory to Session 49's Part-carryover family):
+`GK_STOCK_RECORDING_SETUP_CALLBACK 0x400b9e16`, `_CLOSE 0x4002ee88`, `_OBJECT
+0x460d10cc` (the live popup-object pointer), `GK_STOCK_RECORDING_EDIT_MENU_OPEN
+0x4003105c`, `GK_STOCK_MKI_RECORDING_SETUP_INPUT_MAP 0x400b9e36`,
+`GK_STOCK_PATTERN_KEY_REQUEST_RETURN 0x40056b6e`. Not consumed by
+`patch_partreapply` (that fix restores the recorder-cache *data* directly, not
+menu-ownership state) — keep on hand if a future report describes the Recording
+Setup *menu* itself staying attributed to the wrong track after a Part change.
+
 Menu / popup / text: `GK_STOCK_POPUP_CREATE 0x4005829c`, popup objects
 `0x46c7d34c` (stride `0x38`, 5 slots, active-bit 5), `GK_STOCK_SCROLLING_CALLBACK_MENU_OPEN
 0x4006d94c`, callback-menu state block at `0x460e5e28`, text editor open

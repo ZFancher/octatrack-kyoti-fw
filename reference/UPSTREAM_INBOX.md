@@ -16,10 +16,33 @@ agent that fetches the refs and appends new commits here.
 - 2026-09-06  octamax@7d9debc  OCTAMAX 2.x — dual-256 static-pool reclaim (DDR
               relocation), OCTAMAX_2 combined release. Techniques noted in
               kb/techniques.md; not adopted.                          [ noted, not adopted ]
-- 2026-09-08  octabam@04b8512  the DSP-effect-addition work (one-aux bus, reverb/delay
-              engines, xbus per-core rotation) — out of scope per COVERAGE.md.  [ out of scope ]
-- 2026-09-08  octabam@04b8512  RTOS 10.17–10.18 — recorder-seam module, Bryan's click
-              (recorder length/loop) — recorder-specific, not our threads.   [ not ours ]
+- 2026-09-12  octabam@0ec42f3  DSP-effect "ear pass" continuation (BusVerb/BusDelay,
+              Character, Modulation, Spectrum tuning + one-aux bus work) —
+              out of scope per COVERAGE.md.                             [ out of scope ]
+- 2026-09-12  octabam@0ec42f3  RTOS_FORK 10.19–10.59 supersedes the 09-08 "not ours"
+              triage below — the recorder-click chase (route A / emu_rtos.py +
+              a new C++ "port" doing real DSP+ColdFire audio render, `tools/ot_emu`
+              --mem-dump/--dsp-stopwatch) runs straight through the arm/frame-builder
+              path our Session 49 Part-carryover fix sits next to. Cross-checks worth
+              doing against `patch_partreapply`: (1) their arm-caller address
+              `0x40006238`, corrected off an earlier wrong guess of
+              `0x4000672c`/`0x40006a2c` which they now call "a different,
+              PICKUP-only follow-up mechanism, not the FLEX arm path" — worth a look
+              since report #1 is exactly a PICKUP follow-up bug; (2) their
+              independent confirmation that the per-frame per-track dispatcher
+              `0x400068e4` runs at 16/frame matches our own `FUN_400068e4` reading
+              (NOTES Session 49, "control-rate voice updater") — corroborates our
+              calling-convention re-derivation, not a contradiction; (3) lane-table
+              fill `0x4000aece..0x4000af22` (trig-word composition) — unmapped by us,
+              could refine the sequencer trig model later.        [ TODO — cross-check
+              against S49 before next patch_partreapply revision, then fold the
+              confirmed pieces into kb/memory-map.md ]
+- 2026-09-12  ems-octakit@8ded517  6 commits since ec70dda: mostly Octakit's own
+              256-Kits-runtime bugfixes (stale popup/descriptor ownership at a
+              Kit/Pattern handoff) + a crash-report refactor, not stock-firmware
+              content. Five new named addresses distilled into kb/octakit-abi.md
+              "Recording Setup menu / LOAD KIT". Also shipped a LICENSE (MIT) —
+              CREDITS.md updated.                                  [ kb/octakit-abi.md ]
 
 ## Distilled
 
