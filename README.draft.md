@@ -130,6 +130,22 @@ Which builds have run on real hardware and which are emulator-only is tracked in
   → [`tools/build_pattern_led.py`](tools/build_pattern_led.py) ·
   write-up [`NOTES.md`](NOTES.md) "Session 48"
 
+- **Part-params-carry-over fix** *(emu-validated, not yet flashed)* — after a
+  pattern-triggered Part change, stale per-track state from the old Part could
+  leak into the new one: three Elektronauts reports describe a PICKUP machine
+  still playing its old pickup loop after switching to a non-PICKUP one, a
+  recorder track's SRC/RLEN carrying over, and a REC SETUP tweak leaking across
+  Parts. Root cause: the pattern-change handler (`0x400621a6`) only ran a light
+  per-track rebind (`FUN_400972fc`), never Elektron's own full Part-apply
+  (`FUN_40009094`). `tools/patch_partreapply.s` closes all three: an always-on
+  recorder-cache restore, a per-track PICKUP kill-bit, and a scene-morph
+  retrigger, gated behind a stopped-transport call into `FUN_40009094`. Clean
+  emu A/B (`tools/emu_partswitch.py --repro` stock vs `--patched`) confirms the
+  PICKUP kill bitmap and the recorder cache both land correctly. Not yet folded
+  into the comprehensive build, not yet on hardware.
+  → [`tools/build_partreapply.py`](tools/build_partreapply.py) ·
+  write-up [`NOTES.md`](NOTES.md) "Session 49"
+
 ### Comprehensive KYOTI Octatrack Firmware build
 
 - **Octatrack KYOTI FW v1.0** — every mod above in one image, with all code caves
@@ -178,6 +194,7 @@ Never cut power during `UPDATING FLASH`. Full procedure and recovery net:
 | SIDE-CHAIN — DSP hooks | `build_sidechain2.py` / `build_sidechain3.py` | hooks emulator-verified (dsp56kEmu); the audio path is untested |
 | RELOAD FROM PROJECT | `build_reload2.py` | picker + SEQ worker emulator-verified end to end; the CF-card parse and the hold-event feel are a hardware test |
 | Empty-pattern LED fix | `build_pattern_led.py` | emulator only (stock repro + patched fix + no false positive) |
+| Part-params-carry-over fix | `build_partreapply.py` | emu-validated (clean A/B, `emu_partswitch.py --repro`); not yet folded into `build_merged.py`, not yet flashed |
 | QUANTIZE LIVE REC toggle | `build_qlrec.py` | emulator only |
 | Octatrack KYOTI FW v1.0 (merged) | `build_merged.py` | composition emulator-verified; flash the per-feature passes first |
 
