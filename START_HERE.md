@@ -19,7 +19,7 @@ published repo, `upstream` = mxldyn (fetch only, for `whatsnew.py`).
 
 ## 1. Read order for a new chat
 
-1. **This file** — §6 says which branch the current work is on (`main` vs `wip/mute-mode`).
+1. **This file** — §6 says which branch the current work is on (`main` vs `wip`).
    Check out that branch before reading further; each branch's `START_HERE.md` / `NOTES.md`
    reflects its own state.
 2. **`NOTES.md`** — the RE log. **Do not read top-to-bottom** (it starts at 2026-07 recon).
@@ -77,7 +77,7 @@ published repo, `upstream` = mxldyn (fetch only, for `whatsnew.py`).
 ## 5. Shipped / in-flight work
 
 Two branches. **`main`** is the stable line: only hardware-tested build tooling,
-plus the shared knowledge base. **`wip/mute-mode`** (this) is the active
+plus the shared knowledge base. **`wip`** (this) is the active
 frontier — everything not yet on hardware: the DT and solo mute modes, a
 DIRECT JUMP pattern-change mode, and an in-progress DSP side-chain compressor.
 Octamax's current state is tracked via `refs/octamax/` (see `reference/EXTERNAL_RESEARCH.md`),
@@ -90,8 +90,8 @@ not a mirrored branch.
 | **MUTE MODE** PERSONALIZE toggle (`main`) | `tools/patch_mutemode.s`, values `OT / OT+FX`. Menu surgery HW-confirmed (Session 10). |
 | ↳ **OT+FX** soft mute — dry cuts fast+clean, FX inserts ring (`main`) | `patch_softmute.s` **V6b** (V6 mechanism + the Session-10 gate/frame fixes). **Flashed on MKI, works.** `python3 tools/build_mutemode.py`. |
 | ↳ MUTE MODE **now persists across power cycle** (`main`, Session 19) | `0x800000xx` is volatile; setter now also writes the `'ANDY'` battery-SRAM shadow `0x100fff6c` and the build extends the block restore `0x64`→`0x70` at 3 sites. Emu-verified, **not yet flashed.** From octamax `c78ff70`. |
-| ↳ **OT+FX for SOLO** (non-soloed tracks keep FX tails) | `patch_softmute.s` **V7**, **`wip/mute-mode` only** — emulator-verified (`emu_solo.py`), never flashed. |
-| ↳ **DT** (Digitakt-style pure sequencer mute) | **`wip/mute-mode` only** — emulator-verified (`emu_dt.py`, `build_mutemode_dt.py`), never flashed. |
+| ↳ **OT+FX for SOLO** (non-soloed tracks keep FX tails) | `patch_softmute.s` **V7**, **`wip` only** — emulator-verified (`emu_solo.py`), never flashed. |
+| ↳ **DT** (Digitakt-style pure sequencer mute) | **`wip` only** — emulator-verified (`emu_dt.py`, `build_mutemode_dt.py`), never flashed. |
 | Maxolydian's octamax behaviour mods (branding, no BANK/PTN countdown, lazy Part transitions, arp key-scales, LED dirty indicators) | **Not in any OT Kyoti FW build.** Patch sources kept for RE cross-reference in `tools/attic/`; design notes in `reference/upstream-notes.md`; credit in `CREDITS.md`. |
 | **External-RE knowledge base** (`main`, Sessions 16 / 18 / 20 — merged into `wip`) | `reference/kb/*.md` — address-keyed distillate of the 6 prior-art repos (octabam DSP map + kernel/RTOS + step-mask map, OctaLib file formats, octa-bt-pt + octabam descriptor table, the bank-file p-lock region, ems-octakit's `abi.inc` ~500-address map → `kb/octakit-abi.md`, the keymap/keycodes). `python3 tools/refs/sync.py` populates the `refs/` cache; `reference/EXTERNAL_RESEARCH.md` is the index. |
 
@@ -104,7 +104,7 @@ Build outputs on `main` (all `140C_KYOTI`, all carry the Bug-1 fix):
 
 ## 6. Current frontier — UPDATE THIS EACH SESSION
 
-**As of 2026-09-06. You are on `wip/mute-mode`** — the active branch. `main` is merged
+**As of 2026-09-06. You are on `wip`** — the active branch. `main` is merged
 in through Session 20: the external-RE knowledge base (`reference/kb/*.md` — run
 `tools/refs/sync.py` to populate the `refs/` cache), the kernel/RTOS + step-mask maps,
 the keymap/keycodes, and the **MUTE MODE `'ANDY'`-shadow persistence** (Session 19; DIRECT

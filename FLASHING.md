@@ -179,7 +179,7 @@ string.
 5. Regression: the manual-trig fix still works; other tracks unaffected;
    in `OT` mode SOLO is a stock hard cut.
 
-### 4.3  MUTE MODE `OT+FX` for SOLO  (`wip/mute-mode` `build_mutemode.py`, softmute V7 — emulator only)
+### 4.3  MUTE MODE `OT+FX` for SOLO  (`wip` `build_mutemode.py`, softmute V7 — emulator only)
 
 With **`OT+FX`** selected and a delay/reverb on two tracks:
 

@@ -45,7 +45,7 @@ confirmed the Bug-1 fix.
 
 > **Branches.** The published **`main`** is the conservative line: the Bug-1 fix
 > + MUTE MODE `OT` / `OT+FX` only, at the exact patch that was flashed and
-> confirmed on hardware. **`wip/mute-mode`** is the working branch and carries
+> confirmed on hardware. **`wip`** is the working branch and carries
 > everything below, including work that has **not** been on hardware. Per-feature
 > status is in the tables.
 
@@ -81,7 +81,7 @@ so a freshly flashed unit is stock until you opt in.
 | mode | effect | build |
 |---|---|---|
 | **OT** | stock behaviour, byte-for-byte. | any |
-| **OT+FX** | *soft mute*: on mute the dry signal cuts fast and clean (like a per-track STOP), the track's FX inserts ring their delay/reverb tails out, and a muted track's trigs make no sound. On **`wip/mute-mode` this also extends to SOLO** — a track silenced because another track is soloed gets the same soft cut instead of the stock hard cut (softmute V7). | `build_mutemode.py` |
+| **OT+FX** | *soft mute*: on mute the dry signal cuts fast and clean (like a per-track STOP), the track's FX inserts ring their delay/reverb tails out, and a muted track's trigs make no sound. On **`wip` this also extends to SOLO** — a track silenced because another track is soloed gets the same soft cut instead of the stock hard cut (softmute V7). | `build_mutemode.py` |
 | **DT** | pure *sequencer* mute, Digitakt-style: the voice that is already sounding keeps playing under its own AMP envelope, its FX ring, and only *new* trigs are suppressed. | `build_mutemode_dt.py` |
 
 Sources: `tools/patch_mutemode.s`, `tools/patch_softmute.s` (V7 on this branch,
@@ -220,7 +220,7 @@ toggle survives a power cycle with no extra plumbing. Two detours, one cave:
 | **QUANTIZE LIVE REC** front-panel toggle | `build_qlrec.py` | **emulator only** (`emu_qlrec.py`), never flashed |
 | MUTE MODE menu + `OT+FX` soft **mute** mechanism | `build_mutemode.py` | **confirmed** — the Session-10 build was flashed and works |
 | ↳ the `'ANDY'`-shadow persistence (survives power cycle) | `build_mutemode.py` | emulator-verified, **not yet flashed** |
-| ↳ the **SOLO** extension (softmute V7) | `build_mutemode.py` (`wip/mute-mode`) | **emulator only**, never flashed |
+| ↳ the **SOLO** extension (softmute V7) | `build_mutemode.py` (`wip`) | **emulator only**, never flashed |
 | **DT** sequencer-mute mode | `build_mutemode_dt.py` | **emulator only**, never flashed |
 | MUTE MODE 4th option (`OTFX` playhead-resume) | — | **reverse-engineered only**, not built |
 | **DIRECT JUMP** pattern-change mode | `build_directjump*.py` | **emulator only** (stub-level), never flashed |

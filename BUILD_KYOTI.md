@@ -9,7 +9,7 @@ build is byte-for-byte reproducible from the stock file.
 > bootloader recovery path. Static analysis is harmless; writing to hardware is
 > not. The author runs these on an Octatrack **MKI** he owns.
 
-> **Branch:** this is `wip/mute-mode`. The published **`main`** branch builds
+> **Branch:** this is `wip`. The published **`main`** branch builds
 > only what has run on hardware — `build_trigscale_only.py`, `build_mutemode.py`
 > (softmute **V6b**, `OT` / `OT+FX`), `build_softmute.py`. This branch's
 > `build_mutemode.py` is softmute **V7** (the `OT+FX` cut extended to SOLO), and

@@ -1,6 +1,6 @@
 # MERGE.md — combining every final-scoped mod into one firmware
 
-**Status: no-flash merge prep (2026-09-10, `wip/mute-mode`).** `tools/build_merged.py`
+**Status: no-flash merge prep (2026-09-10, `wip`).** `tools/build_merged.py`
 composes all seven and `tools/emu_merged.py` verifies the integration points. The
 combined image is **not hardware-tested**; the per-feature HW passes in `FLASHING.md`
 come first, in order, then this.

@@ -1,7 +1,7 @@
 <!--
   DRAFT — not live. Do not merge into README.md yet.
 
-  Assumes everything on wip/mute-mode has been merged into main.
+  Assumes everything on wip has been merged into main.
   Before this goes live: run the queued hardware passes (FLASHING.md), then
   update the "Hardware-test status" table and any "emulator only" wording to
   match, and replace README.md with this file.
